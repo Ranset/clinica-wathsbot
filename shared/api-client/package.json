@@ -1,0 +1,29 @@
+{
+  "name": "@clinica/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cliente fetch tipado de la API de la clinica (tipos generados de docs/openapi.yaml) y una API simulada en memoria para desarrollar sin servidor.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock": "./src/mock/index.ts"
+  },
+  "scripts": {
+    "generate": "openapi-typescript ../../docs/openapi.yaml -o src/schema.d.ts --default-non-nullable false",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ."
+  },
+  "dependencies": {
+    "@clinica/calendar": "*"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "@types/node": "^22.10.0",
+    "ajv-formats": "^3.0.1",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9",
+    "yaml": "^2.8.0"
+  }
+}
