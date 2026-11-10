@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Clinica CUBAMEX — bot de WhatsApp + app de gestion
 
-Idioma del usuario: espanol. Este directorio NO es un repositorio git (no hay historial para deshacer cambios).
+Idioma del usuario: espanol. Repositorio git local (rama `main`, sin remoto) creado el 2026-11-10; la etiqueta `pre-api` marca el bot de WhatsApp con Google Calendar tal como funcionaba antes de migrar a la API (punto de retorno). `.gitattributes` fuerza LF en los `.sh` (corren en el contenedor Linux). Solo se hace commit cuando el usuario lo pide.
 
 ## Que es
 Una clinica en Cancun (Clinica de Especialidades CUBAMEX, Av. Nichupte Mz 10 Lote 10, Num. Ext. 103, SM 513, CP 77534) con **2 consultorios** y **7 doctores**:
