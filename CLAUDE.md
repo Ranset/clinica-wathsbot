@@ -109,7 +109,7 @@ Adaptado de **Vocero CRM** (https://github.com/kevinrivm/vocero-crm, MIT, (c) 20
 - Precios: solo existe proctologia ($750, en la seccion Skills de `system_prompt.md`). Los demas, pendientes; hoy el bot dice que el equipo los confirmara.
 - Quitar el aviso "entorno de PRUEBA" de `bot/system_prompt.md` antes de usarlo con pacientes reales.
 - Aviso de privacidad / ley mexicana de datos personales: lo revisa la clinica, no el desarrollador.
-- Hosting: PythonAnywhere requiere plan Developer (~$10/mes) para dominio propio, MySQL y salida a internet sin restriccion (verificar al contratar). Sin WebSockets: el calendario del personal consulta cada pocos segundos; avisos al doctor por push.
+- Hosting: **verificado en la documentacion el 2026-11-10** (detalle y fuentes en `docs/despliegue.md`): plan Developer, 10 USD/mes, da dominio propio (CNAME a un subdominio `www`, no al dominio desnudo), MySQL, 3 web workers, 1 tarea siempre activa, salida a internet sin restriccion. Restricciones que condicionan el codigo: sin WebSockets (el calendario del personal consulta con `ETag`; avisos al doctor por push), sin hilos ni subprocesos en la web app, peticiones de 5 min maximo, conexiones MySQL inactivas se cierran a los 300 s (`pool_recycle=280`, ya en `server/app/db.py`). Sin verificar: procedimiento HTTPS, variables de entorno, version de Python 3.12 disponible. La guia de despliegue y corte (`docs/despliegue.md`) es un borrador sin probar.
 - Citas de prueba que quedaron en Google Calendar: 1 (Consultorio 1, 12-nov 13:30). Borrarla si se sigue usando Calendar.
 
 ## Convenciones
