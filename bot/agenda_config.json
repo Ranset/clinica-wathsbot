@@ -1,0 +1,106 @@
+{
+  "timezone": "America/Cancun",
+  "slot_minutes": 30,
+  "min_notice_minutes": 60,
+  "horizon_days": 60,
+  "hours": {
+    "0": [
+      "09:00",
+      "18:00"
+    ],
+    "1": [
+      "09:00",
+      "18:00"
+    ],
+    "2": [
+      "09:00",
+      "18:00"
+    ],
+    "3": [
+      "09:00",
+      "18:00"
+    ],
+    "4": [
+      "09:00",
+      "18:00"
+    ],
+    "5": [
+      "09:00",
+      "13:00"
+    ]
+  },
+  "consultorios": {
+    "Consultorio 1": "3c3e7b8cf323b31e204d1990bd891a14470f79dec8bf395ec0fbfadc2a91edab@group.calendar.google.com",
+    "Consultorio 2": "9bf1369fe30d984d069b004fef81e529f228eca26c51930813c3d065fb1332be@group.calendar.google.com"
+  },
+  "doctors": {
+    "proctologia": {
+      "name": "Dr. Cervantes Peláez",
+      "label": "Proctología",
+      "aliases": [
+        "proctologo",
+        "proctogia"
+      ],
+      "match": "cervantes"
+    },
+    "ginecologia": {
+      "name": "Dr. Pérez Lago",
+      "label": "Ginecología",
+      "aliases": [
+        "ginecologo",
+        "ginecologa"
+      ],
+      "match": "lago"
+    },
+    "ortopedia y traumatologia": {
+      "name": "Dra. Bordas Rodríguez",
+      "label": "Ortopedia y Traumatología",
+      "aliases": [
+        "ortopedia",
+        "traumatologia",
+        "ortopedista",
+        "traumatologo"
+      ],
+      "match": "bordas"
+    },
+    "ultrasonidos": {
+      "name": "Dr. Gustavo Torrealba",
+      "label": "Ultrasonidos",
+      "aliases": [
+        "ultrasonido",
+        "usg",
+        "ecografia"
+      ],
+      "match": "torrealba"
+    },
+    "otorrinolaringologia": {
+      "name": "Dr. Molina López",
+      "label": "Otorrinolaringología",
+      "aliases": [
+        "otorrino",
+        "otorrinolaringologo"
+      ],
+      "match": "molina"
+    },
+    "anestesiologia": {
+      "name": "Dra. Geydi",
+      "label": "Anestesiología",
+      "aliases": [
+        "anestesiologa",
+        "anestesiologo",
+        "anestesia"
+      ],
+      "match": "geydi"
+    },
+    "reumatologia": {
+      "name": "Dra. Ana del Carmen Argüelles",
+      "label": "Reumatología",
+      "aliases": [
+        "reumatologa",
+        "reumatologo",
+        "reuma"
+      ],
+      "match": "arguelles"
+    }
+  }
+}

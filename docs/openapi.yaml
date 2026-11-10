@@ -1,0 +1,1594 @@
+openapi: 3.1.0
+info:
+  title: API de la Clinica CUBAMEX
+  version: 0.1.0
+  summary: Contrato unico del servidor de la clinica (borrador F1, aun sin implementar).
+  description: |
+    Una sola API para tres clientes: el **bot** de WhatsApp (token de servicio), la **web de
+    administracion/personal** y la **PWA del doctor** (sesion por cookie). Es la fuente de verdad de
+    las citas; el bot ya no toca Google Calendar.
+
+    ## Convenciones
+    - **Idioma:** textos y claves del bot en espanol (las mismas que hoy usa `bot/scheduler.py`);
+      claves del resto de la API en ingles/camelCase, con la forma de `Booking` de
+      `shared/calendar/src/types.ts` para que la UI no necesite mapeos.
+    - **Ids:** siempre cadenas en JSON (aunque en MySQL sean enteros).
+    - **Tiempo:** zona `America/Cancun` (UTC-5, sin horario de verano). Endpoints de UI: instantes en UTC
+      (`scheduledAtUtc`, `...Z`). Endpoints del bot: hora local con desfase, p. ej. `2026-11-12T13:30-05:00`
+      (como `iso()` de `scheduler.py`); al recibir, un valor sin desfase se interpreta como hora de Cancun.
+    - **Citas de 30 min** alineadas a :00 / :30. Un bloqueo de consultorio dura multiplos de 30 min.
+    - **Errores:** cuerpo `{ "error": "<codigo>", "detail": "..." }` (ver `ErrorCode`). Los codigos de la
+      agenda son los mismos de `scheduler.py` para no tocar el prompt del bot. Conflictos de horario = 409,
+      reglas de agenda incumplidas = 422, no existe / no es tuyo = 404.
+    - **Autenticacion:** bot = `Authorization: Bearer <token de servicio>` (solo `/api/bot/*`); personas =
+      cookie de sesion HttpOnly `clinica_session` + cabecera `X-CSRF-Token` en POST/PUT/PATCH/DELETE (el
+      token llega en `/api/auth/login` y `/api/me`). Mismo origen para web admin y PWA.
+    - **Roles** (`x-roles` en cada operacion): `admin` (tecnico), `staff` (personal), `doctor`, `bot`.
+      Un doctor solo ve y toca lo suyo (su `doctorId`); lo ajeno responde 404, no 403.
+    - **Privacidad:** solo nombre, telefono, especialidad y horario. Nada de sintomas; `notes` es texto
+      administrativo. A los doctores no se les devuelve el telefono del paciente.
+    - **Reglas de agenda** (se imponen siempre en el servidor, tambien al reprogramar): doctor libre en
+      cualquier consultorio y al menos un consultorio libre; dentro del horario de la clinica y del doctor;
+      el doctor no esta ausente; antelacion minima 60 min; horizonte 60 dias. Reservar es atomico (bloques de
+      30 min con `UNIQUE(doctor, inicio)` y `UNIQUE(consultorio, inicio)`); reprogramar conserva la cita
+      original si falla. Para el personal existe `allowShortNotice` (citas "de mostrador") que omite SOLO la
+      antelacion minima; PENDIENTE confirmar con la clinica si el personal debe estar exento.
+    - **Cola de eventos de Zernio:** el servidor guarda el webhook (idempotente por id de evento); el bot
+      reclama eventos con un plazo (`claim`), y los cierra (`ack`) o los devuelve (`fail`). Un evento
+      reclamado cuyo plazo vence vuelve a estar disponible.
+    - **Si la API no responde** el bot NO ofrece horarios: responde el mensaje de respaldo y pasa el caso a
+      una persona. Un error de red o 5xx equivale a `agenda_no_disponible` en el cliente del bot.
+  license:
+    name: Privado
+servers:
+  - url: http://127.0.0.1:5000
+    description: Desarrollo local
+  - url: https://clinica.example.invalid
+    description: Produccion (dominio por definir en PythonAnywhere)
+tags:
+  - name: bot
+    description: Lo usa el bot de WhatsApp (token de servicio).
+  - name: webhook
+    description: Entrada de eventos de Zernio.
+  - name: auth
+    description: Sesion de personas.
+  - name: agenda
+    description: Citas, doctores, consultorios y ausencias (personal y administrador).
+  - name: admin
+    description: Usuarios, interruptor del bot y casos pendientes.
+  - name: doctor
+    description: Agenda personal del doctor (PWA).
+security:
+  - session: []
+paths:
+  /api/health:
+    get:
+      operationId: health
+      tags: [auth]
+      summary: Comprobacion de vida (sin autenticacion).
+      security: []
+      responses:
+        "200":
+          description: El servidor responde.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  # ------------------------------------------------------------------ bot
+  /api/bot/status:
+    get:
+      operationId: botStatus
+      tags: [bot]
+      summary: Interruptor del bot. El bot lo consulta antes de contestar cada evento.
+      x-roles: [bot, admin, staff]
+      security: [{ botToken: [] }, { session: [] }]
+      responses:
+        "200":
+          description: Estado actual.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotSettings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/bot/availability:
+    get:
+      operationId: botAvailability
+      tags: [bot]
+      summary: "Accion `horarios`: pocos huecos libres repartidos entre los primeros dias."
+      description: |
+        Misma logica que `Agenda.free_slots`: aplica antelacion/horizonte, horario del doctor y ausencias, y
+        reparte hasta 6 horarios en los 3 primeros dias con huecos. NO es la lista completa.
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { name: especialidad, in: query, required: true, schema: { type: string }, description: "Nombre, sinonimo o error menor (\"proctogia\". \"otorrino\")." }
+        - { name: desde, in: query, schema: { type: string, format: date } }
+        - { name: hora_min, in: query, schema: { type: number, minimum: 0, maximum: 24 }, description: "Hora local 24 h (inclusive)." }
+        - { name: hora_max, in: query, schema: { type: number, minimum: 0, maximum: 24 }, description: "Hora local 24 h (exclusive)." }
+        - { name: dias, in: query, schema: { type: integer, minimum: 1, maximum: 60, default: 7 } }
+      responses:
+        "200":
+          description: Horarios libres (puede venir vacio con una `nota`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotAvailability" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/BotRuleError" }
+  /api/bot/nearest:
+    get:
+      operationId: botNearest
+      tags: [bot]
+      summary: "Accion `cercanos`: los 3 huecos libres mas cercanos a la fecha/hora pedida."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { name: especialidad, in: query, required: true, schema: { type: string } }
+        - { name: fecha_hora, in: query, required: true, schema: { $ref: "#/components/schemas/IsoLocalInput" } }
+      responses:
+        "200":
+          description: "`exacto` es true si el horario pedido esta libre."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotNearest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422":
+          description: "`fuera_de_rango` (mas de 60 dias) o `especialidad_no_encontrada`; trae `horarios: []` y `maximo_agendable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+  /api/bot/appointments:
+    get:
+      operationId: botMyAppointments
+      tags: [bot]
+      summary: "Accion `mis_citas`: citas futuras agendadas del paciente (por telefono)."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { name: telefono, in: query, required: true, schema: { $ref: "#/components/schemas/Phone" } }
+      responses:
+        "200":
+          description: Solo las citas de ese telefono (incluye las creadas por el personal con ese telefono).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [citas]
+                properties:
+                  citas:
+                    type: array
+                    items: { $ref: "#/components/schemas/BotAppointment" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      operationId: botBook
+      tags: [bot]
+      summary: "Accion `agendar`: reserva atomica; el servidor elige consultorio."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telefono, nombre, especialidad, inicio]
+              properties:
+                telefono: { $ref: "#/components/schemas/Phone" }
+                nombre: { type: string, description: "Nombre y apellido (>= 2 palabras) o `falta_nombre_completo`." }
+                especialidad: { type: string }
+                inicio: { $ref: "#/components/schemas/IsoLocalInput" }
+      responses:
+        "201":
+          description: Cita creada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotBooked" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409": { $ref: "#/components/responses/BotConflict" }
+        "422": { $ref: "#/components/responses/BotRuleError" }
+  /api/bot/appointments/{citaId}/cancel:
+    post:
+      operationId: botCancel
+      tags: [bot]
+      summary: "Accion `cancelar`: solo si la cita es de ese telefono."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CitaId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telefono]
+              properties:
+                telefono: { $ref: "#/components/schemas/Phone" }
+      responses:
+        "200":
+          description: Cita cancelada; libera el hueco.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, cancelada]
+                properties:
+                  ok: { type: boolean, const: true }
+                  cancelada: { $ref: "#/components/schemas/BotAppointment" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/BotNotFound" }
+  /api/bot/appointments/{citaId}/reschedule:
+    post:
+      operationId: botReschedule
+      tags: [bot]
+      summary: "Accion `reprogramar`: atomico; si el nuevo horario falla, la original se conserva."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/CitaId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telefono, inicio]
+              properties:
+                telefono: { $ref: "#/components/schemas/Phone" }
+                inicio: { $ref: "#/components/schemas/IsoLocalInput" }
+      responses:
+        "200":
+          description: Cita movida.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/BotBooked"
+                  - type: object
+                    required: [reprogramada_desde]
+                    properties:
+                      reprogramada_desde: { $ref: "#/components/schemas/IsoLocal" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/BotNotFound" }
+        "409": { $ref: "#/components/responses/BotConflict" }
+        "422": { $ref: "#/components/responses/BotRuleError" }
+  /api/bot/events/claim:
+    post:
+      operationId: botClaimEvents
+      tags: [bot]
+      summary: Reclama eventos pendientes de la cola (conexion saliente del bot).
+      description: Devuelve en orden de llegada eventos `pending` o con el plazo vencido, y los marca reclamados.
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 20, default: 5 }
+                leaseSeconds: { type: integer, minimum: 10, maximum: 600, default: 120 }
+      responses:
+        "200":
+          description: Puede venir vacio.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/BotEvent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/bot/events/{eventId}/ack:
+    post:
+      operationId: botAckEvent
+      tags: [bot]
+      summary: Cierra un evento ya atendido.
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/EventId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome:
+                  type: string
+                  enum: [replied, skipped_bot_inactive, skipped_ignored]
+      responses:
+        "204": { description: "Cerrado." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/bot/events/{eventId}/fail:
+    post:
+      operationId: botFailEvent
+      tags: [bot]
+      summary: Devuelve un evento que no se pudo atender.
+      description: "Con `retry: true` vuelve a la cola (maximo 5 intentos); despues pasa a `failed` y aparece en `/api/attention`."
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/EventId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 500 }
+                retry: { type: boolean, default: true }
+      responses:
+        "204": { description: "Registrado." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/bot/handoffs:
+    post:
+      operationId: botHandoff
+      tags: [bot]
+      summary: El bot pasa una conversacion a una persona (aparece en `/api/attention`).
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, reason]
+              properties:
+                conversationId: { type: string }
+                telefono: { $ref: "#/components/schemas/Phone" }
+                reason:
+                  type: string
+                  enum: [modelo_fallo, accion_invalida, pidio_persona, fuera_de_alcance, otro]
+                detail: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Caso registrado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  # -------------------------------------------------------------- webhook
+  /webhooks/zernio:
+    post:
+      operationId: zernioWebhook
+      tags: [webhook]
+      summary: Recibe webhooks de Zernio, verifica la firma HMAC y encola.
+      description: |
+        Sin sesion ni token: la autenticidad la da la firma HMAC-SHA256 del cuerpo con el secreto del
+        webhook. **El nombre exacto de la cabecera de firma esta POR CONFIRMAR en F3** con la documentacion de
+        Zernio (el bot actual acepta cualquier cabecera que contenga "signature"). Responde 200 rapido.
+        Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; el resto se
+        responde 200 y se descarta. Idempotente por `id` del evento (un duplicado responde 200).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ZernioEvent" }
+      responses:
+        "200":
+          description: Aceptado (encolado, duplicado o descartado).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+                  queued: { type: boolean }
+                  duplicate: { type: boolean }
+        "401":
+          description: Firma ausente o invalida (`firma_invalida`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  # ----------------------------------------------------------------- auth
+  /api/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Inicia sesion (personal, doctor, administrador).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Sesion creada (cookie `clinica_session`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "401":
+          description: "`credenciales_invalidas`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "429":
+          description: "`demasiados_intentos`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+  /api/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Cierra la sesion.
+      x-roles: [admin, staff, doctor]
+      security: [{ session: [], csrf: [] }]
+      responses:
+        "204": { description: "Sesion cerrada." }
+  /api/me:
+    get:
+      operationId: me
+      tags: [auth]
+      summary: Usuario de la sesion actual y un token CSRF nuevo.
+      x-roles: [admin, staff, doctor]
+      responses:
+        "200":
+          description: Sesion vigente.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  # --------------------------------------------------------------- agenda
+  /api/appointments:
+    get:
+      operationId: listAppointments
+      tags: [agenda]
+      summary: Citas y bloqueos en un rango (alimenta el calendario).
+      description: |
+        Rango maximo 92 dias (`MAX_RANGE_DAYS` de `shared/calendar`), si no `rango_invalido`. Devuelve un
+        `ETag`; con `If-None-Match` responde 304 para que el refresco periodico (cada pocos segundos, sin
+        WebSockets) cueste poco.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: doctorId, in: query, schema: { type: string } }
+        - { name: roomId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/BookingStatus" } }
+        - { name: If-None-Match, in: header, schema: { type: string } }
+      responses:
+        "200":
+          description: Lista ordenada por inicio.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BookingList" }
+        "304": { description: "Sin cambios." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+    post:
+      operationId: createAppointment
+      tags: [agenda]
+      summary: Alta manual de una cita o de un bloqueo de consultorio.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BookingCreate" }
+      responses:
+        "201":
+          description: Creada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/appointments/{appointmentId}:
+    parameters:
+      - { $ref: "#/components/parameters/AppointmentId" }
+    get:
+      operationId: getAppointment
+      tags: [agenda]
+      summary: Detalle de una cita.
+      x-roles: [admin, staff]
+      responses:
+        "200":
+          description: La cita.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      operationId: updateAppointment
+      tags: [agenda]
+      summary: Cambia estado, mueve (atomico) o edita notas.
+      description: |
+        Transiciones de `status`: `agendada` -> `realizada` | `no_show` | `cancelada`; correccion
+        `realizada` <-> `no_show`; `cancelada` es terminal (otra transicion = `transicion_invalida`). Mover
+        (`scheduledAtUtc`/`roomId`) solo en `agendada`, con las mismas reglas que reservar; si falla, la cita
+        original queda intacta. Cancelar libera los bloques del hueco. No hay DELETE: se conserva el historial.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BookingPatch" }
+      responses:
+        "200":
+          description: Cita actualizada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/rooms:
+    get:
+      operationId: listRooms
+      tags: [agenda]
+      summary: Consultorios (hoy 2).
+      x-roles: [admin, staff, doctor]
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Room" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/clinic-hours:
+    get:
+      operationId: getClinicHours
+      tags: [agenda]
+      summary: Horario general de la clinica (L-V 9-18, sab 9-13).
+      x-roles: [admin, staff, doctor]
+      responses:
+        "200":
+          description: Horario semanal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WeeklyHours" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      operationId: setClinicHours
+      tags: [admin]
+      summary: Cambia el horario general.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WeeklyHours" }
+      responses:
+        "200":
+          description: Horario guardado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WeeklyHours" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctors:
+    get:
+      operationId: listDoctors
+      tags: [agenda]
+      summary: Doctores con su horario efectivo (para los carriles del calendario).
+      description: Un doctor ve solo su propio registro.
+      x-roles: [admin, staff, doctor]
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Doctor" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      operationId: createDoctor
+      tags: [admin]
+      summary: Da de alta un doctor.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DoctorInput" }
+      responses:
+        "201":
+          description: Creado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Doctor" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctors/{doctorId}:
+    parameters:
+      - { $ref: "#/components/parameters/DoctorId" }
+    patch:
+      operationId: updateDoctor
+      tags: [admin]
+      summary: Edita nombre, especialidad, alias o desactiva al doctor (no se borra).
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DoctorInput" }
+      responses:
+        "200":
+          description: Actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Doctor" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctors/{doctorId}/weekly-hours:
+    parameters:
+      - { $ref: "#/components/parameters/DoctorId" }
+    put:
+      operationId: setDoctorWeeklyHours
+      tags: [agenda]
+      summary: Fija el horario semanal propio del doctor, o `null` para volver al de la clinica.
+      description: |
+        El horario del doctor debe quedar dentro del de la clinica. Citas ya agendadas fuera del nuevo
+        horario no se tocan; la respuesta las lista en `affectedAppointments` para que el personal avise.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weeklyHours]
+              properties:
+                weeklyHours:
+                  oneOf:
+                    - $ref: "#/components/schemas/WeeklyHours"
+                    - type: "null"
+      responses:
+        "200":
+          description: Guardado.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [doctor, affectedAppointments]
+                properties:
+                  doctor: { $ref: "#/components/schemas/Doctor" }
+                  affectedAppointments:
+                    type: array
+                    items: { $ref: "#/components/schemas/Booking" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctors/{doctorId}/absences:
+    parameters:
+      - { $ref: "#/components/parameters/DoctorId" }
+    get:
+      operationId: listDoctorAbsences
+      tags: [agenda]
+      summary: Ausencias del doctor.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Absence" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      operationId: createDoctorAbsence
+      tags: [agenda]
+      summary: Registra una ausencia (el doctor deja de ofrecerse de inmediato).
+      description: No cancela citas existentes; las devuelve en `affectedAppointments` para que el personal contacte (el bot no puede escribir primero).
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AbsenceInput" }
+      responses:
+        "201":
+          description: Creada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AbsenceResult" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctors/{doctorId}/absences/{absenceId}:
+    delete:
+      operationId: deleteDoctorAbsence
+      tags: [agenda]
+      summary: Quita una ausencia (el doctor vuelve a ofrecerse).
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/DoctorId" }
+        - { $ref: "#/components/parameters/AbsenceId" }
+      responses:
+        "204": { description: "Eliminada." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/schedule-change-requests:
+    get:
+      operationId: listScheduleChangeRequests
+      tags: [agenda]
+      summary: Solicitudes de cambio de horario permanente enviadas por doctores.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/RequestStatus" } }
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/schedule-change-requests/{requestId}/approve:
+    post:
+      operationId: approveScheduleChange
+      tags: [agenda]
+      summary: Aprueba la solicitud y aplica el horario (misma salida que `setDoctorWeeklyHours`).
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/RequestId" }
+      responses:
+        "200":
+          description: Aplicada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/schedule-change-requests/{requestId}/reject:
+    post:
+      operationId: rejectScheduleChange
+      tags: [agenda]
+      summary: Rechaza la solicitud.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/RequestId" }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Rechazada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------- admin
+  /api/settings/bot:
+    get:
+      operationId: getBotSettings
+      tags: [admin]
+      summary: Estado del interruptor del bot.
+      x-roles: [admin, staff]
+      responses:
+        "200":
+          description: Estado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotSettings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    put:
+      operationId: setBotSettings
+      tags: [admin]
+      summary: Enciende o apaga el bot (el boton del personal).
+      description: Apagado, el bot deja de contestar (los eventos se cierran como `skipped_bot_inactive`); las personas atienden desde Zernio.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [active]
+              properties:
+                active: { type: boolean }
+      responses:
+        "200":
+          description: Estado guardado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotSettings" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/attention:
+    get:
+      operationId: listAttention
+      tags: [admin]
+      summary: Casos que necesitan a una persona (eventos fallidos y traspasos del bot).
+      x-roles: [admin, staff]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, resolved], default: open } }
+      responses:
+        "200":
+          description: Lista, mas reciente primero.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AttentionItem" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/attention/{attentionId}/resolve:
+    post:
+      operationId: resolveAttention
+      tags: [admin]
+      summary: Marca el caso como atendido.
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { name: attentionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Cerrado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttentionItem" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/users:
+    get:
+      operationId: listUsers
+      tags: [admin]
+      summary: Usuarios del sistema.
+      x-roles: [admin]
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createUser
+      tags: [admin]
+      summary: Crea un usuario (un `doctor` debe ligarse a un `doctorId`).
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserCreate" }
+      responses:
+        "201":
+          description: Creado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/users/{userId}:
+    patch:
+      operationId: updateUser
+      tags: [admin]
+      summary: Cambia nombre, rol, activo o restablece la contrasena.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserPatch" }
+      responses:
+        "200":
+          description: Actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+
+  # --------------------------------------------------------------- doctor
+  /api/doctor/appointments:
+    get:
+      operationId: doctorAppointments
+      tags: [doctor]
+      summary: Mis citas (siempre acotado al `doctorId` de la sesion).
+      description: Sin telefono del paciente. Mismo ETag / `If-None-Match` que `/api/appointments`.
+      x-roles: [doctor]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: If-None-Match, in: header, schema: { type: string } }
+      responses:
+        "200":
+          description: Lista ordenada por inicio.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BookingList" }
+        "304": { description: "Sin cambios." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctor/hours:
+    get:
+      operationId: doctorHours
+      tags: [doctor]
+      summary: Mi horario semanal efectivo.
+      x-roles: [doctor]
+      responses:
+        "200":
+          description: Horario.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Doctor" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/doctor/absences:
+    get:
+      operationId: doctorListAbsences
+      tags: [doctor]
+      summary: Mis ausencias.
+      x-roles: [doctor]
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Absence" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: doctorCreateAbsence
+      tags: [doctor]
+      summary: Marco una ausencia; surte efecto de inmediato y avisa al personal.
+      description: Las citas ya agendadas en ese rango NO se cancelan; se avisa al personal para que contacte a los pacientes.
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AbsenceInput" }
+      responses:
+        "201":
+          description: Creada.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [absence, affectedCount]
+                properties:
+                  absence: { $ref: "#/components/schemas/Absence" }
+                  affectedCount:
+                    type: integer
+                    description: Numero de citas agendadas dentro de la ausencia (sin datos de pacientes).
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctor/absences/{absenceId}:
+    delete:
+      operationId: doctorDeleteAbsence
+      tags: [doctor]
+      summary: Quito una ausencia propia.
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/AbsenceId" }
+      responses:
+        "204": { description: "Eliminada." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/doctor/schedule-change-requests:
+    get:
+      operationId: doctorListScheduleChanges
+      tags: [doctor]
+      summary: Mis solicitudes de cambio de horario.
+      x-roles: [doctor]
+      responses:
+        "200":
+          description: Lista.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: doctorCreateScheduleChange
+      tags: [doctor]
+      summary: Pido un cambio permanente de horario (lo aprueba el personal).
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weeklyHours, effectiveFrom]
+              properties:
+                weeklyHours: { $ref: "#/components/schemas/WeeklyHours" }
+                effectiveFrom: { type: string, format: date }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Solicitud creada en estado `pending`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctor/push-subscriptions:
+    post:
+      operationId: doctorSubscribePush
+      tags: [doctor]
+      summary: Registra la suscripcion Web Push de este dispositivo (F7).
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, keys]
+              properties:
+                endpoint: { type: string, format: uri }
+                keys:
+                  type: object
+                  required: [p256dh, auth]
+                  properties:
+                    p256dh: { type: string }
+                    auth: { type: string }
+      responses:
+        "204": { description: "Registrada." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: doctorUnsubscribePush
+      tags: [doctor]
+      summary: Quita la suscripcion Web Push de este dispositivo.
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint: { type: string, format: uri }
+      responses:
+        "204": { description: "Eliminada." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: clinica_session
+      description: Cookie de sesion HttpOnly (personal, doctor, administrador).
+    csrf:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Obligatorio junto con `session` en POST/PUT/PATCH/DELETE.
+    botToken:
+      type: http
+      scheme: bearer
+      description: Token de servicio del bot (solo `/api/bot/*`). Se guarda fuera del repo.
+  parameters:
+    CitaId:
+      name: citaId
+      in: path
+      required: true
+      schema: { type: string }
+      description: Id de la cita (antes `event_id` de Google Calendar).
+    AppointmentId:
+      name: appointmentId
+      in: path
+      required: true
+      schema: { type: string }
+    DoctorId:
+      name: doctorId
+      in: path
+      required: true
+      schema: { type: string }
+    AbsenceId:
+      name: absenceId
+      in: path
+      required: true
+      schema: { type: string }
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema: { type: string }
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string }
+      description: Id interno del evento en la cola (no el id de Zernio).
+  responses:
+    Unauthenticated:
+      description: Sin sesion o token valido (`no_autenticado`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    Forbidden:
+      description: El rol no permite la operacion (`sin_permiso`).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    NotFound:
+      description: No existe o no pertenece al usuario (`no_encontrado`). Un doctor nunca distingue "ajeno" de "inexistente".
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    Conflict:
+      description: El hueco ya no esta libre (`horario_ocupado`) u otro conflicto.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    RuleError:
+      description: Entrada invalida o regla incumplida (`validacion`, `rango_invalido`, `fuera_de_horario`, ...).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    BotConflict:
+      description: "`horario_ocupado`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    BotRuleError:
+      description: "Regla incumplida: `especialidad_no_encontrada` (con `especialidades`), `falta_nombre_completo`, `horario_pasado_o_muy_cercano`, `fuera_de_rango`, `fuera_de_horario`, `doctor_no_disponible`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    BotNotFound:
+      description: "`cita_no_encontrada` (no existe o es de otro telefono)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Codigos de agenda heredados de `scheduler.py` (conservados): `horario_ocupado`,
+        `horario_pasado_o_muy_cercano`, `fuera_de_rango`, `fuera_de_horario`, `falta_nombre_completo`,
+        `especialidad_no_encontrada`, `cita_no_encontrada`. Nuevos: `doctor_no_disponible` (ausencia o fuera de
+        su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
+        `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`.
+        Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
+      enum:
+        - horario_ocupado
+        - horario_pasado_o_muy_cercano
+        - fuera_de_rango
+        - fuera_de_horario
+        - falta_nombre_completo
+        - especialidad_no_encontrada
+        - cita_no_encontrada
+        - doctor_no_disponible
+        - transicion_invalida
+        - rango_invalido
+        - validacion
+        - no_autenticado
+        - sin_permiso
+        - no_encontrado
+        - credenciales_invalidas
+        - demasiados_intentos
+        - firma_invalida
+    ErrorBody:
+      type: object
+      required: [error]
+      additionalProperties: true
+      description: Puede traer campos extra segun el error (`especialidades`, `horarios`, `maximo_agendable`, `nota`).
+      properties:
+        error: { $ref: "#/components/schemas/ErrorCode" }
+        detail: { type: string }
+        especialidades:
+          type: array
+          items: { type: string }
+    Phone:
+      type: string
+      pattern: '^[0-9]{8,15}$'
+      description: Digitos completos del WhatsApp del remitente (`message.sender.id`), con lada de pais. NUNCA lo que el paciente escriba en el chat.
+      examples: ["529988908000"]
+    IsoLocal:
+      type: string
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2}$'
+      description: Hora local de Cancun con desfase, sin segundos.
+      examples: ["2026-11-12T13:30-05:00"]
+    IsoLocalInput:
+      type: string
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)?$'
+      description: Igual que `IsoLocal`, pero acepta sin desfase (se toma como hora de Cancun).
+      examples: ["2026-11-12T13:30"]
+
+    # ---- bot (claves en espanol, como scheduler.py)
+    BotAvailability:
+      type: object
+      required: [doctor, especialidad, horarios]
+      properties:
+        doctor: { type: string }
+        especialidad: { type: string }
+        horarios:
+          type: array
+          items: { $ref: "#/components/schemas/IsoLocal" }
+        nota: { type: string }
+    BotNearest:
+      type: object
+      required: [doctor, especialidad, maximo_agendable, exacto, horarios]
+      properties:
+        doctor: { type: string }
+        especialidad: { type: string }
+        maximo_agendable: { type: string, format: date }
+        exacto: { type: boolean }
+        horarios:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/IsoLocal" }
+        nota: { type: string }
+    BotAppointment:
+      type: object
+      required: [cita_id, doctor, especialidad, consultorio, inicio, paciente]
+      properties:
+        cita_id: { type: string }
+        doctor: { type: string }
+        especialidad: { type: string }
+        consultorio: { type: string }
+        inicio: { $ref: "#/components/schemas/IsoLocal" }
+        paciente: { type: string }
+    BotBooked:
+      allOf:
+        - $ref: "#/components/schemas/BotAppointment"
+        - type: object
+          required: [ok]
+          properties:
+            ok: { type: boolean, const: true }
+    BotSettings:
+      type: object
+      required: [active]
+      properties:
+        active: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: [string, "null"], description: "Nombre del usuario que lo cambio." }
+    BotEvent:
+      type: object
+      required: [id, zernioEventId, payload, attempts]
+      properties:
+        id: { type: string }
+        zernioEventId: { type: string }
+        payload:
+          $ref: "#/components/schemas/ZernioEvent"
+        attempts: { type: integer, minimum: 1 }
+        receivedAtUtc: { type: string, format: date-time }
+    ZernioEvent:
+      type: object
+      additionalProperties: true
+      required: [id, event]
+      description: |
+        Evento tal como lo manda Zernio (`message.received`). El bot usa `message.text`, `message.sender.id`
+        (telefono), `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
+      properties:
+        id: { type: string }
+        event: { type: string }
+        test: { type: boolean }
+        message: { type: object, additionalProperties: true }
+        account: { type: object, additionalProperties: true }
+        conversation: { type: object, additionalProperties: true }
+
+    # ---- agenda / UI (forma de shared/calendar/src/types.ts)
+    BookingStatus:
+      type: string
+      enum: [agendada, realizada, no_show, cancelada]
+    Booking:
+      type: object
+      description: Igual a `Booking` de `shared/calendar/src/types.ts`.
+      required: [id, kind, status, source, scheduledAtUtc, durationMinutes, patient, doctor, room, notes]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [session, block] }
+        status: { $ref: "#/components/schemas/BookingStatus" }
+        source:
+          type: string
+          enum: [manual, ai]
+          description: "`ai` = la agendo el bot de WhatsApp; `manual` = el personal."
+        scheduledAtUtc: { type: string, format: date-time }
+        durationMinutes: { type: integer, minimum: 30, multipleOf: 30 }
+        patient:
+          type: [object, "null"]
+          required: [id, name]
+          properties:
+            id: { type: string, description: "Telefono (digitos) si existe; si no, el id de la cita." }
+            name: { type: string }
+            phone: { type: string, description: "Se omite para el rol `doctor`." }
+        doctor:
+          type: [object, "null"]
+          required: [id, name, specialty]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            specialty: { type: string }
+        room:
+          type: [object, "null"]
+          required: [id, name]
+          properties:
+            id: { type: string }
+            name: { type: string }
+        notes: { type: [string, "null"], maxLength: 500, description: "Texto administrativo; no registrar sintomas." }
+    BookingList:
+      type: object
+      required: [items, serverTimeUtc]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Booking" }
+        serverTimeUtc: { type: string, format: date-time }
+    BookingCreate:
+      type: object
+      required: [scheduledAtUtc]
+      description: |
+        `kind: session` (por defecto) exige `patientName` (nombre y apellido) y `doctorId`; `roomId` es opcional
+        (si falta, el servidor elige el primer consultorio libre). `kind: block` exige `roomId`, sin `doctorId`,
+        y `durationMinutes` multiplo de 30 (consultorio en mantenimiento, junta, etc.).
+      properties:
+        kind: { type: string, enum: [session, block], default: session }
+        patientName: { type: string }
+        phone: { $ref: "#/components/schemas/Phone" }
+        doctorId: { type: string }
+        roomId: { type: string }
+        scheduledAtUtc: { type: string, format: date-time }
+        durationMinutes: { type: integer, minimum: 30, multipleOf: 30, default: 30 }
+        notes: { type: string, maxLength: 500 }
+        allowShortNotice:
+          type: boolean
+          default: false
+          description: Solo personal/admin. Omite SOLO la antelacion minima de 60 min (citas de mostrador).
+    BookingPatch:
+      type: object
+      minProperties: 1
+      properties:
+        status: { $ref: "#/components/schemas/BookingStatus" }
+        scheduledAtUtc: { type: string, format: date-time }
+        roomId: { type: string }
+        notes: { type: [string, "null"], maxLength: 500 }
+        allowShortNotice: { type: boolean, default: false }
+    Room:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string, examples: ["Consultorio 1"] }
+    Interval:
+      type: object
+      required: [start, end]
+      properties:
+        start: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+        end: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+    WeeklyHours:
+      type: object
+      description: Horario semanal por dia, hora de pared de Cancun (igual a `WeeklyHours` de `shared/calendar`). Un dia ausente = no se atiende.
+      additionalProperties: false
+      properties:
+        mon: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        tue: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        wed: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        thu: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        fri: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        sat: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        sun: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+    Doctor:
+      type: object
+      required: [id, name, specialty, aliases, active, weeklyHours, usesClinicHours]
+      properties:
+        id: { type: string }
+        name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
+        specialty: { type: string, examples: ["Proctologia"] }
+        aliases:
+          type: array
+          items: { type: string }
+          description: Sinonimos para que el bot reconozca la especialidad ("proctologo", "usg").
+        active: { type: boolean }
+        weeklyHours: { $ref: "#/components/schemas/WeeklyHours" }
+        usesClinicHours: { type: boolean, description: "true si `weeklyHours` es el horario general de la clinica." }
+    DoctorInput:
+      type: object
+      properties:
+        name: { type: string }
+        specialty: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+        active: { type: boolean }
+    Absence:
+      type: object
+      required: [id, doctorId, startUtc, endUtc, reason]
+      properties:
+        id: { type: string }
+        doctorId: { type: string }
+        startUtc: { type: string, format: date-time }
+        endUtc: { type: string, format: date-time }
+        reason: { type: [string, "null"], maxLength: 200 }
+    AbsenceInput:
+      type: object
+      required: [startUtc, endUtc]
+      properties:
+        startUtc: { type: string, format: date-time }
+        endUtc: { type: string, format: date-time }
+        reason: { type: string, maxLength: 200 }
+    AbsenceResult:
+      type: object
+      required: [absence, affectedAppointments]
+      properties:
+        absence: { $ref: "#/components/schemas/Absence" }
+        affectedAppointments:
+          type: array
+          items: { $ref: "#/components/schemas/Booking" }
+    RequestStatus:
+      type: string
+      enum: [pending, approved, rejected]
+    ScheduleChangeRequest:
+      type: object
+      required: [id, doctorId, weeklyHours, effectiveFrom, status, createdAtUtc]
+      properties:
+        id: { type: string }
+        doctorId: { type: string }
+        weeklyHours: { $ref: "#/components/schemas/WeeklyHours" }
+        effectiveFrom: { type: string, format: date }
+        note: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/RequestStatus" }
+        createdAtUtc: { type: string, format: date-time }
+        decidedBy: { type: [string, "null"] }
+        decidedAtUtc: { type: [string, "null"], format: date-time }
+    Role:
+      type: string
+      enum: [admin, staff, doctor]
+    User:
+      type: object
+      required: [id, email, name, role, doctorId, active]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        doctorId: { type: [string, "null"], description: "Solo para `role: doctor`." }
+        active: { type: boolean }
+    UserCreate:
+      type: object
+      required: [email, name, role, password]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        doctorId: { type: string }
+        password: { type: string, format: password, minLength: 10 }
+    UserPatch:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        doctorId: { type: [string, "null"] }
+        active: { type: boolean }
+        password: { type: string, format: password, minLength: 10 }
+    SessionInfo:
+      type: object
+      required: [user, csrfToken]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        csrfToken: { type: string }
+    AttentionItem:
+      type: object
+      required: [id, kind, status, createdAtUtc, reason]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [event_failed, handoff, absence_affects_appointments] }
+        status: { type: string, enum: [open, resolved] }
+        createdAtUtc: { type: string, format: date-time }
+        conversationId: { type: [string, "null"] }
+        phone: { type: [string, "null"] }
+        reason: { type: string }
+        detail: { type: [string, "null"] }

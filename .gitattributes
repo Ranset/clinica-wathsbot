@@ -1,0 +1,2 @@
+# Los scripts corren en el contenedor Linux del agente: siempre LF, tambien al hacer checkout en Windows.
+*.sh text eol=lf

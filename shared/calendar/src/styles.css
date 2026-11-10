@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tema claro de la clinica. Los componentes solo usan estos nombres. */
+:root {
+  --bg: #ffffff;
+  --bg-subtle: #f6f8fa;
+  --bg-panel: #f1f4f7;
+  --bg-hover: #eaeff4;
+  --row-hover: #f3f6f9;
+  --border: #e3e8ee;
+  --border-strong: #cbd3dd;
+  --text: #16202a;
+  --text-2: #3d4b5a;
+  --text-3: #5f7285;
+  --text-4: #9aa8b6;
+  --accent: #0f766e;
+  --accent-hover: #0b5f58;
+  --accent-soft: #99d6cf;
+  --accent-tint: #e6f4f2;
+  --accent-text: #0b5f58;
+  --accent-fg: #ffffff;
+  --ring: #0f766e;
+  --success: #16a34a;
+  --success-tint: #e8f6ee;
+  --success-soft: #a8dcbd;
+  --success-text: #14633a;
+  --warning: #d97706;
+  --warning-tint: #fdf3e1;
+  --warning-soft: #f0cf94;
+  --warning-text: #8a4b06;
+  --danger: #dc2626;
+  --danger-tint: #fdecec;
+  --danger-soft: #f3b4b4;
+  --danger-text: #991b1b;
+  --cal-off: #eef2f6;
+}
+
+@layer base {
+  html { font-family: theme("fontFamily.sans"); color: var(--text); background: var(--bg); }
+  * { border-color: var(--border); }
+}
+
+@layer components {
+  .kicker { @apply font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-text-3; }
+  .cal-hours {
+    background-image: linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+    background-size: 100% var(--cal-hour, 48px);
+  }
+  .cal-off { background-color: var(--cal-off); }
+  .booking-hatch {
+    background-color: var(--bg-panel);
+    background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-3) 22%, transparent) 0 1px, transparent 1px 7px);
+  }
+}

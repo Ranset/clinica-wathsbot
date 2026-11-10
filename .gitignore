@@ -1,0 +1,11 @@
+node_modules
+dist-demo
+.venv
+.pytest_cache
+__pycache__
+*.log
+*.pid
+.env
+google_token.json
+google_client_secret*.json
+google_oauth_pending.json
