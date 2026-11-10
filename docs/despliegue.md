@@ -8,7 +8,7 @@ panel al contratar. Los nombres de variables nuevas (SECRET_KEY, tokens...) son 
 
 | Tema | Dato | Fuente |
 |---|---|---|
-| Plan necesario | **Developer, 10 USD/mes**: 1 web app con dominio propio, 5 GB, **MySQL**, **1 tarea siempre activa**, 20 tareas programadas (cada hora o dia), **3 web workers**, 5 000 s de CPU/dia, **salida a internet sin restriccion**. El plan gratis (Beginner) no tiene MySQL ni dominio propio y solo sale a sitios de una lista. Las paginas de precios hoy muestran Beginner / Developer / Custom. | [pricing](https://www.pythonanywhere.com/pricing/) |
+| Plan necesario | **Developer, 10 USD/mes**: 1 web app con dominio propio, 5 GB, **MySQL**, **1 tarea siempre activa**, 20 tareas programadas (cada hora o dia), **3 web workers**, 5 000 s de CPU/dia, **salida a internet sin restriccion**. El plan gratis (Beginner) NUEVO no tiene MySQL ni tareas programadas, no admite dominio propio y solo sale a sitios de una lista; las cuentas gratuitas anteriores a enero de 2026 conservan MySQL (ver 1b). Las paginas de precios hoy muestran Beginner / Developer / Custom. | [pricing](https://www.pythonanywhere.com/pricing/) |
 | Dominio propio | Hay que crear la web app con un nombre `www.midominio.com` (o subdominio) y poner en el DNS un **CNAME** hacia `webapp-XXXX.pythonanywhere.com` (el valor exacto sale en la pestana *Web*). **Un CNAME no vale para el dominio "desnudo"** (sin `www`). | [CustomDomains](https://help.pythonanywhere.com/pages/CustomDomains/) |
 | HTTPS | El plan lo ofrece, pero la pagina de ayuda que explica certificado y *Force HTTPS* devolvio 404 al consultarla: **(sin verificar)** el procedimiento exacto; se hace en la pestana *Web* despues de que el sitio responda por HTTP. | pricing (dice "free SSL support") |
 | MySQL | Base con nombre `<usuario>$<nombre>`; usuario = tu usuario; el host sale en la pestana *Databases*. **Las conexiones inactivas se cierran a los 300 s** -> SQLAlchemy con `pool_recycle=280` (ya esta en `server/app/db.py`, junto con `pool_pre_ping`). No usar `init_command` que cambie variables de sistema (error 1227). Respaldo con `mysqldump`. | [UsingMySQL](https://help.pythonanywhere.com/pages/UsingMySQL/), [ManagingDatabaseConnections](https://help.pythonanywhere.com/pages/ManagingDatabaseConnections/) |
@@ -16,11 +16,31 @@ panel al contratar. Los nombres de variables nuevas (SECRET_KEY, tokens...) son 
 | Peticiones web | **Limite de 5 minutos** por peticion. **No se soportan hilos ni subprocesos** que sobrevivan a la peticion. **Sin WebSockets** (solo WSGI). Trabajo largo = cola + tarea siempre activa. | [AsyncInWebApps](https://help.pythonanywhere.com/pages/AsyncInWebApps/) y foros |
 | Tareas siempre activas | Solo cuentas de pago; si se caen, se reinician solas. | [AlwaysOnTasks](https://help.pythonanywhere.com/pages/AlwaysOnTasks/) |
 | Secretos / variables de entorno | La pagina consultada devolvio 404: **(sin verificar)**. Propuesta: archivo `.env` FUERA de la carpeta de la web app, permisos `600`, leido desde el WSGI. | — |
-| Version de Python | Hace falta 3.12 (`zoneinfo`): **(sin verificar)** que este disponible al crear la web app. | — |
+| Version de Python | La consola de tu cuenta trae **3.10.5** (captura). El codigo del proyecto exige **>= 3.9** (calculado con `vermin` sobre `bot/` y `server/`), asi que corre en 3.10; las dependencias se fijaron para 3.10 (**SQLAlchemy 2.0.57**: la 2.1 exige 3.11). La version de la web app se elige en la pestana *Web*: **(sin verificar)** cuales ofrece. | captura + `vermin` |
 
 Consecuencias de diseno (ya cubiertas): la exclusion mutua de las reservas la da la BD (`UNIQUE`), no un candado en
 proceso, porque habra 3 workers; el servidor no usa hilos; el calendario del personal refresca por consulta con `ETag`
 (sin WebSockets); el poller del bot corre FUERA de PythonAnywhere (en el contenedor del agente), solo hace llamadas salientes.
+
+## 1b. Tu cuenta de PythonAnywhere (capturas del 2026-11-10)
+- **Cuenta GRATUITA anterior a enero de 2026** (la pagina de MySQL dice "since you have a free account"). Conserva **MySQL 8.0.46** (consola MySQL) y, segun la documentacion, 1 tarea programada diaria (**comprobar en la pestana *Tasks***). Esos beneficios son de "cuentas anteriores": una cuenta nueva no los tiene.
+- **MySQL:** host `Ranset83.mysql.pythonanywhere-services.com`, usuario `Ranset83`. **Solo se puede conectar desde codigo que corre dentro de PythonAnywhere**: las migraciones (`flask --app wsgi upgrade-db`), el `seed` y los respaldos se ejecutan en una consola de PythonAnywhere, no desde la PC. Ya existe una base `Ranset83$crud` (de otra prueba): **no reutilizarla**; crear `Ranset83$clinica` (y `Ranset83$clinica_test` para las pruebas).
+- **Dominio:** el gratuito `ranset83.pythonanywhere.com` (HTTPS incluido, sin CNAME). El webhook de Zernio quedaria en `https://ranset83.pythonanywhere.com/webhooks/zernio`.
+- **Python:** consola con 3.10.5 -> ver fila "Version de Python" arriba.
+
+Limites de la cuenta gratuita que pesan en este proyecto ([FreeAccountsFeatures](https://help.pythonanywhere.com/pages/FreeAccountsFeatures/), [WhatAreCPUSeconds](https://help.pythonanywhere.com/pages/WhatAreCPUSeconds/), [blog 2025-12-15](https://blog.pythonanywhere.com/221/); la pagina de funciones tiene ~300 dias):
+| Limite | Efecto |
+|---|---|
+| **1 web app, 1 web worker**, expira al **mes** ("unused web apps will expire after 1 month") | Si la web app expira, el webhook deja de recibir y Zernio reintenta y luego manda a eventos muertos. **Comprobar en la pestana *Web* la fecha de caducidad y como se extiende** (el articulo no lo detalla). Con 1 worker se atiende una peticion a la vez. |
+| **100 s de CPU/dia**, solo consolas y tareas; **las peticiones de la web app NO cuentan "actualmente"** | El poller (2 s) y los calendarios abiertos no gastan esa cuota, pero la palabra "actualmente" avisa que puede cambiar. Las migraciones, el seed y las pruebas por consola SI la gastan: no instalar dependencias ni correr toda la suite varias veces al dia. |
+| **512 MiB** de disco, compartido con MySQL | Sobra para datos de citas; vigilar `node_modules` (no subirlo: solo los builds de `admin-web`/`doctor-pwa`). |
+| 2 consolas, **sin tareas siempre activas** | Nada de procesos propios dentro de PythonAnywhere; el poller del bot sigue en el contenedor del agente. |
+| Salida a internet **solo a sitios de una lista (proxy)** | El servidor no llama a Zernio (lo hace el bot), pero el **envio de push al doctor (F7) probablemente no funcione** en la cuenta gratuita. |
+| Soporte solo por foros | Sin ayuda directa si falla el servicio en horario de consulta. |
+
+**Recomendacion:** la cuenta gratuita sirve para desarrollar y ensayar con datos de prueba. Para **pacientes reales** conviene pasar a Developer (10 USD/mes): sin caducidad mensual de la web app, 3 workers, tareas siempre activas, salida sin restriccion y un servicio con respaldo oficial; ademas son datos personales (nombre y telefono) de la clinica. Decision del usuario y de la clinica.
+
+**Prueba util en tu cuenta (cierra dos dudas con evidencia):** subir el repo, crear `~/venv` con `python3.10`, `pip install -r server/requirements-dev.txt` y correr `pytest` con `TEST_MYSQL_URL=mysql+pymysql://Ranset83:<clave>@Ranset83.mysql.pythonanywhere-services.com/Ranset83$clinica_test?charset=utf8mb4`. Eso corre en Python 3.10 REAL y ejecuta contra MySQL 8.0.46 las ~54 pruebas que hoy se saltan (concurrencia y `UNIQUE`), que es lo mas importante del motor. La clave de MySQL la escribes tu en tu consola; no la compartas aqui. Cuida la cuota de 100 s de CPU: una sola corrida.
 
 ## 2. Que corre donde
 
@@ -33,16 +53,16 @@ Contenedor del agente: bot/poller.py --+--> API de la clinica   y   --> Zernio (
 Sin tunel de Cloudflare ni `start.sh`/`stop.sh` actuales (esos son del bot viejo con el webhook directo).
 
 ## 3. Servidor en PythonAnywhere (orden sugerido)
-1. Contratar **Developer**; elegir dominio (p. ej. `app.<dominio-de-la-clinica>`) y crear el CNAME. Confirmar que *Force HTTPS* queda activo.
+1. **Ensayo:** la cuenta gratuita actual, con `ranset83.pythonanywhere.com` (HTTPS incluido, sin CNAME); en la pestana *Web* anotar la fecha de caducidad y como se extiende. **Produccion con pacientes reales:** pasar a **Developer** y, si se quiere, dominio propio (subdominio `www` o `app` con CNAME); confirmar que *Force HTTPS* queda activo.
 2. Subir el codigo. Hoy el repo es solo local (sin remoto): o se crea un remoto PRIVADO (GitHub) y se hace `git clone` en una consola de PythonAnywhere, o se sube un zip. **Decision del usuario.**
-3. Consola bash: `python3.12 -m venv ~/venv && source ~/venv/bin/activate && pip install -r server/requirements.txt` (sin `-dev`).
-4. Pestana *Databases*: fijar contrasena de MySQL y crear la base `<usuario>$clinica`. `DATABASE_URL=mysql+pymysql://<usuario>:<clave>@<host de la pestana>/<usuario>$clinica?charset=utf8mb4` (escapar el `$` si se escribe en shell).
+3. Consola bash (Python 3.10.5): `python3.10 -m venv ~/venv && source ~/venv/bin/activate && pip install -r server/requirements.txt` (sin `-dev`; `requirements.txt` ya fija SQLAlchemy 2.0.57 por compatibilidad con 3.10). Elegir 3.10 tambien en la pestana *Web*.
+4. Pestana *Databases*: fijar la contrasena de MySQL (la escribes tu, no se comparte) y crear la base `clinica` (queda `Ranset83$clinica`; **no usar `Ranset83$crud`**). `DATABASE_URL=mysql+pymysql://Ranset83:<clave>@Ranset83.mysql.pythonanywhere-services.com/Ranset83$clinica?charset=utf8mb4` (entre comillas simples en bash por el `$`).
 5. Crear `~/clinica.env` (permisos 600) con: `DATABASE_URL`, `SECRET_KEY`, secreto del webhook de Zernio, token del bot, claves VAPID (cuando exista el push). **Nunca en el repo.**
 6. Archivo WSGI de la web app: cargar `~/clinica.env` en `os.environ`, anadir `server/` al `sys.path` y `from wsgi import app as application`.
 7. En `server/` (con el venv activo y las variables cargadas): `flask --app wsgi upgrade-db` y `flask --app wsgi seed` (el seed deja el **interruptor del bot apagado**; es lo deseable hasta el corte). Crear el primer usuario administrador (comando de F4, por definir).
 8. *Static files* de la pestana *Web*: `/admin/` -> build de `admin-web`, `/doctor/` -> build de `doctor-pwa`. *Reload*.
 9. Humo: `GET /api/health`; iniciar sesion; abrir el calendario.
-10. Respaldo: tarea programada **diaria** con `mysqldump` a un archivo fechado + copia fuera de PythonAnywhere (por definir donde). **Probar una restauracion** antes del corte.
+10. Respaldo: tarea programada **diaria** con `mysqldump` a un archivo fechado + copia fuera de PythonAnywhere (por definir donde). La cuenta gratuita anterior deberia tener 1 tarea diaria (**comprobar en *Tasks***); si no, el respaldo es manual desde la consola. Los 512 MiB incluyen los respaldos: borrar los viejos. **Probar una restauracion** antes del corte.
 
 ## 4. Zernio
 - Registrar (o actualizar) el webhook con URL fija `https://<dominio>/webhooks/zernio`, evento `message.received` y un **secreto elegido por la clinica**. Cabecera de firma `X-Zernio-Signature`, HMAC-SHA256 hex del cuerpo crudo.
@@ -70,6 +90,7 @@ Rollback (minutos): apagar el interruptor del bot (deja de contestar; atiende el
 
 ## 7. Riesgos abiertos
 - Sin cuenta ni servidor probados: todo lo de la seccion 3 es teoria hasta el primer despliegue de prueba.
-- 5 000 s de CPU al dia: un poller cada 2 s y varios calendarios abiertos son unas decenas de miles de peticiones cortas; se espera holgura, **medir** en la primera semana. Si se excede, el sitio se frena (tarpit).
+- CPU: hoy las peticiones de la web app no cuentan para la cuota (la documentacion dice "currently", puede cambiar). En Developer la cuota es de 5 000 s/dia, en la gratuita 100 s/dia; si algun dia contaran, un poller cada 2 s son ~43 000 peticiones/dia: **medir** y subir `WATHSBOT_POLL_SECONDS` si hace falta. Pasada la cuota el sitio se frena (tarpit), no se apaga.
+- **Caducidad mensual** de la web app gratuita (por confirmar el mecanismo): un olvido deja sin webhook a la clinica. Otra razon para Developer en produccion.
 - Entrega "al menos una vez": un reinicio del poller entre contestar y confirmar puede duplicar una respuesta.
 - Una sola tarea siempre activa disponible: reservarla para el envio de push u otra cola si hiciera falta (no se usa hoy).
