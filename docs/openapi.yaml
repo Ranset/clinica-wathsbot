@@ -93,6 +93,23 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BotSettings" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+  /api/bot/config:
+    get:
+      operationId: botConfig
+      summary: Doctores activos y limites de agenda para armar el prompt del bot.
+      description: |
+        Sustituye a `bot/agenda_config.json` como origen de los doctores y de los limites (zona, duracion de
+        cita, antelacion minima, horizonte). Se pide en cada conversacion; si la API no responde el bot NO usa
+        una copia guardada: pasa el caso a una persona.
+      x-roles: [bot]
+      security: [{ botToken: [] }]
+      responses:
+        "200":
+          description: Configuracion vigente.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BotConfig" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
   /api/bot/availability:
     get:
       operationId: botAvailability
@@ -372,10 +389,22 @@ paths:
       summary: Recibe webhooks de Zernio, verifica la firma HMAC y encola.
       description: |
         Sin sesion ni token: la autenticidad la da la firma HMAC-SHA256 del cuerpo con el secreto del
-        webhook. **El nombre exacto de la cabecera de firma esta POR CONFIRMAR en F3** con la documentacion de
-        Zernio (el bot actual acepta cualquier cabecera que contenga "signature"). Responde 200 rapido.
-        Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; el resto se
-        responde 200 y se descarta. Idempotente por `id` del evento (un duplicado responde 200).
+        webhook. Segun la documentacion de Zernio (docs.zernio.com/webhooks, consultada el 2026-11-10): la
+        cabecera es `X-Zernio-Signature` (`X-Late-Signature` es un alias heredado con el mismo valor; leer la
+        nueva), el valor es el digest HMAC-SHA256 en **hexadecimal en minusculas** calculado sobre el **cuerpo
+        crudo** (sin marca de tiempo) con el secreto que la clinica eligio al crear el webhook, y se compara en
+        tiempo constante (`hmac.compare_digest`). Zernio tambien manda `X-Zernio-Event` y `X-Zernio-Event-Id`.
+
+        Hay que responder 2xx en menos de 5 s: se guarda el evento y se atiende despues (por eso la cola).
+        Zernio reintenta 408, 429, 5xx, timeouts y respuestas 2xx con cuerpo HTML (hasta 7 intentos en unas
+        51 h); **cualquier otro 4xx -- incluido el 401 de firma invalida -- manda el evento a su cola de
+        eventos muertos en el primer intento**, asi que un secreto mal configurado pierde eventos hasta
+        que se redistribuyan desde Zernio. Responder siempre JSON, nunca HTML. Las entregas pueden
+        duplicarse y no hay garantia de orden: la cola es idempotente por `id` del evento (indice unico; un
+        duplicado responde 200 sin encolar).
+
+        Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; `webhook.test` y
+        el resto se responden 200 y se descartan.
       security: []
       requestBody:
         required: true
@@ -1348,6 +1377,23 @@ components:
           required: [ok]
           properties:
             ok: { type: boolean, const: true }
+    BotConfig:
+      type: object
+      required: [timezone, slotMinutes, minNoticeMinutes, horizonDays, doctors]
+      properties:
+        timezone: { type: string, examples: ["America/Cancun"] }
+        slotMinutes: { type: integer, examples: [30] }
+        minNoticeMinutes: { type: integer, examples: [60] }
+        horizonDays: { type: integer, examples: [60] }
+        doctors:
+          type: array
+          description: Solo doctores activos.
+          items:
+            type: object
+            required: [name, specialty]
+            properties:
+              name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
+              specialty: { type: string, examples: ["Proctologia"] }
     BotSettings:
       type: object
       required: [active]
@@ -1370,13 +1416,21 @@ components:
       additionalProperties: true
       required: [id, event]
       description: |
-        Evento tal como lo manda Zernio (`message.received`). El bot usa `message.text`, `message.sender.id`
+        Evento tal como lo manda Zernio. Todos traen `id`, `event`, `timestamp` y `test`; `profiles` solo si
+        el evento pertenece a un perfil. En `message.received` el bot usa `message.text`, `message.sender.id`
         (telefono), `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
+        Ojo: en el evento de prueba `webhook.test` `message` es un **texto**, no un objeto.
       properties:
         id: { type: string }
         event: { type: string }
+        timestamp: { type: string, format: date-time }
         test: { type: boolean }
-        message: { type: object, additionalProperties: true }
+        message:
+          description: Objeto en `message.*`; texto libre en `webhook.test`.
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: string
         account: { type: object, additionalProperties: true }
         conversation: { type: object, additionalProperties: true }
 

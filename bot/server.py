@@ -7,6 +7,9 @@ BASE = "https://zernio.com/api/v1"
 ZKEY = os.environ["ZERNIO_API_KEY"]
 SECRET = os.environ.get("WATHSBOT_WEBHOOK_SECRET", "")
 DRY_RUN = os.environ.get("WATHSBOT_DRY_RUN") == "1"
+# "google" (defecto, el bot actual: agenda en Google Calendar via scheduler.py) o "api" (API de la clinica,
+# cola de eventos con poller.py). Con "api" este archivo solo aporta la logica; no recibe webhooks.
+BACKEND = os.environ.get("WATHSBOT_BACKEND", "google")
 PORT = int(os.environ.get("WATHSBOT_PORT", "8787"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYSTEM = open(os.path.join(HERE, "system_prompt.md"), encoding="utf-8").read()
@@ -109,9 +112,9 @@ def handle(ev):
         sys_prompt += "\n\nResponde unicamente con el texto del mensaje a enviar."
         reply = llm(sys_prompt, msgs)
     log(f"conv={conv_id} IN: {text[:80]!r} -> OUT: {reply[:120]!r}")
-    if DRY_RUN:
-        return
-    zernio("POST", f"/inbox/conversations/{conv_id}/messages", {"accountId": account_id, "message": reply})
+    if not DRY_RUN:
+        zernio("POST", f"/inbox/conversations/{conv_id}/messages", {"accountId": account_id, "message": reply})
+    return reply
 
 
 # ---------------- agenda: el modelo propone, el codigo ejecuta ----------------
@@ -120,6 +123,8 @@ FALLBACK = "Disculpa, tuve un problema para revisar la agenda. Un miembro del eq
 
 
 def agenda_enabled():
+    if BACKEND == "api":
+        return True  # el interruptor del bot y la disponibilidad de la API los controla poller.py
     import scheduler
     return not any("PENDIENTE" in c for c in scheduler.CFG["consultorios"].values())
 
@@ -127,13 +132,34 @@ def agenda_enabled():
 def get_agenda():
     global _AGENDA
     if _AGENDA is None:
-        import scheduler
-        _AGENDA = scheduler.Agenda(scheduler.GoogleBackend())
+        if BACKEND == "api":
+            import api_client
+            _AGENDA = api_client.ApiAgenda()
+        else:
+            import scheduler
+            _AGENDA = scheduler.Agenda(scheduler.GoogleBackend())
     return _AGENDA
 
 
+def _prompt_ctx():
+    """Doctores y limites para el prompt: de la API (sin copia: si cae, lanza ApiUnavailable) o de scheduler.py.
+    Devuelve algo con `.CFG` y `.now()` para no tocar el texto del prompt."""
+    if BACKEND != "api":
+        import scheduler
+        return scheduler
+    from datetime import datetime
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+    c = get_agenda().config()
+    tz = ZoneInfo(c["timezone"])
+    cfg = {"timezone": c["timezone"], "slot_minutes": c["slotMinutes"], "min_notice_minutes": c["minNoticeMinutes"],
+           "horizon_days": c["horizonDays"],
+           "doctors": {d["specialty"]: {"label": d["specialty"], "name": d["name"]} for d in c["doctors"]}}
+    return SimpleNamespace(CFG=cfg, now=lambda: datetime.now(tz))
+
+
 def agenda_prompt():
-    import scheduler as S
+    S = _prompt_ctx()
     docs = "\n".join(f"- {d['label']}: {d['name']}" for d in S.CFG["doctors"].values())
     n = S.now()
     dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -170,7 +196,10 @@ REGLAS DE AGENDA (obligatorias):
 
 
 def run_action(act, phone):
-    import scheduler as S
+    if BACKEND == "api":
+        import api_client as S  # solo se usa S.parse_dt
+    else:
+        import scheduler as S
     ag = get_agenda()
     n = act.get("name")
     if n == "horarios":
@@ -284,5 +313,8 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if BACKEND == "api":
+        sys.exit("Con WATHSBOT_BACKEND=api el bot NO recibe webhooks (los recibe el servidor de la clinica y los "
+                 "encola): ejecuta `python poller.py`.")
     log(f"Wathsbot listening on :{PORT} dry_run={DRY_RUN} secret={'set' if SECRET else 'MISSING'}")
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
