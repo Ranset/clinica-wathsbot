@@ -1,0 +1,36 @@
+/* Estilos propios de la web. El tema (colores, utilidades) viene de @clinica/calendar. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-subtle);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Que un clic nunca "seleccione" texto en los botones tipo tarjeta del calendario. */
+button {
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* El doctor no agenda desde la rejilla: tocar un hueco no hace nada, asi que no se ve como boton. */
+.cal-hours.cursor-pointer {
+  cursor: default;
+}
+
+/* Sin el rebote al deslizar de mas en el celular: la app se siente como app y no como pagina. */
+html {
+  overscroll-behavior-y: none;
+}

@@ -52,6 +52,7 @@ npm run dev                               # demo con datos de ejemplo en http://
 npm run build                             # demo estatica en dist-demo/
 ```
 Web de administracion (desde `admin-web/`; `npm install` solo en la RAIZ, son workspaces): `npm run dev` (API simulada, :5180) · `npm run dev:real` (proxy a Flask :5000) · `npm test` · `npm run typecheck` · `npm run build` (-> `dist/`); cliente y simulador: `cd shared/api-client && npm test`.
+PWA del doctor (desde `doctor-pwa/`; detalle en su `README.md`): `npm run dev` (API simulada, :5181) · `npm run dev:real` (proxy a Flask :5000) · `npm test` · `npm run typecheck` · `npm run build` (-> `dist/`, con `sw.js` y manifiesto) · `npm run build:demo && npm run preview:demo` (demo con service worker, :5182).
 Servidor (desde `server/`, venv en `server/.venv`; en Windows `.venv/Scripts/python`):
 ```bash
 python -m venv .venv && .venv/Scripts/python -m pip install -r requirements-dev.txt   # una sola vez

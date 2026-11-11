@@ -1,0 +1,49 @@
+{
+  "name": "@clinica/doctor-pwa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PWA del doctor de la Clinica CUBAMEX (React 19 + Vite + vite-plugin-pwa). Agenda propia, ausencias, horario y avisos push. Habla con la API de docs/openapi.yaml.",
+  "scripts": {
+    "dev": "vite",
+    "dev:real": "vite --mode real",
+    "build": "npm run typecheck && vite build",
+    "build:demo": "npm run typecheck && vite build --mode mock --outDir dist-demo",
+    "preview": "vite preview",
+    "preview:demo": "vite preview --outDir dist-demo --port 5182",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.sw.json",
+    "icons": "node scripts/make-icons.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clinica/api-client": "*",
+    "@clinica/calendar": "*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^26.1.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^1.2.0",
+    "vitest": "^2.1.9",
+    "workbox-build": "^7.4.0",
+    "workbox-core": "^7.4.0",
+    "workbox-precaching": "^7.4.0",
+    "workbox-routing": "^7.4.0",
+    "workbox-window": "^7.4.0"
+  }
+}

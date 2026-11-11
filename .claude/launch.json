@@ -12,6 +12,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "admin-web", "run", "dev"],
       "port": 5180
+    },
+    {
+      "name": "doctor-pwa",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "doctor-pwa", "run", "dev"],
+      "port": 5181
+    },
+    {
+      "name": "doctor-pwa-demo",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "doctor-pwa", "run", "preview:demo"],
+      "port": 5182
     }
   ]
 }

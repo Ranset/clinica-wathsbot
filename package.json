@@ -4,11 +4,12 @@
   "description": "Clinica CUBAMEX: partes JavaScript del monorepo (npm workspaces). El servidor Flask y el bot de Python no usan este package.json.",
   "workspaces": [
     "shared/*",
-    "admin-web"
+    "admin-web",
+    "doctor-pwa"
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build -w admin-web"
+    "build": "npm run build -w admin-web -w doctor-pwa"
   }
 }
