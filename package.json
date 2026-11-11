@@ -11,6 +11,7 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build -w admin-web -w doctor-pwa",
-    "dev:local": "node scripts/dev-local.mjs"
+    "dev:local": "node scripts/dev-local.mjs",
+    "dev:bot": "python bot/dev_chat.py"
   }
 }

@@ -3,17 +3,25 @@
 import hashlib, hmac, json, os, sys, threading, time, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import clinic_info
+
 BASE = "https://zernio.com/api/v1"
 ZKEY = os.environ["ZERNIO_API_KEY"]
 SECRET = os.environ.get("WATHSBOT_WEBHOOK_SECRET", "")
 DRY_RUN = os.environ.get("WATHSBOT_DRY_RUN") == "1"
-# "google" (defecto, el bot actual: agenda en Google Calendar via scheduler.py) o "api" (API de la clinica,
-# cola de eventos con poller.py). Con "api" este archivo solo aporta la logica; no recibe webhooks.
+# De donde sale la agenda:
+#   "google" (defecto, el bot de antes: Google Calendar via scheduler.py) o
+#   "api"    (la API de la clinica: el bot trabaja como un empleado mas; doctores, horarios, citas, interruptor).
 BACKEND = os.environ.get("WATHSBOT_BACKEND", "google")
+# Por donde llegan los mensajes (solo importa con BACKEND=api):
+#   "webhook" (defecto) Zernio -> este proceso (WATHSBOT_PORT); es como ya funciona el bot en produccion.
+#   "queue"             Zernio -> servidor de la clinica -> cola; la consulta `poller.py` (no abre puerto).
+INGRESS = os.environ.get("WATHSBOT_INGRESS", "webhook")
 PORT = int(os.environ.get("WATHSBOT_PORT", "8787"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYSTEM = open(os.path.join(HERE, "system_prompt.md"), encoding="utf-8").read()
 SEEN, GREETED, LOCK = set(), set(), threading.Lock()
+_CONV_LOCKS = {}  # un candado por conversacion: dos mensajes seguidos del mismo paciente se atienden de uno en uno
 
 
 def log(*a):
@@ -41,7 +49,7 @@ def llm_cli(system, messages):
     with tempfile.TemporaryDirectory() as d:
         r = subprocess.run([os.environ.get("CLAUDE_BIN", "/data/.local/bin/claude"), "-p", "--model", os.environ.get("WATHSBOT_MODEL", "sonnet"),
                             "--tools", "", "--system-prompt", system, prompt],
-                           capture_output=True, text=True, timeout=90, cwd=d)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90, cwd=d)
     out = r.stdout.strip()
     if r.returncode != 0 or not out:
         raise RuntimeError("claude CLI failed: " + (r.stderr or out)[:200])
@@ -88,8 +96,9 @@ def history(conv_id, account_id):
         return []
 
 
-def handle(ev):
-    m, acc, conv = ev["message"], ev["account"], ev["conversation"]
+def _prepare(ev):
+    """Evento de Zernio -> (texto, conversacion, cuenta, telefono, historial, primer_mensaje)."""
+    m, acc = ev["message"], ev["account"]
     text = m.get("text") or ""
     if not text.strip():
         text = "[el paciente envio un archivo o contenido sin texto]"
@@ -99,21 +108,81 @@ def handle(ev):
         msgs.append({"role": "user", "content": text})
     while msgs and msgs[0]["role"] != "user":
         msgs.pop(0)
-    sys_prompt = SYSTEM
     with LOCK:
         first = conv_id not in GREETED and len(msgs) <= 1
         GREETED.add(conv_id)
+    phone = str((m.get("sender") or {}).get("id") or "").strip()
+    return text, conv_id, account_id, phone, msgs, first
+
+
+def answer(msgs, phone, first=False):
+    """Nucleo del bot: historial (termina con el mensaje del paciente) -> texto a enviar. NO envia nada.
+    Con BACKEND=api toma doctores, horarios y limites de la API en CADA mensaje (si no responde lanza ApiUnavailable:
+    nunca se contesta con datos viejos)."""
+    ctx = _prompt_ctx() if BACKEND == "api" else None
+    sys_prompt = clinic_info.compose_system(SYSTEM, ctx.API) if ctx else SYSTEM
     if first:
         sys_prompt += "\n\nEste es el PRIMER mensaje de la conversacion: aclara que eres un asistente automatico."
-    phone = str((m.get("sender") or {}).get("id") or "").strip()
     if agenda_enabled() and phone.isdigit():
-        reply = run_agent(sys_prompt, msgs, phone)
-    else:
-        sys_prompt += "\n\nResponde unicamente con el texto del mensaje a enviar."
-        reply = llm(sys_prompt, msgs)
-    log(f"conv={conv_id} IN: {text[:80]!r} -> OUT: {reply[:120]!r}")
+        return run_agent(sys_prompt, msgs, phone, ctx=ctx)
+    sys_prompt += "\n\nResponde unicamente con el texto del mensaje a enviar."
+    return llm(sys_prompt, msgs)
+
+
+def deliver(conv_id, account_id, reply):
     if not DRY_RUN:
         zernio("POST", f"/inbox/conversations/{conv_id}/messages", {"accountId": account_id, "message": reply})
+
+
+def handle(ev):
+    """Atiende un mensaje y lo envia. Lo usa `poller.py` (que ya revisa el interruptor y maneja los fallos de la API)."""
+    text, conv_id, account_id, phone, msgs, first = _prepare(ev)
+    reply = answer(msgs, phone, first)
+    log(f"conv={conv_id} IN: {text[:80]!r} -> OUT: {reply[:120]!r}")
+    deliver(conv_id, account_id, reply)
+    return reply
+
+
+def reply_for(msgs, phone, conv_id, first=False):
+    """Decision completa del bot para un mensaje -> texto a enviar, o None si NO debe contestar.
+    Con BACKEND=api: (1) consulta el interruptor en la API (apagado -> None: atiende una persona);
+    (2) si la API no responde NO ofrece horarios de memoria: envia FALLBACK; (3) si termina en FALLBACK
+    avisa a una persona (traspaso) para que no se pierda el caso."""
+    if BACKEND != "api":
+        return answer(msgs, phone, first)
+    import api_client
+    ag = get_agenda()
+    reason = "otro"
+    try:
+        if not ag.bot_active():
+            log(f"conv={conv_id} interruptor del bot APAGADO: no contesto")
+            return None
+        reply = answer(msgs, phone, first)
+    except api_client.ApiUnavailable as e:
+        log(f"conv={conv_id} la API de la clinica no responde ({e}): paso el caso a una persona")
+        reply = FALLBACK
+    except Exception as e:  # el modelo fallo (CLI caido, tiempo agotado...): mejor avisar que quedarse callado
+        log(f"conv={conv_id} fallo el modelo: {e!r}: paso el caso a una persona")
+        reply, reason = FALLBACK, "modelo_fallo"
+    if reply == FALLBACK:
+        try:
+            ag.handoff(conv_id, reason, telefono=phone or None, detail="El bot envio el mensaje de respaldo")
+        except api_client.ApiUnavailable as e:
+            log(f"conv={conv_id} no se pudo registrar el traspaso a una persona: {e}")
+    return reply
+
+
+def handle_direct(ev):
+    """Zernio -> este proceso (webhook directo): contesta con las reglas de `reply_for`."""
+    text, conv_id, account_id, phone, msgs, first = _prepare(ev)
+    with LOCK:
+        lock = _CONV_LOCKS.setdefault(conv_id, threading.Lock())
+    with lock:
+        reply = reply_for(msgs, phone, conv_id, first)
+    if reply is None:
+        return None
+    log(f"conv={conv_id} IN: {text[:80]!r} -> OUT: {reply[:120]!r}")
+    deliver(conv_id, account_id, reply)
     return reply
 
 
@@ -143,7 +212,8 @@ def get_agenda():
 
 def _prompt_ctx():
     """Doctores y limites para el prompt: de la API (sin copia: si cae, lanza ApiUnavailable) o de scheduler.py.
-    Devuelve algo con `.CFG` y `.now()` para no tocar el texto del prompt."""
+    Devuelve algo con `.CFG` y `.now()` para no tocar el texto del prompt; con la API ademas `.API` (la respuesta
+    cruda de /api/bot/config: horarios y doctores vigentes)."""
     if BACKEND != "api":
         import scheduler
         return scheduler
@@ -154,12 +224,13 @@ def _prompt_ctx():
     tz = ZoneInfo(c["timezone"])
     cfg = {"timezone": c["timezone"], "slot_minutes": c["slotMinutes"], "min_notice_minutes": c["minNoticeMinutes"],
            "horizon_days": c["horizonDays"],
-           "doctors": {d["specialty"]: {"label": d["specialty"], "name": d["name"]} for d in c["doctors"]}}
-    return SimpleNamespace(CFG=cfg, now=lambda: datetime.now(tz))
+           # por nombre (no por especialidad): dos doctores de la misma especialidad no se pisan
+           "doctors": {d["name"]: {"label": d["specialty"], "name": d["name"]} for d in c["doctors"]}}
+    return SimpleNamespace(CFG=cfg, now=lambda: datetime.now(tz), API=c)
 
 
-def agenda_prompt():
-    S = _prompt_ctx()
+def agenda_prompt(S=None):
+    S = S or _prompt_ctx()
     docs = "\n".join(f"- {d['label']}: {d['name']}" for d in S.CFG["doctors"].values())
     n = S.now()
     dias = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -186,7 +257,7 @@ REGLAS DE AGENDA (obligatorias):
 0b. LIMITES: solo se agenda con al menos {S.CFG['min_notice_minutes']} minutos de antelacion y hasta {S.CFG['horizon_days']} dias a futuro (hasta el {(n + __import__('datetime').timedelta(days=S.CFG['horizon_days'])).date().isoformat()}). Nunca prometas ni intentes agendar fuera de ese rango; explica el limite con amabilidad y ofrece una fecha valida.
 1. NUNCA inventes ni supongas horarios: ofrece solo los que devuelva "horarios". Ofrece 2 o 3 y espera que el paciente elija uno.
 1b. Si el paciente pide una preferencia (tarde, despues del mediodia, manana temprano, otro dia, un dia concreto, una hora concreta), VUELVE A CONSULTAR "horarios" con hora_min/hora_max/desde que correspondan. NUNCA digas que no hay disponibilidad sin haberlo consultado con ese criterio: la lista anterior es solo una muestra parcial. "Mediodia/tarde" = hora_min 12; "manana" (parte del dia) = hora_max 12. Si el resultado trae "nota" o horarios vacios, entonces si dilo y ofrece ampliar (otros dias).
-2. Solo ejecuta "agendar" cuando tengas: especialidad, nombre completo y un horario que el paciente eligio de forma explicita. Si falta algo, pregunta.
+2. Solo ejecuta "agendar" cuando tengas: especialidad, nombre completo y un horario que el paciente eligio de forma explicita. Si falta algo, pregunta. Si ofreciste varios horarios y el paciente responde solo "si", "ese", "confirmo" o "el primero que dijiste" sin que quede claro cual, NO agendes: pregunta cual de los horarios ofrecidos prefiere (repitelos). Nunca elijas tu por el paciente.
 3. Para cancelar o reprogramar, usa primero "mis_citas" y confirma con el paciente cual cita es. Solo existen las citas del propio paciente; nunca hables de citas de otras personas.
 4. Tras agendar, confirma doctor, especialidad, dia, hora y consultorio EXACTAMENTE como los devuelve el RESULTADO. Si el RESULTADO es un error, explica sin tecnicismos y ofrece otro horario (consulta "horarios" de nuevo).
 5. No guardes ni pidas sintomas o motivos medicos; solo nombre, especialidad y horario.
@@ -236,8 +307,8 @@ def parse_model_json(s):
         return None
 
 
-def run_agent(sys_prompt, msgs, phone, max_steps=4):
-    sys_prompt += agenda_prompt()
+def run_agent(sys_prompt, msgs, phone, max_steps=4, ctx=None):
+    sys_prompt += agenda_prompt(ctx)
     msgs = list(msgs)
     for _ in range(max_steps):
         raw = llm(sys_prompt, msgs)
@@ -304,7 +375,7 @@ class H(BaseHTTPRequestHandler):
 
     def _safe(self, ev):
         try:
-            handle(ev)
+            handle_direct(ev)
         except Exception as e:
             log("handler error:", repr(e))
 
@@ -312,9 +383,25 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
+def startup_report():
+    """Una linea que dice con que agenda trabaja el bot (y si la API responde AHORA). No tumba el arranque."""
+    if BACKEND != "api":
+        return "agenda=Google Calendar (scheduler.py)"
+    import api_client
+    try:
+        ag = get_agenda()
+        cfg, active = ag.config(), ag.bot_active()
+        return (f"agenda=API {ag.base} OK | bot {'ACTIVO' if active else 'APAGADO (no contestara)'} | "
+                f"{len(cfg['doctors'])} doctores | horario: {clinic_info.summarize_hours(cfg.get('clinicHours')) or '?'}")
+    except api_client.ApiUnavailable as e:
+        return f"agenda=API NO RESPONDE ({e}): hasta que responda el bot enviara el mensaje de respaldo"
+
+
 if __name__ == "__main__":
-    if BACKEND == "api":
-        sys.exit("Con WATHSBOT_BACKEND=api el bot NO recibe webhooks (los recibe el servidor de la clinica y los "
+    if BACKEND == "api" and INGRESS == "queue":
+        sys.exit("Con WATHSBOT_INGRESS=queue el bot NO recibe webhooks (los recibe el servidor de la clinica y los "
                  "encola): ejecuta `python poller.py`.")
-    log(f"Wathsbot listening on :{PORT} dry_run={DRY_RUN} secret={'set' if SECRET else 'MISSING'}")
+    log(f"Wathsbot listening on :{PORT} dry_run={DRY_RUN} secret={'set' if SECRET else 'MISSING'} "
+        f"backend={BACKEND} ingress={'webhook' if BACKEND != 'api' else INGRESS}")
+    log(startup_report())
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

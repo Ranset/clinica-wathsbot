@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Poller del bot (F5): reclama eventos de la cola de la API de la clinica y los atiende con `server.handle()`.
 
-Sustituye al servidor HTTP de `server.py` cuando WATHSBOT_BACKEND=api (decision A del proyecto): el webhook de
+MODO ALTERNATIVO. El modo principal es el webhook directo (Zernio -> `server.py` con WATHSBOT_BACKEND=api; ver
+`docs/bot-hostinger.md`). Este poller es para cuando el webhook lo recibe el servidor de la clinica.
+Sustituye al servidor HTTP de `server.py` (WATHSBOT_INGRESS=queue, decision A del proyecto): el webhook de
 Zernio lo recibe el servidor de la clinica (URL fija con HTTPS), lo guarda en una cola y este proceso, que no
 tiene IP publica, la consulta por conexion saliente. Un reinicio ya no pierde mensajes.
 
@@ -150,6 +152,7 @@ def run(client, processor, stop, workers=4, poll=2.0, lease=420, log=_log):
 
 def main():
     os.environ["WATHSBOT_BACKEND"] = "api"
+    os.environ["WATHSBOT_INGRESS"] = "queue"
     import server  # exige ZERNIO_API_KEY
     client = server.get_agenda()
     stop = threading.Event()

@@ -850,12 +850,17 @@ export interface components {
             minNoticeMinutes: number;
             /** @example 60 */
             horizonDays: number;
+            /** @description Horario general de la clinica. El bot lo usa para contestar "a que hora abren" con el dato VIGENTE (no con texto fijo). */
+            clinicHours: components["schemas"]["WeeklyHours"];
             /** @description Solo doctores activos. */
             doctors: {
                 /** @example Dr. Cervantes Pelaez */
                 name: string;
                 /** @example Proctologia */
                 specialty: string;
+                /** @description Horario efectivo del doctor (el propio o, si no tiene, el de la clinica). */
+                weeklyHours?: components["schemas"]["WeeklyHours"];
+                usesClinicHours?: boolean;
             }[];
         };
         BotSettings: {

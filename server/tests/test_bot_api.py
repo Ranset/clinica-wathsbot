@@ -89,7 +89,9 @@ def test_config_trae_doctores_y_limites(client):
     j = get(client, "/api/bot/config").get_json()
     assert_schema("BotConfig", j)
     assert (j["timezone"], j["slotMinutes"], j["minNoticeMinutes"], j["horizonDays"]) == ("America/Cancun", 30, 60, 60)
-    assert len(j["doctors"]) == 7 and {"name", "specialty"} == set(j["doctors"][0])
+    assert len(j["doctors"]) == 7 and {"name", "specialty", "weeklyHours", "usesClinicHours"} == set(j["doctors"][0])
+    assert j["clinicHours"]["mon"] == [{"start": "09:00", "end": "18:00"}] and j["clinicHours"]["sat"] == [{"start": "09:00", "end": "13:00"}]
+    assert "sun" not in j["clinicHours"] and all(d["weeklyHours"] == j["clinicHours"] and d["usesClinicHours"] for d in j["doctors"])
 
 
 # ------------------------------------------------------------------ lectura de agenda
@@ -242,3 +244,18 @@ def test_las_respuestas_son_json_y_no_se_guardan_en_cache(client):
         r = client.get(path, headers=BOT_HEADERS)
         assert r.mimetype == "application/json" and r.headers["Cache-Control"] == "no-store", path
     assert client.get("/api/bot/status").mimetype == "application/json"          # tambien el 401
+
+
+def test_config_refleja_los_cambios_del_personal_para_que_el_bot_no_use_datos_viejos(login, client):
+    """El bot arma su respuesta con esto: si el personal cambia el horario o desactiva a un doctor, el bot debe enterarse YA."""
+    admin = login("admin")
+    admin.put("/api/clinic-hours", {"mon": [{"start": "10:00", "end": "14:00"}], "sat": [{"start": "09:00", "end": "12:00"}]})
+    admin.put("/api/doctors/1/weekly-hours", {"weeklyHours": {"mon": [{"start": "11:00", "end": "13:00"}]}})
+    admin.patch("/api/doctors/2", {"active": False})
+    j = get(client, "/api/bot/config").get_json()
+    assert_schema("BotConfig", j)
+    assert j["clinicHours"] == {"mon": [{"start": "10:00", "end": "14:00"}], "sat": [{"start": "09:00", "end": "12:00"}]}
+    por_nombre = {d["name"]: d for d in j["doctors"]}
+    assert len(j["doctors"]) == 6 and "Dr. Pérez Lago" not in por_nombre                      # el inactivo ya no aparece
+    cervantes = por_nombre["Dr. Cervantes Peláez"]
+    assert cervantes["weeklyHours"] == {"mon": [{"start": "11:00", "end": "13:00"}]} and cervantes["usesClinicHours"] is False

@@ -101,9 +101,12 @@ class Agenda(Unit):
         """Doctores activos y limites para armar el prompt del bot (`BotConfig` del contrato)."""
         r = self.rules
         with self._read() as repo:
+            clinic = repo.clinic_schedule()
             return {"timezone": r.tz.key, "slotMinutes": r.slot_minutes, "minNoticeMinutes": r.min_notice_minutes,
-                    "horizonDays": r.horizon_days,
-                    "doctors": [{"name": d.name, "specialty": d.specialty} for d in repo.doctors()]}
+                    "horizonDays": r.horizon_days, "clinicHours": clinic.to_weekly(),
+                    "doctors": [{"name": d.name, "specialty": d.specialty,
+                                 "weeklyHours": repo.doctor_schedule(d, clinic).to_weekly(),
+                                 "usesClinicHours": bool(d.uses_clinic_hours)} for d in repo.doctors()]}
 
     # ------------------------------------------------------------------ lectura (bot)
     def free_slots(self, specialty, from_day: date | None = None, days=7, limit=6, hora_min=None, hora_max=None):

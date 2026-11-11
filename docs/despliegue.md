@@ -48,12 +48,16 @@ Limites de la cuenta gratuita que pesan en este proyecto ([FreeAccountsFeatures]
 ## 2. Que corre donde
 
 ```
-Zernio --(webhook, HTTPS fijo)--> PythonAnywhere: Flask (WSGI) + MySQL + estaticos admin/PWA
-                                        ^  cola de eventos, API, interruptor del bot
-                                        |  (solo conexiones SALIENTES desde el bot)
-Contenedor del agente: bot/poller.py --+--> API de la clinica   y   --> Zernio (responder)
+Paciente --WhatsApp--> Zernio --(webhook)--> BOT en Hostinger (bot/server.py, WATHSBOT_BACKEND=api)
+                                                |  (solo conexiones SALIENTES, Bearer BOT_TOKEN)
+                                                v
+                              PythonAnywhere: Flask (WSGI) + MySQL + estaticos admin/PWA
+                              interruptor, doctores y horarios, disponibilidad, citas, traspasos a una persona
 ```
-Sin tunel de Cloudflare ni `start.sh`/`stop.sh` actuales (esos son del bot viejo con el webhook directo).
+**Decision revisada (2026-11-11): el webhook de Zernio sigue llegando al bot** (como hoy), no al servidor de la clinica. El bot ya no usa
+Google Calendar: se configura y agenda a traves de la API. Detalle y pasos del cambio en `docs/bot-hostinger.md`. El camino con cola (Zernio ->
+servidor -> cola -> `poller.py`, la "decision A" original) sigue implementado y probado como **alternativa** (`WATHSBOT_INGRESS=queue`); las
+secciones 4 y 5 lo describen.
 
 ## 3. Servidor en PythonAnywhere (orden sugerido)
 1. **Ensayo:** la cuenta gratuita actual, con `ranset83.pythonanywhere.com` (HTTPS incluido, sin CNAME); en la pestana *Web* anotar la fecha de caducidad y como se extiende. **Produccion con pacientes reales:** pasar a **Developer** y, si se quiere, dominio propio (subdominio `www` o `app` con CNAME); confirmar que *Force HTTPS* queda activo.
@@ -67,18 +71,20 @@ Sin tunel de Cloudflare ni `start.sh`/`stop.sh` actuales (esos son del bot viejo
 9. Humo: `GET /api/health`; `GET /api/bot/status` SIN token debe dar 401 y CON `Authorization: Bearer <BOT_TOKEN>` 200 con `{"active": false}`; un `POST /webhooks/zernio` sin firma debe dar 401 (no 5xx); iniciar sesion y abrir el calendario (F4/F6).
 10. Respaldo: tarea programada **diaria** con `mysqldump` a un archivo fechado + copia fuera de PythonAnywhere (por definir donde). La cuenta gratuita anterior deberia tener 1 tarea diaria (**comprobar en *Tasks***); si no, el respaldo es manual desde la consola. Los 512 MiB incluyen los respaldos: borrar los viejos. **Probar una restauracion** antes del corte.
 
-## 4. Zernio
+## 4. Zernio (solo si se usa la cola; con el webhook directo al bot, Zernio no cambia)
 - Registrar (o actualizar) el webhook con URL fija `https://<dominio>/webhooks/zernio`, evento `message.received` y un **secreto elegido por la clinica**. Cabecera de firma `X-Zernio-Signature`, HMAC-SHA256 hex del cuerpo crudo.
 - **Cuidado:** Zernio manda a su cola de eventos muertos, en el PRIMER intento, cualquier 4xx (incluido el 401 de firma invalida). Probar primero con un `webhook.test` (`POST /v1/webhooks/test`) y verificar que responde 200 antes de activar el webhook de produccion. Los eventos muertos se pueden redistribuir desde Zernio.
 - El servidor (F3, implementado) verifica la firma, encola SOLO los `message.received` de pacientes por WhatsApp (el `webhook.test` y lo demas se responde 200 y se descarta), es idempotente por id de evento y, al cerrar cada evento, **borra el texto del mensaje** de la cola (solo conserva conversacion y telefono para poder contactar al paciente). Si el bot esta apagado o se cae, los mensajes esperan en la cola; tras 5 intentos fallidos aparecen como caso de atencion para el personal.
 - **(sin verificar)** si la cuenta permite DOS webhooks a la vez (necesario para el ensayo en paralelo de la seccion 6).
 
-## 5. Bot en el contenedor del agente
+## 5. Bot: modo con cola (alternativa) y datos comunes
+El modo principal (webhook directo al bot de Hostinger) esta en `docs/bot-hostinger.md`. Lo siguiente aplica al modo con cola salvo donde se indica.
 - Variables: `WATHSBOT_BACKEND=api`, `CLINICA_API_URL`, `CLINICA_BOT_TOKEN`, `ZERNIO_API_KEY`, `ANTHROPIC_API_KEY` y `WATHSBOT_LLM=api` (cualquier valor distinto de `cli`; en produccion no usar la suscripcion, hoy el defecto es el CLI). Fijar `WATHSBOT_MODEL` a proposito: el defecto del codigo para la API es `claude-haiku-4-5`, un modelo anterior a los actuales; elegir el modelo es decision del usuario y se prueba antes con `e2e_sim.py`. Opcionales del poller: `WATHSBOT_WORKERS`, `WATHSBOT_POLL_SECONDS`, `WATHSBOT_LEASE_SECONDS`.
+- El modelo de hoy es el CLI `claude` (`WATHSBOT_LLM=cli`, defecto): **el usuario decidio no usar `ANTHROPIC_API_KEY`**; la linea anterior aplica solo si algun dia se cambia esa decision.
 - Arranque: `python poller.py` (hace falta un `run_poller.sh`/servicio equivalente, **pendiente**: sustituir `run.sh`/`start.sh`/`stop.sh`).
 - Antes de pacientes reales: quitar el aviso "entorno de PRUEBA" de `bot/system_prompt.md`, cargar precios (hoy solo proctologia, 750 MXN) y cerrar con la clinica el aviso de privacidad.
 
-## 6. Ensayo y corte
+## 6. Ensayo y corte (modo con cola; para el webhook directo ver `docs/bot-hostinger.md`)
 Ensayo (sin riesgo para pacientes):
 1. Servidor arriba, interruptor del bot **apagado**, webhook de prueba apuntando al servidor nuevo (si Zernio permite un segundo webhook; si no, ensayar con mensajes de prueba y `webhook.test`).
 2. `WATHSBOT_DRY_RUN=1` en el poller: lee la cola real, arma la respuesta, **no** la envia. Revisar los registros.

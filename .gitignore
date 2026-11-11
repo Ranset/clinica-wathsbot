@@ -17,3 +17,5 @@ server/instance/
 
 # zip para subir a PythonAnywhere (generado a mano)
 clinica-pa.zip
+# zip para el bot de Hermes (generado a mano)
+hermes-bot-api.zip

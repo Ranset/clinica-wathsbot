@@ -1458,12 +1458,15 @@ components:
             ok: { type: boolean, const: true }
     BotConfig:
       type: object
-      required: [timezone, slotMinutes, minNoticeMinutes, horizonDays, doctors]
+      required: [timezone, slotMinutes, minNoticeMinutes, horizonDays, clinicHours, doctors]
       properties:
         timezone: { type: string, examples: ["America/Cancun"] }
         slotMinutes: { type: integer, examples: [30] }
         minNoticeMinutes: { type: integer, examples: [60] }
         horizonDays: { type: integer, examples: [60] }
+        clinicHours:
+          $ref: "#/components/schemas/WeeklyHours"
+          description: Horario general de la clinica. El bot lo usa para contestar "a que hora abren" con el dato VIGENTE (no con texto fijo).
         doctors:
           type: array
           description: Solo doctores activos.
@@ -1473,6 +1476,10 @@ components:
             properties:
               name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
               specialty: { type: string, examples: ["Proctologia"] }
+              weeklyHours:
+                $ref: "#/components/schemas/WeeklyHours"
+                description: Horario efectivo del doctor (el propio o, si no tiene, el de la clinica).
+              usesClinicHours: { type: boolean }
     BotSettings:
       type: object
       required: [active]

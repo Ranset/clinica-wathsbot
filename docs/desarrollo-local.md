@@ -61,36 +61,34 @@ de la clínica y los doctores.
 
 ## 4. El bot, sin WhatsApp
 
-**Ver que el mensaje llega a la cola** (no necesita modelo ni internet):
+**Hablar con el bot de verdad** (usa el modelo del propio bot: el CLI `claude` con tu suscripción, **no** una `ANTHROPIC_API_KEY`):
+1. Con `npm run dev:local` en marcha, en la web de administración (`recepcion@dev.test`) **enciende el botón Bot** (el servidor de
+   desarrollo lo arranca apagado, como en producción).
+2. En otra terminal, desde la raíz:
+
+```bash
+npm run dev:bot
+```
+
+Tú eres el paciente. El bot revisa el interruptor, lee doctores y horarios de la API, ofrece horarios reales, agenda, consulta, reprograma y
+cancela; en la terminal se ven las líneas `ACTION ...` con lo que pidió a la API, y la cita aparece en el calendario de la web. Comandos:
+`/nuevo`, `/tel 5299...` (cambia de paciente: no ve las citas del otro) y `/salir`. **No se envía nada a WhatsApp.** Cada respuesta tarda
+entre 6 y 30 s. Apaga el botón Bot y escribe otra vez: el bot calla. Guía completa, incluido el cambio del bot de Hostinger: `docs/bot-hostinger.md`.
+
+**Ver que un mensaje de WhatsApp llega a la cola** (modo alternativo con cola; no necesita modelo):
 
 ```bash
 cd server
 .venv/Scripts/python scripts/dev_webhook.py "Hola, quiero una cita de proctologia"
-# 200 {"ok":true,"queued":true}   <- el servidor verifico la firma y encoló el mensaje
+# 200 {"ok":true,"queued":true}   <- el servidor verificó la firma y encoló el mensaje
 ```
-
-**Que el bot lo conteste** (opcional; necesita un modelo, así que **no lo he probado con el modelo real**):
-1. En la web de administración enciende el botón **Bot**.
-2. En otra terminal, con una clave de la API de Anthropic (cuesta centavos por mensaje):
-
-```bash
-cd bot
-export WATHSBOT_BACKEND=api CLINICA_API_URL=http://127.0.0.1:5000 CLINICA_BOT_TOKEN=token-de-desarrollo
-export ZERNIO_API_KEY=falsa WATHSBOT_DRY_RUN=1 WATHSBOT_LLM=api ANTHROPIC_API_KEY=<tu clave>
-python poller.py
-```
-
-3. Manda otro mensaje con `dev_webhook.py`. En la terminal del bot verás `IN: ... -> OUT: ...` con lo que contestaría. Con
-   `WATHSBOT_DRY_RUN=1` **no se envía nada** a Zernio. Pídele una cita y mira cómo aparece en el calendario.
-
-(En PowerShell usa `$env:NOMBRE="valor"` en lugar de `export`.)
 
 ## 5. Pruebas automáticas
 
 ```bash
 npm test && npm run typecheck && npm run build                            # JS: cliente, calendario, web y PWA
 cd server && .venv/Scripts/python -m pytest tests -q                       # servidor (SQLite)
-cd bot && python test_scheduler.py && python test_api_client.py            # bot
+cd bot && python test_scheduler.py && python test_api_client.py && python test_bot_direct.py   # bot
 TEST_MYSQL_DOCKER=1 .venv/Scripts/python -m pytest tests -q                # servidor también contra MySQL 8 (Docker Desktop abierto)
 ```
 
