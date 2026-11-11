@@ -7,6 +7,7 @@ interpretar horarios de pared.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
@@ -14,6 +15,9 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 UTC = timezone.utc
+
+#: opcion de ejecucion que marca una transaccion como de escritura (SQLite: BEGIN IMMEDIATE; MySQL la ignora)
+WRITE_OPTION = "clinica_write"
 
 
 def utcnow() -> datetime:
@@ -37,7 +41,11 @@ def make_engine(url: str, *, echo: bool = False, pool_size: int | None = None) -
     u = make_url(url)
     kw: dict = {"echo": echo}
     if u.get_backend_name() == "sqlite":
+        if u.database and u.database != ":memory:":
+            Path(u.database).parent.mkdir(parents=True, exist_ok=True)  # p. ej. server/instance/
         kw["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        if pool_size and u.database and u.database != ":memory:":  # archivo: QueuePool (en memoria no admite overflow)
+            kw.update(pool_size=pool_size, max_overflow=pool_size)
     else:
         # PythonAnywhere (y otros) cierran las conexiones ociosas: renovar antes y comprobar al sacar del pool.
         kw.update(pool_pre_ping=True, pool_recycle=280)
@@ -52,7 +60,8 @@ def make_engine(url: str, *, echo: bool = False, pool_size: int | None = None) -
 def _tune_sqlite(engine: Engine, *, in_memory: bool) -> None:
     """SQLite solo es para desarrollo y pruebas, pero debe portarse como una BD de verdad:
     claves foraneas, transacciones reales (BEGIN explicito: SAVEPOINT y ROLLBACK correctos) y escritores en serie
-    (BEGIN IMMEDIATE) para que la carrera por el UNIQUE se resuelva sin 'database is locked'."""
+    (BEGIN IMMEDIATE, solo en transacciones de escritura: ver `WRITE_OPTION`) para que la carrera por el UNIQUE se
+    resuelva sin 'database is locked'. Las lecturas usan BEGIN diferido y no bloquean a nadie (WAL)."""
 
     @event.listens_for(engine, "connect")
     def _on_connect(dbapi_conn, _rec):  # pragma: no cover - ejecutado por el pool
@@ -66,7 +75,8 @@ def _tune_sqlite(engine: Engine, *, in_memory: bool) -> None:
 
     @event.listens_for(engine, "begin")
     def _on_begin(conn):
-        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        immediate = conn.get_execution_options().get(WRITE_OPTION)
+        conn.exec_driver_sql("BEGIN IMMEDIATE" if immediate else "BEGIN")
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
@@ -88,7 +98,10 @@ def is_unique_violation(exc: IntegrityError) -> bool:
 
 
 def is_retryable(exc: DBAPIError) -> bool:
-    """Interbloqueo (1213) o espera de bloqueo agotada (1205) en MySQL, 'database is locked' en SQLite."""
-    if _orig_code(exc) in (1213, 1205):
+    """La transaccion se puede repetir completa: interbloqueo (1213) o espera de bloqueo agotada (1205) en MySQL,
+    'database is locked' en SQLite. Tambien 1305 ('SAVEPOINT ... does not exist'): cuando MySQL elige esta transaccion
+    como victima de un interbloqueo la revierte ENTERA, y el ROLLBACK TO SAVEPOINT que SQLAlchemy intenta despues
+    falla con 1305 y esconde el 1213 original."""
+    if _orig_code(exc) in (1213, 1205, 1305):
         return True
     return "database is locked" in str(exc.orig).lower()

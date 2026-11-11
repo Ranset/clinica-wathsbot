@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-from sqlalchemy import (JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, MetaData, String, Text,
-                        Time, UniqueConstraint)
+from sqlalchemy import (JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, MetaData, String, Time,
+                        UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .db import utcnow

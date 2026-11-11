@@ -9,3 +9,11 @@ __pycache__
 google_token.json
 google_client_secret*.json
 google_oauth_pending.json
+server/instance/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# zip para subir a PythonAnywhere (generado a mano)
+clinica-pa.zip

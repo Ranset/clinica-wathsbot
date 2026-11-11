@@ -11,6 +11,9 @@ Variables de entorno reconocidas:
   MIN_NOTICE_MINUTES   antelacion minima para agendar (60)
   HORIZON_DAYS         maximo de dias a futuro (60)
   MAX_DURATION_MINUTES duracion maxima de una cita/bloqueo manual (1440)
+  POOL_SIZE            conexiones permanentes del pool de MySQL (se permiten hasta el DOBLE con rafagas). Sin ella SQLAlchemy
+                       usa 5 (+10). El MySQL GRATUITO de PythonAnywhere solo deja 3 conexiones simultaneas por usuario
+                       (error 1226): ahi usar POOL_SIZE=1 (maximo 2) para dejar una a la consola/migraciones.
   SQL_ECHO             1 para ver el SQL
 """
 from __future__ import annotations
@@ -30,11 +33,10 @@ DEFAULTS: dict = {
     "SQL_ECHO": False,
 }
 
-_ENV_INT = ("SLOT_MINUTES", "MIN_NOTICE_MINUTES", "HORIZON_DAYS", "MAX_DURATION_MINUTES")
+_ENV_INT = ("SLOT_MINUTES", "MIN_NOTICE_MINUTES", "HORIZON_DAYS", "MAX_DURATION_MINUTES", "POOL_SIZE")
 
 
 def default_database_url() -> str:
-    INSTANCE_DIR.mkdir(exist_ok=True)
     return "sqlite:///" + (INSTANCE_DIR / "clinica.db").as_posix()
 
 
