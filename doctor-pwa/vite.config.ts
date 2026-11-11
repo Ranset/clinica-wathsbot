@@ -56,7 +56,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5181,
-    proxy: { "/api": "http://127.0.0.1:5000" },
+    // `changeOrigin: false` A PROPOSITO: el servidor rechaza (403, csrf) las escrituras cuyo `Origin` no coincide con el
+    // `Host` que recibe. El atajo de cadena de Vite pone changeOrigin en true y reescribe el Host a :5000 (ver admin-web).
+    proxy: { "/api": { target: "http://127.0.0.1:5000", changeOrigin: false } },
   },
   preview: { host: "127.0.0.1", port: 5181 },
   build: { outDir: "dist", emptyOutDir: true },

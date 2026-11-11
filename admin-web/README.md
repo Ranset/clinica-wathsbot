@@ -3,6 +3,13 @@
 Web de administración y personal de la Clínica CUBAMEX: SPA React 19 + TypeScript + Vite que habla con la
 API de [`docs/openapi.yaml`](../docs/openapi.yaml) (la misma que usan el bot y la PWA del doctor).
 
+Se construyó y probó contra la API **simulada**, y el 2026-11-10 se revisó a mano en el navegador contra el **servidor Flask real**
+(`npm run dev:real`; ver `server/README.md` para levantarlo): login, calendario, alta de citas (incluido el choque 409), cambio de
+estado, botón del bot, aprobar solicitudes de horario y casos de atención. Esa revisión destapó que el proxy de Vite debe llevar
+`changeOrigin: false` (si reescribe el `Host`, el servidor rechaza las escrituras por `Origin`; ya está corregido) y que **aprobar
+una solicitud de horario no avisaba de las citas que quedaban fuera del nuevo horario**: ahora muestra la lista, como ya hacía el
+diálogo de horario. No hay pruebas automáticas contra el servidor real.
+
 ## Comandos
 
 `npm install` se corre **una sola vez en la raíz** del repositorio (npm workspaces: una sola copia de React

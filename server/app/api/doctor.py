@@ -5,6 +5,8 @@ se trata como inexistente (404, no 403). Las citas salen SIN el telefono del pac
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from flask import Blueprint, current_app, g, jsonify
 
 from ..agenda import Actor, iso
@@ -55,10 +57,11 @@ def create_absence():
     ab, affected = _x("availability").add_absence(_did(), start, end, opt_str(b, "reason"), _actor())
     if affected:
         tz, doctor = current_app.extensions["rules"].tz, _x("directory").get_doctor(_did())
+        first, last = iso(start, tz)[:10], iso(end - timedelta(minutes=1), tz)[:10]   # el fin es exclusivo: 00:00 del dia siguiente
+        span = f"el {first}" if first == last else f"entre el {first} y el {last}"
         _x("directory").add_attention(
             kind="absence_affects_appointments", reason="ausencia_con_citas",
-            detail=f"{doctor.name} marco una ausencia con {len(affected)} cita(s) entre el {iso(start, tz)[:10]} "
-                   f"y el {iso(end, tz)[:10]}: avisa a los pacientes.")
+            detail=f"{doctor.name} marco una ausencia con {len(affected)} cita(s) {span}: avisa a los pacientes.")
     return jsonify(absence=absence_json(ab), affectedCount=len(affected)), 201
 
 

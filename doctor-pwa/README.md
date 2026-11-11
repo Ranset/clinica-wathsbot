@@ -2,8 +2,8 @@
 
 PWA del doctor de la Clínica CUBAMEX (F7): React 19 + TypeScript + Vite + `vite-plugin-pwa`. Habla con la API de
 [`docs/openapi.yaml`](../docs/openapi.yaml) (rutas `/api/doctor/*` más sesión). **El doctor solo ve lo suyo**: su agenda,
-sus ausencias y su horario. Se construyó y probó contra la **API simulada** (`@clinica/api-client/mock`), no contra el
-servidor Flask real.
+sus ausencias y su horario. Se construyó y probó contra la **API simulada** (`@clinica/api-client/mock`) y después se
+revisó a mano contra el **servidor Flask real** (`npm run dev:real`; ver «Probado y no probado»).
 
 ## Comandos
 
@@ -130,7 +130,12 @@ tarea pedía no tocar `admin-web/`). Son candidatas a un paquete compartido (`sh
   quedó **activo y controlando la página**, y con el servidor detenido la app **se cargó entera desde el precache**.
 
 **NO probado** (sin hacer, no «probablemente funciona»):
-- **Contra el servidor Flask real** (cookies, CSRF, ETag y `304` reales, CORS, latencia, 5xx reales). Solo el simulador.
+- **Pruebas AUTOMATIZADAS contra el servidor Flask real**: no existen. Contra el servidor real solo hubo una revisión **a mano en
+  el navegador** (2026-11-10, `npm run dev:real` con la base de desarrollo del servidor): login, Hoy y Semana con datos reales (solo
+  las citas del doctor y sin teléfono), ausencia con aviso al personal, cierre de sesión, y las rutas del personal responden 403.
+  No se vio: latencia, 5xx reales, CORS (no aplica: mismo origen) ni la PWA instalada. **Ojo con el proxy de Vite**: debe llevar
+  `changeOrigin: false` (ya lo lleva); con el atajo de cadena el servidor rechaza las escrituras (403 `csrf`) porque el `Origin`
+  del navegador no coincide con el `Host` reescrito.
 - **Push real**: nunca llegó un push; el manejador `push`/`notificationclick` del service worker no se ejecutó (solo se prueba
   el análisis del contenido). La suscripción real (`pushManager.subscribe` con una clave VAPID válida) no se probó: el
   navegador integrado tiene los permisos bloqueados, así que ahí solo se vio el estado «bloqueadas».

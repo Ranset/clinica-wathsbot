@@ -20,6 +20,12 @@ export DATABASE_URL='mysql+pymysql://usuario:clave@host/base?charset=utf8mb4'   
 .venv/Scripts/flask --app wsgi run          # http://127.0.0.1:5000/api/health
 ```
 
+Para probar las webs contra este servidor (`npm run dev:real` en `admin-web/` o `doctor-pwa/`, que mandan `/api` a `:5000`): arrancar
+Flask con `AUTH_COOKIE_SECURE=0` (la cookie `Secure` no viaja por http local) y `BOT_TOKEN`, y crear un usuario con
+`flask --app wsgi create-user`. El proxy de Vite conserva el `Host` a proposito (`changeOrigin: false`): el servidor compara `Origin`
+con `Host` en las escrituras y, si el proxy lo reescribiera, daria 403 `csrf`. Las cookies no se aislan por puerto: dos webs en
+`127.0.0.1` comparten la sesion (la PWA mostrara su aviso «esta app es para los doctores» si entraste como personal).
+
 Variables: `DATABASE_URL`, `TIMEZONE` (America/Cancun), `SLOT_MINUTES` (30), `MIN_NOTICE_MINUTES` (60), `HORIZON_DAYS` (60),
 `MAX_DURATION_MINUTES` (1440), `POOL_SIZE` (conexiones permanentes del pool de MySQL, hasta el doble en rafagas; **en PythonAnywhere
 gratis `POOL_SIZE=1`**: el usuario solo tiene 3 conexiones simultaneas), `SQL_ECHO`. En PythonAnywhere el motor usa `pool_recycle=280` y `pool_pre_ping`.

@@ -13,7 +13,10 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5180,
-    proxy: { "/api": "http://127.0.0.1:5000" },
+    // `changeOrigin: false` A PROPOSITO: el servidor rechaza (403, csrf) las escrituras cuyo `Origin` no coincide con el
+    // `Host` que recibe. El atajo de cadena de Vite pone changeOrigin en true y reescribe el Host a :5000, con lo que el
+    // login desde 127.0.0.1:5180 daria 403. Conservando el Host, ambos coinciden como en produccion (mismo origen).
+    proxy: { "/api": { target: "http://127.0.0.1:5000", changeOrigin: false } },
   },
   build: { outDir: "dist", emptyOutDir: true },
   // @ts-expect-error `test` lo lee vitest; vite no lo tipa

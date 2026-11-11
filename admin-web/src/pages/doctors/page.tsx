@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Check, Clock, UserPlus, X } from "lucide-react";
 import { Button, type WeeklyHours } from "@clinica/calendar";
-import type { Doctor, ScheduleChangeRequest } from "@clinica/api-client";
+import type { Booking, Doctor, ScheduleChangeRequest } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { useAuth } from "../../auth";
 import { useDirectory } from "../../lib/directory";
@@ -13,6 +13,7 @@ import { usePolling } from "../../lib/use-polling";
 import { useToast } from "../../toast";
 import { BusyButton, FormError, Notice, PageMessage, Pill, Spinner, TextArea, Field } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
+import { AffectedList } from "./affected-list";
 import { DoctorDataForm, DoctorDialog } from "./doctor-dialog";
 import { HoursEditor } from "./hours-editor";
 
@@ -85,6 +86,8 @@ function ScheduleRequests({ doctors, onApplied }: { doctors: Doctor[]; onApplied
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Citas que el horario aprobado dejo fuera: el servidor no las cancela, el personal avisa a los pacientes.
+  const [affected, setAffected] = useState<Booking[]>([]);
 
   const load = useCallback(async (signal?: AbortSignal) => setItems(await api.scheduleChanges.list("pending", { signal })), [api]);
   usePolling(load, 20_000);
@@ -92,9 +95,17 @@ function ScheduleRequests({ doctors, onApplied }: { doctors: Doctor[]; onApplied
   const decide = async (r: ScheduleChangeRequest, approve: boolean) => {
     setBusyId(r.id);
     try {
-      if (approve) await api.scheduleChanges.approve(r.id);
+      let left: Booking[] = [];
+      if (approve) left = (await api.scheduleChanges.approve(r.id)).affectedAppointments;
       else await api.scheduleChanges.reject(r.id, note.trim() || undefined);
-      toast.show(approve ? "Solicitud aprobada: el nuevo horario ya está vigente." : "Solicitud rechazada.");
+      setAffected(left);
+      toast.show(
+        approve
+          ? left.length
+            ? `Solicitud aprobada. ${left.length === 1 ? "1 cita quedó" : `${left.length} citas quedaron`} fuera del nuevo horario: avisa a los pacientes.`
+            : "Solicitud aprobada: el nuevo horario ya está vigente."
+          : "Solicitud rechazada.",
+      );
       setRejecting(null);
       setNote("");
       await load();
@@ -106,62 +117,67 @@ function ScheduleRequests({ doctors, onApplied }: { doctors: Doctor[]; onApplied
     }
   };
 
-  if (items.length === 0) return null;
+  if (items.length === 0 && affected.length === 0) return null;
   return (
-    <section aria-labelledby="requests-h" className="rounded-xl border border-warning-soft bg-warning-tint p-4">
-      <h2 id="requests-h" className="mb-3 text-sm font-bold text-warning-text">
-        Solicitudes de cambio de horario ({items.length})
-      </h2>
-      <ul className="flex flex-col gap-3">
-        {items.map((r) => {
-          const doctor = doctors.find((d) => d.id === r.doctorId);
-          return (
-            <li key={r.id} className="rounded-lg border bg-background p-3">
-              <p className="text-sm font-semibold">{doctor?.name ?? "Doctor"}</p>
-              <p className="text-xs text-text-3">Pide el cambio desde el {fmtDay(r.effectiveFrom)} · enviada {fmtDateTime(r.createdAtUtc)}</p>
-              <dl className="mt-2 grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
-                <dt className="text-text-3">Ahora</dt>
-                <dd>{doctor ? summarizeHours(doctor.weeklyHours) : "—"}</dd>
-                <dt className="text-text-3">Pide</dt>
-                <dd className="font-medium">{summarizeHours(r.weeklyHours)}</dd>
-                {r.note && (
-                  <>
-                    <dt className="text-text-3">Nota</dt>
-                    <dd>{r.note}</dd>
-                  </>
-                )}
-              </dl>
-              {rejecting === r.id ? (
-                <div className="mt-3 flex flex-col gap-2">
-                  <Field label="Motivo (opcional)">
-                    <TextArea value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
-                  </Field>
-                  <div className="flex gap-2">
-                    <BusyButton busy={busyId === r.id} variant="outline" onClick={() => void decide(r, false)}>
-                      Confirmar rechazo
-                    </BusyButton>
-                    <Button variant="ghost" onClick={() => setRejecting(null)}>
-                      Volver
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 flex gap-2">
-                  <BusyButton busy={busyId === r.id} size="sm" onClick={() => void decide(r, true)}>
-                    <Check className="h-4 w-4" aria-hidden />
-                    Aprobar
-                  </BusyButton>
-                  <Button size="sm" variant="outline" onClick={() => setRejecting(r.id)}>
-                    <X className="h-4 w-4" aria-hidden />
-                    Rechazar
-                  </Button>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <>
+      <AffectedList items={affected} onDismiss={() => setAffected([])} />
+      {items.length > 0 && (
+        <section aria-labelledby="requests-h" className="rounded-xl border border-warning-soft bg-warning-tint p-4">
+          <h2 id="requests-h" className="mb-3 text-sm font-bold text-warning-text">
+            Solicitudes de cambio de horario ({items.length})
+          </h2>
+          <ul className="flex flex-col gap-3">
+            {items.map((r) => {
+              const doctor = doctors.find((d) => d.id === r.doctorId);
+              return (
+                <li key={r.id} className="rounded-lg border bg-background p-3">
+                  <p className="text-sm font-semibold">{doctor?.name ?? "Doctor"}</p>
+                  <p className="text-xs text-text-3">Pide el cambio desde el {fmtDay(r.effectiveFrom)} · enviada {fmtDateTime(r.createdAtUtc)}</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
+                    <dt className="text-text-3">Ahora</dt>
+                    <dd>{doctor ? summarizeHours(doctor.weeklyHours) : "—"}</dd>
+                    <dt className="text-text-3">Pide</dt>
+                    <dd className="font-medium">{summarizeHours(r.weeklyHours)}</dd>
+                    {r.note && (
+                      <>
+                        <dt className="text-text-3">Nota</dt>
+                        <dd>{r.note}</dd>
+                      </>
+                    )}
+                  </dl>
+                  {rejecting === r.id ? (
+                    <div className="mt-3 flex flex-col gap-2">
+                      <Field label="Motivo (opcional)">
+                        <TextArea value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+                      </Field>
+                      <div className="flex gap-2">
+                        <BusyButton busy={busyId === r.id} variant="outline" onClick={() => void decide(r, false)}>
+                          Confirmar rechazo
+                        </BusyButton>
+                        <Button variant="ghost" onClick={() => setRejecting(null)}>
+                          Volver
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex gap-2">
+                      <BusyButton busy={busyId === r.id} size="sm" onClick={() => void decide(r, true)}>
+                        <Check className="h-4 w-4" aria-hidden />
+                        Aprobar
+                      </BusyButton>
+                      <Button size="sm" variant="outline" onClick={() => setRejecting(r.id)}>
+                        <X className="h-4 w-4" aria-hidden />
+                        Rechazar
+                      </Button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+    </>
   );
 }
 

@@ -437,6 +437,21 @@ describe("doctores", () => {
     await waitFor(() => expect(card).toHaveTextContent("Horario propio: Lun, Mié, Vie 10:00–16:00"));
   });
 
+  it("al aprobar una solicitud avisa de las citas agendadas que quedaron fuera del nuevo horario", async () => {
+    const { user, mock, violations: v } = await mountApp({ hash: "#/doctores" });
+    violations = v;
+    // un horario tan corto que casi todas las citas futuras de esa doctora quedan fuera (el servidor no las cancela)
+    const pending = mock.db.requests.find((r) => r.status === "pending")!;
+    pending.weeklyHours = { mon: [{ start: "09:00", end: "09:30" }] };
+    const section = (await screen.findByRole("heading", { name: /Solicitudes de cambio de horario \(1\)/ })).closest("section")!;
+    await user.click(within(section).getByRole("button", { name: "Aprobar" }));
+    expect(await screen.findByText(/quedan afectadas|queda afectada/)).toBeInTheDocument();
+    expect(screen.getByText(/No se cancelaron: avisa a los pacientes/)).toBeInTheDocument();
+    expect(await screen.findByText(/fuera del nuevo horario: avisa a los pacientes/)).toBeInTheDocument();    // y el aviso de la pantalla
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /Solicitudes de cambio/ })).not.toBeInTheDocument());
+    expect(screen.getByText(/quedan afectadas|queda afectada/)).toBeInTheDocument();                       // el aviso sigue aunque la solicitud ya no
+  });
+
   it("horario propio de un doctor: valida contra el de la clinica y avisa de las citas que quedan fuera", async () => {
     const { user, mock, violations: v } = await mountApp({ hash: "#/doctores" });
     violations = v;

@@ -93,6 +93,7 @@ def test_ausencias_propias_y_aviso_al_personal_sin_datos_de_pacientes(login, age
         (caso,) = s.scalars(select(AttentionCase)).all()
     assert caso.kind == "absence_affects_appointments" and caso.status == "open" and "1 cita" in caso.detail
     assert "Ana" not in caso.detail and "5219981110001" not in caso.detail and caso.phone is None      # sin datos de pacientes
+    assert f" el {t.date().isoformat()}:" in caso.detail and "entre" not in caso.detail               # un solo dia: "el 12", no "entre el 12 y el 13"
     avisos = staff.get("/api/attention").get_json()["items"]
     assert [a["kind"] for a in avisos] == ["absence_affects_appointments"]
     assert [a["id"] for a in d1.get("/api/doctor/absences").get_json()["items"]] == [j["absence"]["id"]]
