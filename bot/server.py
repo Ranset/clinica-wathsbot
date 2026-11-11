@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wathsbot: receives Zernio message.received webhooks and auto-replies on WhatsApp."""
-import hashlib, hmac, json, os, sys, threading, time, urllib.request, urllib.error
+import hashlib, hmac, json, os, re, sys, threading, time, unicodedata, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import clinic_info
@@ -21,6 +21,7 @@ PORT = int(os.environ.get("WATHSBOT_PORT", "8787"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYSTEM = open(os.path.join(HERE, "system_prompt.md"), encoding="utf-8").read()
 SEEN, GREETED, LOCK = set(), set(), threading.Lock()
+_TL = threading.local()  # conversacion en curso y si ya se registro el traspaso en este turno
 _CONV_LOCKS = {}  # un candado por conversacion: dos mensajes seguidos del mismo paciente se atienden de uno en uno
 
 
@@ -35,9 +36,22 @@ def http(method, url, headers, body=None, timeout=40):
         return json.loads(r.read() or b"{}")
 
 
-def zernio(method, path, body=None):
+def zernio(method, path, body=None, headers=None):
     h = {"Authorization": f"Bearer {ZKEY}", "Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
     return http(method, BASE + path, h, body)
+
+
+def _zernio_send(path, body, key):
+    """POST con Idempotency-Key. Si `zernio` fue sustituido por una funcion que no acepta cabeceras (simulaciones de
+    prueba antiguas), se llama sin ellas: el contrato (method, path, body) no cambia para quien ya lo usa."""
+    try:
+        return zernio("POST", path, body, headers={"Idempotency-Key": key})
+    except TypeError as e:
+        if "headers" not in str(e):
+            raise
+        return zernio("POST", path, body)
 
 
 def llm_cli(system, messages):
@@ -129,9 +143,42 @@ def answer(msgs, phone, first=False):
     return llm(sys_prompt, msgs)
 
 
-def deliver(conv_id, account_id, reply):
-    if not DRY_RUN:
-        zernio("POST", f"/inbox/conversations/{conv_id}/messages", {"accountId": account_id, "message": reply})
+RETRY_SLEEP = 2  # segundos entre intentos de envio (x numero de intento)
+
+
+def deliver(conv_id, account_id, reply, ev_id=None):
+    """Envia la respuesta por Zernio. True si Zernio la acepto. Reintenta 2 veces los fallos de red/5xx/429 con la MISMA
+    Idempotency-Key (Zernio no reintenta solo y un envio no es idempotente: asi un reintento nunca duplica el mensaje).
+    Un 4xx (salvo 429) no se reintenta: no cambiara."""
+    if DRY_RUN:
+        return True
+    key = hashlib.sha256(f"{ev_id}|{conv_id}|{reply}".encode()).hexdigest()[:48]
+    last = "?"
+    for attempt in range(1, 4):
+        try:
+            _zernio_send(f"/inbox/conversations/{conv_id}/messages", {"accountId": account_id, "message": reply}, key)
+            return True
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+            if 400 <= e.code < 500 and e.code != 429:
+                break
+        except Exception as e:
+            last = type(e).__name__
+        if attempt < 3:
+            time.sleep(RETRY_SLEEP * attempt)
+    log(f"ENVIO FALLO conv={conv_id} ({last}): el paciente NO recibio la respuesta")
+    return False
+
+
+def _report_delivery_failure(conv_id, phone):
+    """La respuesta no llego al paciente: que una persona lo sepa (antes solo quedaba una linea en el log)."""
+    if BACKEND != "api":
+        return
+    try:
+        _do_handoff(get_agenda(), conv_id, phone, "otro",
+                    "No se pudo enviar la respuesta del bot por WhatsApp (Zernio): el paciente no la recibio", tag="envio")
+    except Exception as e:
+        log(f"conv={conv_id} tampoco se pudo avisar del envio fallido: {e!r}")
 
 
 def handle(ev):
@@ -143,7 +190,101 @@ def handle(ev):
     return reply
 
 
-def reply_for(msgs, phone, conv_id, first=False):
+def _norm(t):
+    return "".join(c for c in unicodedata.normalize("NFD", str(t).lower()) if unicodedata.category(c) != "Mn")
+
+
+# El paciente pide a una persona / la respuesta promete que el equipo lo contactara. Si eso pasa y NO se registro el
+# traspaso en "Atencion", el codigo lo registra: prometer un aviso que nadie hizo es peor que no prometerlo.
+HUMAN_RE = re.compile(r"((?<!ser )humano|humana|persona real|hablar con (una |un )?(persona|alguien|asesor|asesora|encargad|recepcion|agente)|"
+                      r"(pasame|comunicame|ponme|transfiereme|conectame) con|con alguien del (equipo|personal)|"
+                      r"asesor(a)? humano|recepcionista|personal de la clinica|con un agente)")
+PROMISE_RE = re.compile(r"(voy a avisar|avisare|te aviso|notificare|voy a notificar|canalizare|voy a canalizar|"
+                        r"(se|te) pondra(n)? en contacto|se comunicara|un miembro del equipo se|el equipo se)")
+NO_NOTIFY = ("Intente avisar a un miembro del equipo, pero no pude registrar tu solicitud en este momento. "
+             "Por favor vuelve a escribirme en unos minutos.")
+HANDOFF_REASONS = ("pidio_persona", "fuera_de_alcance", "otro")
+
+
+HANDOFF_DEDUP_S = int(os.environ.get("WATHSBOT_HANDOFF_DEDUP_S", "900"))
+_HANDOFF_SEEN = {}  # (conversacion, causa) -> instante del ultimo registro EXITOSO
+_HLOCK = threading.Lock()
+
+
+def _now():
+    return time.time()
+
+
+def _do_handoff(ag, conv_id, phone, reason, detail="", tag=None):
+    """Registra el caso en Atencion de la clinica. True solo si la API lo acepto (o ya hay uno reciente de la misma causa:
+    sin esto, cada mensaje de un paciente con el bot en problemas abria otro caso identico)."""
+    key = (id(ag), str(conv_id), tag or reason)  # por instancia de agenda: dos agendas distintas no comparten avisos
+    with _HLOCK:
+        t = _HANDOFF_SEEN.get(key)
+        if t is not None and _now() - t < HANDOFF_DEDUP_S:
+            _TL.handed = True
+            log(f"HANDOFF conv={conv_id} causa={tag or reason}: ya hay un aviso reciente, no lo duplico")
+            return True
+    try:
+        ag.handoff(conv_id, reason, telefono=phone or None, detail=(detail or None))
+        with _HLOCK:
+            _HANDOFF_SEEN[key] = _now()
+            for k in [k for k, v in _HANDOFF_SEEN.items() if _now() - v >= HANDOFF_DEDUP_S]:
+                del _HANDOFF_SEEN[k]
+        _TL.handed = True
+        log(f"HANDOFF conv={conv_id} motivo={reason} REGISTRADO")
+        return True
+    except Exception as e:
+        _TL.tried = True
+        log(f"HANDOFF conv={conv_id} motivo={reason} FALLO: {e!r}")
+        return False
+
+
+def _ensure_handoff(ag, conv_id, phone, msgs, reply):
+    """Red de seguridad. Devuelve el texto a enviar (el mismo, o un aviso honesto si no se pudo registrar)."""
+    if getattr(_TL, "handed", False):
+        return reply
+    if getattr(_TL, "tried", False):
+        # la accion ya se intento y fallo: el modelo vio el error. Solo se corrige si aun asi promete un aviso.
+        return NO_NOTIFY if PROMISE_RE.search(_norm(reply)) else reply
+    last_user = next((m["content"] for m in reversed(msgs)
+                      if m["role"] == "user" and not str(m["content"]).startswith("RESULTADO")), "")
+    by_user = bool(HUMAN_RE.search(_norm(last_user)))
+    by_reply = bool(PROMISE_RE.search(_norm(reply)))
+    if not (by_user or by_reply):
+        return reply
+    reason = "pidio_persona" if by_user else "fuera_de_alcance"
+    if _do_handoff(ag, conv_id, phone, reason, "Registrado por el codigo del bot (el modelo no uso la accion)"):
+        return reply
+    return NO_NOTIFY
+
+
+MEDIA_OK = ("Recibi tu mensaje, pero por este medio no puedo ver fotos, audios ni archivos. Ya avise a un miembro del equipo "
+            "para que lo revise y se ponga en contacto contigo. Mientras tanto, si quieres, te ayudo a agendar una cita o con "
+            "informacion de horarios y ubicacion.")
+MEDIA_FAIL = ("Recibi tu mensaje, pero por este medio no puedo ver fotos, audios ni archivos, y no pude avisar al equipo en este "
+              "momento. Por favor escribe tu consulta en texto o vuelve a intentarlo en unos minutos.")
+
+
+def media_info(m):
+    """None si es un mensaje de texto normal. Si trae adjuntos o no trae texto: {kinds, has_text} (o {ignore} si es solo un sticker)."""
+    atts = m.get("attachments") or []
+    has_text = bool((m.get("text") or "").strip())
+    kinds = []
+    for a in atts:
+        t = str((a or {}).get("type") or "archivo")
+        if t not in kinds:
+            kinds.append(t)
+    if not atts and has_text:
+        return None
+    if not atts:
+        return {"kinds": ["contenido sin texto"], "has_text": False}
+    if kinds == ["sticker"] and not has_text:
+        return {"kinds": kinds, "has_text": False, "ignore": True}
+    return {"kinds": kinds, "has_text": has_text}
+
+
+def reply_for(msgs, phone, conv_id, first=False, media=None):
     """Decision completa del bot para un mensaje -> texto a enviar, o None si NO debe contestar.
     Con BACKEND=api: (1) consulta el interruptor en la API (apagado -> None: atiende una persona);
     (2) si la API no responde NO ofrece horarios de memoria: envia FALLBACK; (3) si termina en FALLBACK
@@ -153,10 +294,24 @@ def reply_for(msgs, phone, conv_id, first=False):
     import api_client
     ag = get_agenda()
     reason = "otro"
+    _TL.conv_id, _TL.handed, _TL.tried = conv_id, False, False
     try:
         if not ag.bot_active():
             log(f"conv={conv_id} interruptor del bot APAGADO: no contesto")
             return None
+        if media:
+            if media.get("ignore"):
+                log(f"conv={conv_id} solo un sticker: no contesto ni aviso")
+                return None
+            kinds = ", ".join(media["kinds"])
+            ok = _do_handoff(ag, conv_id, phone, "otro", f"El paciente envio: {kinds}. El bot no puede ver archivos.", tag="adjunto")
+            if not media["has_text"]:
+                log(f"conv={conv_id} mensaje sin texto ({kinds}): aviso a una persona {'OK' if ok else 'FALLO'}; el modelo no interviene")
+                return MEDIA_OK if ok else MEDIA_FAIL
+            note = ("\n[Sistema: el paciente tambien envio " + kinds + ", que no puedes ver. " +
+                    ("Un miembro del equipo ya fue avisado y lo revisara: dilo brevemente." if ok else
+                     "NO se pudo avisar al equipo: dile que no pudiste registrarlo y que vuelva a escribir en unos minutos.") + "]")
+            msgs = msgs[:-1] + [dict(msgs[-1], content=msgs[-1]["content"] + note)]
         reply = answer(msgs, phone, first)
     except api_client.ApiUnavailable as e:
         log(f"conv={conv_id} la API de la clinica no responde ({e}): paso el caso a una persona")
@@ -165,11 +320,10 @@ def reply_for(msgs, phone, conv_id, first=False):
         log(f"conv={conv_id} fallo el modelo: {e!r}: paso el caso a una persona")
         reply, reason = FALLBACK, "modelo_fallo"
     if reply == FALLBACK:
-        try:
-            ag.handoff(conv_id, reason, telefono=phone or None, detail="El bot envio el mensaje de respaldo")
-        except api_client.ApiUnavailable as e:
-            log(f"conv={conv_id} no se pudo registrar el traspaso a una persona: {e}")
-    return reply
+        if not _TL.handed:
+            _do_handoff(ag, conv_id, phone, reason, "El bot envio el mensaje de respaldo", tag="respaldo")
+        return reply
+    return _ensure_handoff(ag, conv_id, phone, msgs, reply)
 
 
 def handle_direct(ev):
@@ -178,11 +332,12 @@ def handle_direct(ev):
     with LOCK:
         lock = _CONV_LOCKS.setdefault(conv_id, threading.Lock())
     with lock:
-        reply = reply_for(msgs, phone, conv_id, first)
+        reply = reply_for(msgs, phone, conv_id, first, media=media_info(ev["message"]))
     if reply is None:
         return None
     log(f"conv={conv_id} IN: {text[:80]!r} -> OUT: {reply[:120]!r}")
-    deliver(conv_id, account_id, reply)
+    if not deliver(conv_id, account_id, reply, ev.get("id")):
+        _report_delivery_failure(conv_id, phone)
     return reply
 
 
@@ -250,6 +405,7 @@ Acciones (una por turno):
 - {{"name":"mis_citas"}}
 - {{"name":"cancelar","event_id":"..."}}
 - {{"name":"reprogramar","event_id":"...","inicio":"AAAA-MM-DDTHH:MM"}}
+- {{"name":"pasar_a_persona","motivo":"pidio_persona","detalle":"resumen breve sin datos medicos"}}  -> registra el caso en la bandeja de Atencion del equipo (motivo: pidio_persona | fuera_de_alcance | otro)
 Si usas una accion, pon reply en null: veras el RESULTADO y entonces redactas la respuesta final con action null.
 
 REGLAS DE AGENDA (obligatorias):
@@ -263,6 +419,8 @@ REGLAS DE AGENDA (obligatorias):
 5. No guardes ni pidas sintomas o motivos medicos; solo nombre, especialidad y horario.
 6. Si la especialidad no esta en la lista, di que no la ofrecemos por este medio y que el equipo confirmara. Si la agenda falla, di que el equipo se pondra en contacto.
 7. Escribe fechas en espanol natural (ej. "martes 11 de noviembre a las 10:00"), nunca en formato ISO.
+8. TRASPASO A UNA PERSONA: si el paciente pide hablar con una persona, o no puedes ayudarlo (queja, algo fuera de alcance, un precio que no tienes) y vas a decir que el equipo lo contactara, PRIMERO usa la accion "pasar_a_persona". Solo di que avisaste al equipo si el RESULTADO es ok. Si es un error, dile que no pudiste registrar su solicitud y que vuelva a escribir en unos minutos. NUNCA prometas "voy a avisar" sin haber usado esa accion. En "detalle" no pongas sintomas ni datos medicos.
+9. NUNCA afirmes que el paciente tiene una cita (ni su fecha, hora o doctor) sin haber usado "mis_citas" en ESTE turno. Lo dicho antes en el chat puede estar desactualizado: la unica fuente de verdad es el RESULTADO de "mis_citas".
 """
 
 
@@ -294,6 +452,12 @@ def run_action(act, phone):
         return ag.cancel(phone, act.get("event_id", ""))
     if n == "reprogramar":
         return ag.reschedule(phone, act.get("event_id", ""), S.parse_dt(act["inicio"]))
+    if n == "pasar_a_persona":
+        if BACKEND != "api":
+            return {"error": "no_disponible"}
+        reason = act.get("motivo") if act.get("motivo") in HANDOFF_REASONS else "otro"
+        ok = _do_handoff(ag, getattr(_TL, "conv_id", None), phone, reason, str(act.get("detalle") or "")[:300])
+        return {"ok": True} if ok else {"error": "no_se_pudo_avisar"}
     return {"error": "accion_desconocida"}
 
 

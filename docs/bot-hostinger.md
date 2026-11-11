@@ -33,6 +33,9 @@ El paciente se identifica por el teléfono de WhatsApp que entrega Zernio, nunca
 - **La API no responde** (al ver el interruptor o al armar la respuesta): el bot **no ofrece horarios de memoria**; envía "un miembro del equipo se pondrá en contacto" y registra el caso en *Atención* (si la API sigue caída, el aviso queda solo en el registro del bot).
 - **Falla el modelo** (CLI caído, tiempo agotado): mismo mensaje de respaldo y caso en *Atención* (motivo `modelo_fallo`).
 - **Una acción de agenda falla a mitad de la conversación:** el modelo recibe `agenda_no_disponible` y le dice al paciente que el equipo lo contactará.
+- **El paciente pide hablar con una persona** (o el bot dice que el equipo lo contactará): el caso se registra en *Atención* (acción `pasar_a_persona`; si el modelo la olvida, el código la registra). El bot solo promete el aviso si de verdad quedó registrado; si no, pide volver a escribir en unos minutos. Varios mensajes seguidos del mismo paciente abren **un** caso (ventana de 15 min, `WATHSBOT_HANDOFF_DEDUP_S`).
+- **Fotos, audios, documentos o mensajes sin texto:** el bot no puede verlos; avisa a una persona en *Atención* (con el tipo de archivo, sin descargarlo) y se lo dice al paciente. Un sticker suelto se ignora.
+- **Zernio no acepta la respuesta** (red, 5xx, 429): el bot reintenta 2 veces con la misma `Idempotency-Key`, así que un reintento nunca duplica el mensaje. Si no lo logra, deja un caso en *Atención* ("el paciente no recibió la respuesta") además de la línea `ENVIO FALLO` en su registro.
 
 ## Probarlo en tu máquina (sin WhatsApp, con el modelo real)
 

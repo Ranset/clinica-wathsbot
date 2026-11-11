@@ -87,6 +87,9 @@ paso 7: vuelve el bot con Google Calendar. También sirve apagar el botón **Bot
 - Si el interruptor está apagado: **no contesta** y no llama al modelo.
 - Si la API no responde o el modelo falla: envía el mensaje de respaldo ("un miembro del equipo se pondrá en contacto") y registra el caso en
   *Atención* de la clínica (`POST /api/bot/handoffs`). Nunca ofrece horarios de memoria.
+- Si el paciente pide una persona, o manda fotos/audios/archivos (que el bot no puede ver), registra un caso en *Atención*
+  (`ACTION pasar_a_persona`, `HANDOFF ... REGISTRADO` en `server.log`). Si Zernio rechaza la respuesta la reintenta con la misma
+  `Idempotency-Key` y, si no puede, deja el caso en *Atención* y la línea `ENVIO FALLO` en `server.log`: avísale al usuario si la ves.
 - La identidad del paciente es el teléfono que entrega Zernio; solo ve y modifica sus propias citas.
 - Las reservas las valida y hace de forma atómica el servidor; el bot solo las pide.
 
