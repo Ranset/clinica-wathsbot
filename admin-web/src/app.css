@@ -1,0 +1,26 @@
+/* Estilos propios de la web. El tema (colores, utilidades) viene de @clinica/calendar. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-subtle);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Que un clic nunca "seleccione" texto en los botones tipo tarjeta del calendario. */
+button {
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

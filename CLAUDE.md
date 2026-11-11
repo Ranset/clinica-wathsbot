@@ -25,7 +25,7 @@ Regla de agenda: minimo 60 min de antelacion, maximo 60 dias a futuro.
 - El bot deja de tocar Google Calendar y de usar `scheduler.py`; pide horarios/reserva/cancelacion/reprogramacion a la API, que valida y reserva de forma atomica.
 
 ## Estado actual del repo
-Plan por fases F0-F9 en `C:\Users\VIDEO\.claude\plans\wild-wibbling-cake.md` (aprobado). **Hecho: F0 (entorno) y F1 (contrato).** Siguiente: F2 (modelo de datos + motor de agenda en `server/`), F3 (webhook/cola), F4 (auth); en paralelo tras F1: `admin-web/` (F6) y `doctor-pwa/` (F7), que aun NO existen.
+Plan por fases F0-F9 en `C:\Users\VIDEO\.claude\plans\wild-wibbling-cake.md` (aprobado). **Hecho: F0 (entorno), F1 (contrato), F2 (modelo de datos + motor de agenda en `server/`, 154 pruebas, validado en Python 3.10 + MySQL 8.0.46 de PythonAnywhere) y F6 (`admin-web/` + `shared/api-client/`, sobre una API simulada).** Siguiente: F3 (webhook/cola + endpoints `/api/bot/*`), F4 (auth/roles/API de administracion), arreglar los huecos del contrato que destapo F6 y F7 (`doctor-pwa/`, aun NO existe).
 - `docs/openapi.yaml` — **contrato de la API** (OpenAPI 3.1, 50 operaciones: bot, webhook, auth, agenda, admin, doctor). Es la referencia para servidor, bot, web y PWA; cambiar el contrato antes que el codigo. `server/tests/test_contract.py` lo valida y lo ata a `bot/scheduler.py` (codigos de error), a `Booking` de `shared/calendar/src/types.ts` y a las 6 acciones del bot.
 - `server/` — solo entorno por ahora: `requirements.txt` / `requirements-dev.txt` (Flask, SQLAlchemy 2.1, Alembic, PyMySQL, pytest) y `tests/test_contract.py`. El venv esta en `server/.venv` (ignorado por git).
 - `bot/` — bot de WhatsApp actual, funcional y probado de punta a punta contra Google Calendar. Python, solo libreria estandar (sin `requirements.txt`); `GoogleBackend`/`gcal_auth.py` ademas necesitan `google-auth`, `google-api-python-client`, `google-auth-oauthlib`. **F5 adelantada (lado del bot, probada contra una API falsa; el servidor real aun no tiene esos endpoints):** `api_client.py` (cliente de la API con la misma interfaz que `scheduler.Agenda`), `poller.py` (reclama la cola y atiende con `server.handle()`), y `server.py` con `WATHSBOT_BACKEND=api`. El defecto sigue siendo `google` (bot actual intacto); `scheduler.py` se retira en F8 tras estabilizar.
@@ -51,6 +51,7 @@ npm run typecheck                         # tsc --noEmit (tambien cubre demo/ y 
 npm run dev                               # demo con datos de ejemplo en http://127.0.0.1:5199
 npm run build                             # demo estatica en dist-demo/
 ```
+Web de administracion (desde `admin-web/`; `npm install` solo en la RAIZ, son workspaces): `npm run dev` (API simulada, :5180) · `npm run dev:real` (proxy a Flask :5000) · `npm test` · `npm run typecheck` · `npm run build` (-> `dist/`); cliente y simulador: `cd shared/api-client && npm test`.
 Servidor (desde `server/`, venv en `server/.venv`; en Windows `.venv/Scripts/python`):
 ```bash
 python -m venv .venv && .venv/Scripts/python -m pip install -r requirements-dev.txt   # una sola vez

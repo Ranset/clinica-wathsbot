@@ -18,8 +18,8 @@
     "@clinica/calendar": "*"
   },
   "devDependencies": {
-    "ajv": "^8.17.1",
     "@types/node": "^22.10.0",
+    "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.2",
