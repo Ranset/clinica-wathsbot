@@ -15,6 +15,7 @@ import type {
   DoctorInput,
   RequestStatus,
   Room,
+  ScheduleChangeApplied,
   ScheduleChangeRequest,
   SessionInfo,
   User,
@@ -213,6 +214,11 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     rooms: { list: (o?: RequestOptions) => items<Room>("listRooms", o) },
 
+    /** Ausencias de TODOS los doctores en `[from, to)` (para sombrear el calendario). */
+    absences: {
+      list: (range: { from: string; to: string }, o?: RequestOptions) => items<Absence>("listAbsences", { query: range, ...o }),
+    },
+
     clinicHours: {
       get: (o?: RequestOptions) => json<WeeklyHours>("getClinicHours", o),
       set: (hours: WeeklyHours, o?: RequestOptions) => json<WeeklyHours>("setClinicHours", { body: hours, ...o }),
@@ -241,7 +247,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
       list: (status?: RequestStatus, o?: RequestOptions) =>
         items<ScheduleChangeRequest>("listScheduleChangeRequests", { query: { status }, ...o }),
       approve: (id: string, o?: RequestOptions) =>
-        json<ScheduleChangeRequest>("approveScheduleChange", { path: { requestId: id }, ...o }),
+        json<ScheduleChangeApplied>("approveScheduleChange", { path: { requestId: id }, ...o }),
       reject: (id: string, note?: string, o?: RequestOptions) =>
         json<ScheduleChangeRequest>("rejectScheduleChange", { path: { requestId: id }, body: note ? { note } : {}, ...o }),
     },

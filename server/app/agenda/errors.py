@@ -15,6 +15,7 @@ DOCTOR_NO_DISPONIBLE = "doctor_no_disponible"
 TRANSICION_INVALIDA = "transicion_invalida"
 VALIDACION = "validacion"
 NO_ENCONTRADO = "no_encontrado"
+RANGO_INVALIDO = "rango_invalido"
 
 #: estado HTTP que el contrato asigna a cada codigo (lo usara la capa de rutas)
 HTTP_STATUS = {

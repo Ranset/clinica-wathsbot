@@ -30,6 +30,7 @@ export const OPERATIONS = {
   listDoctorAbsences: ["get", "/api/doctors/{doctorId}/absences"],
   createDoctorAbsence: ["post", "/api/doctors/{doctorId}/absences"],
   deleteDoctorAbsence: ["delete", "/api/doctors/{doctorId}/absences/{absenceId}"],
+  listAbsences: ["get", "/api/absences"],
   listScheduleChangeRequests: ["get", "/api/schedule-change-requests"],
   approveScheduleChange: ["post", "/api/schedule-change-requests/{requestId}/approve"],
   rejectScheduleChange: ["post", "/api/schedule-change-requests/{requestId}/reject"],

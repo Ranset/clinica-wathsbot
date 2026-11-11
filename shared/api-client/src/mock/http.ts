@@ -21,6 +21,8 @@ export const forbidden = (detail = "Tu rol no permite esta operación.") => new 
 export const notFound = (detail = "No existe o no te pertenece.") => new HttpError(404, "no_encontrado", detail);
 export const invalid = (detail: string) => new HttpError(422, "validacion", detail);
 export const rule = (code: ErrorCode, detail: string) => new HttpError(422, code, detail);
+/** `transicion_invalida`: el recurso esta en un estado que no admite el cambio (el motor real responde 409). */
+export const stateConflict = (detail: string) => new HttpError(409, "transicion_invalida", detail);
 export const conflict = (detail = "Ese horario ya no está libre.") => new HttpError(409, "horario_ocupado", detail);
 
 export type Result = {

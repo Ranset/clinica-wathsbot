@@ -29,7 +29,7 @@ from app.db import make_engine  # noqa: E402
 from app.migrate import upgrade  # noqa: E402
 from app.models import Base, Room  # noqa: E402
 from app.seed import seed  # noqa: E402
-from helpers import MAXCONN  # noqa: E402
+from helpers import MAXCONN, TEST_BOT_TOKEN, TEST_WEBHOOK_SECRET, Session, make_users  # noqa: E402
 
 BACKENDS = ["sqlite", pytest.param("mysql", marks=pytest.mark.mysql)]
 POOL = 40  # las pruebas de concurrencia lanzan decenas de hilos
@@ -117,7 +117,10 @@ def mysql_fresh(mysql_url):
     from sqlalchemy.orm import Session
     with engine.begin() as c:
         for t in reversed(Base.metadata.sorted_tables):
-            c.execute(t.delete())
+            if c.execute(t.delete()).rowcount:
+                # DELETE no reinicia el autoincremento de MySQL (en SQLite cada prueba parte de una copia limpia): sin esto
+                # los ids de doctores/consultorios seguirian contando entre pruebas y dejarian de ser 1, 2, 3...
+                c.execute(text(f"ALTER TABLE `{t.name}` AUTO_INCREMENT = 1"))
     with Session(engine) as s, s.begin():
         seed(s)
     engine.dispose()
@@ -143,7 +146,10 @@ def make_app(db_url):
     pool = max(1, MAXCONN // 2) if (MAXCONN and db_url.startswith("mysql")) else POOL
 
     def _make(clock=None, **extra):
-        app = create_app({"DATABASE_URL": db_url, "TESTING": True, "POOL_SIZE": pool, **extra}, clock=clock)
+        app = create_app({"DATABASE_URL": db_url, "TESTING": True, "POOL_SIZE": pool,
+                          "BOT_TOKEN": TEST_BOT_TOKEN, "ZERNIO_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET,
+                          "PASSWORD_HASH_METHOD": "pbkdf2:sha256:1000", "AUTH_COOKIE_SECURE": False, **extra},
+                         clock=clock)
         apps.append(app)
         return app
 
@@ -155,6 +161,23 @@ def make_app(db_url):
 @pytest.fixture
 def app(make_app):
     return make_app()
+
+
+@pytest.fixture
+def client(app):
+    return app.test_client()
+
+
+@pytest.fixture
+def users(app):
+    """Los 4 usuarios de prueba: {quien: (correo, contrasena, usuario)}."""
+    return make_users(app)
+
+
+@pytest.fixture
+def login(app, users):
+    """`login("staff")` -> `Session` con la cookie y el token CSRF de ese usuario."""
+    return lambda who: Session(app, users[who][0])
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ from app.seed import load_agenda_config, seed
 from app.settings import get_bot_settings, set_bot_active
 
 TABLAS = {"users", "doctors", "rooms", "clinic_hours", "doctor_hours", "doctor_absences", "appointments",
-          "appointment_blocks", "settings", "webhook_events", "audit_log"}
+          "appointment_blocks", "settings", "webhook_events", "audit_log", "attention_cases", "sessions", "schedule_change_requests", "push_subscriptions"}
 
 
 def diff_with_models(url):

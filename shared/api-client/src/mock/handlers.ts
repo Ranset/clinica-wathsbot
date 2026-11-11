@@ -15,6 +15,7 @@ import {
   reqString,
   route,
   rule,
+  stateConflict,
   type Ctx,
   type Result,
   type Route,
@@ -143,7 +144,7 @@ export function buildRoutes(db: DB): MockRoute[] {
     if (changesStatus) {
       const allowed = cur.kind === "block" ? (cur.status === "agendada" ? (["cancelada"] as BookingStatus[]) : []) : TRANSITIONS[cur.status];
       if (!allowed.includes(status!)) {
-        throw rule("transicion_invalida", `No se puede pasar de "${cur.status}" a "${status}".`);
+        throw stateConflict(`No se puede pasar de "${cur.status}" a "${status}".`);
       }
     }
 
@@ -151,7 +152,7 @@ export function buildRoutes(db: DB): MockRoute[] {
     let next: { start: string; room: { id: string; name: string } } | null = null;
     if (moves) {
       if (cur.status !== "agendada" || (status !== undefined && status !== "agendada")) {
-        throw rule("transicion_invalida", "Solo se puede mover una cita agendada.");
+        throw stateConflict("Solo se puede mover una cita agendada.");
       }
       const start = startIn ?? cur.scheduledAtUtc;
       const base = {
@@ -214,14 +215,14 @@ export function buildRoutes(db: DB): MockRoute[] {
     return absence;
   }
 
-  function decide(c: C, status: "approved" | "rejected", note?: string): ScheduleChangeRequest {
+  function decide(c: C, status: "approved" | "rejected", note?: string): { req: ScheduleChangeRequest; affected: Booking[] } {
     const req = db.requests.find((r) => r.id === c.params.requestId);
     if (!req) throw notFound("La solicitud no existe.");
-    if (req.status !== "pending") throw rule("transicion_invalida", "La solicitud ya fue resuelta.");
-    if (status === "approved") applyHours(doctorById(req.doctorId), req.weeklyHours, c.now);
+    if (req.status !== "pending") throw stateConflict("La solicitud ya fue resuelta.");
+    const affected = status === "approved" ? applyHours(doctorById(req.doctorId), req.weeklyHours, c.now) : [];
     Object.assign(req, { status, ...stamp(c) });
     if (note) req.note = [req.note, `Respuesta: ${note}`].filter(Boolean).join(" · ");
-    return req;
+    return { req, affected };
   }
 
   /* --------------------------------------------------------- usuarios */
@@ -369,6 +370,14 @@ export function buildRoutes(db: DB): MockRoute[] {
       return ok({ items });
     }),
 
+    route<StoredUser>("listAbsences", STAFF, (c) => {
+      const from = c.query.get("from"), to = c.query.get("to");
+      if (!from || !to || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to)) || Date.parse(to) <= Date.parse(from))
+        throw invalid(`Se requieren "from" y "to" (instantes) con from < to.`);
+      const lo = new Date(from).toISOString(), hi = new Date(to).toISOString();
+      return ok({ items: db.absences.filter((a) => a.endUtc > lo && a.startUtc < hi).sort((a, b) => a.startUtc.localeCompare(b.startUtc)) });
+    }),
+
     route<StoredUser>("createDoctorAbsence", STAFF, (c) => {
       const doc = doctorById(c.params.doctorId!);
       const input = absenceInput(asObject(c.body));
@@ -389,11 +398,14 @@ export function buildRoutes(db: DB): MockRoute[] {
       return ok({ items: db.requests.filter((r) => !status || r.status === status).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc)) });
     }),
 
-    route<StoredUser>("approveScheduleChange", STAFF, (c) => ok(decide(c, "approved"))),
+    route<StoredUser>("approveScheduleChange", STAFF, (c) => {
+      const { req, affected } = decide(c, "approved");
+      return ok({ ...req, affectedAppointments: affected.map((x) => bookingFor(c.user.role, x)) });
+    }),
 
     route<StoredUser>("rejectScheduleChange", STAFF, (c) => {
       const note = c.body === undefined ? undefined : optString(asObject(c.body), "note", 500);
-      return ok(decide(c, "rejected", note));
+      return ok(decide(c, "rejected", note).req);
     }),
 
     route<StoredUser>("getBotSettings", STAFF, () => ok(structuredClone(db.bot))),

@@ -24,6 +24,7 @@ export type AbsenceInput = S["AbsenceInput"];
 export type AbsenceResult = S["AbsenceResult"];
 export type RequestStatus = S["RequestStatus"];
 export type ScheduleChangeRequest = S["ScheduleChangeRequest"];
+export type ScheduleChangeApplied = S["ScheduleChangeApplied"];
 export type Role = S["Role"];
 export type User = S["User"];
 export type UserCreate = S["UserCreate"];

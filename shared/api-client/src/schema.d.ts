@@ -38,6 +38,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bot/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Doctores activos y limites de agenda para armar el prompt del bot.
+         * @description Sustituye a `bot/agenda_config.json` como origen de los doctores y de los limites (zona, duracion de
+         *     cita, antelacion minima, horizonte). Se pide en cada conversacion; si la API no responde el bot NO usa
+         *     una copia guardada: pasa el caso a una persona.
+         */
+        get: operations["botConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bot/availability": {
         parameters: {
             query?: never;
@@ -214,10 +236,22 @@ export interface paths {
         /**
          * Recibe webhooks de Zernio, verifica la firma HMAC y encola.
          * @description Sin sesion ni token: la autenticidad la da la firma HMAC-SHA256 del cuerpo con el secreto del
-         *     webhook. **El nombre exacto de la cabecera de firma esta POR CONFIRMAR en F3** con la documentacion de
-         *     Zernio (el bot actual acepta cualquier cabecera que contenga "signature"). Responde 200 rapido.
-         *     Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; el resto se
-         *     responde 200 y se descarta. Idempotente por `id` del evento (un duplicado responde 200).
+         *     webhook. Segun la documentacion de Zernio (docs.zernio.com/webhooks, consultada el 2026-11-10): la
+         *     cabecera es `X-Zernio-Signature` (`X-Late-Signature` es un alias heredado con el mismo valor; leer la
+         *     nueva), el valor es el digest HMAC-SHA256 en **hexadecimal en minusculas** calculado sobre el **cuerpo
+         *     crudo** (sin marca de tiempo) con el secreto que la clinica eligio al crear el webhook, y se compara en
+         *     tiempo constante (`hmac.compare_digest`). Zernio tambien manda `X-Zernio-Event` y `X-Zernio-Event-Id`.
+         *
+         *     Hay que responder 2xx en menos de 5 s: se guarda el evento y se atiende despues (por eso la cola).
+         *     Zernio reintenta 408, 429, 5xx, timeouts y respuestas 2xx con cuerpo HTML (hasta 7 intentos en unas
+         *     51 h); **cualquier otro 4xx -- incluido el 401 de firma invalida -- manda el evento a su cola de
+         *     eventos muertos en el primer intento**, asi que un secreto mal configurado pierde eventos hasta
+         *     que se redistribuyan desde Zernio. Responder siempre JSON, nunca HTML. Las entregas pueden
+         *     duplicarse y no hay garantia de orden: la cola es idempotente por `id` del evento (indice unico; un
+         *     duplicado responde 200 sin encolar).
+         *
+         *     Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; `webhook.test` y
+         *     el resto se responden 200 y se descartan.
          */
         post: operations["zernioWebhook"];
         delete?: never;
@@ -235,7 +269,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Inicia sesion (personal, doctor, administrador). */
+        /**
+         * Inicia sesion (personal, doctor, administrador).
+         * @description Cookie `clinica_session` (HttpOnly, SameSite=Lax, Secure en produccion); caduca tras 8 h sin actividad o 7 dias
+         *     en total. 5 contrasenas erroneas seguidas bloquean al usuario 15 min (`demasiados_intentos`, 429).
+         */
         post: operations["login"];
         delete?: never;
         options?: never;
@@ -267,7 +305,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usuario de la sesion actual y un token CSRF nuevo. */
+        /** Usuario de la sesion actual y su token CSRF (el mismo durante toda la sesion). */
         get: operations["me"];
         put?: never;
         post?: never;
@@ -286,7 +324,8 @@ export interface paths {
         };
         /**
          * Citas y bloqueos en un rango (alimenta el calendario).
-         * @description Rango maximo 92 dias (`MAX_RANGE_DAYS` de `shared/calendar`), si no `rango_invalido`. Devuelve un
+         * @description El rango es `[from, to)` (`to` exclusivo). Maximo 92 dias: se rechaza (`rango_invalido`) solo si `to - from` es
+         *     MAYOR que 92 dias (`MAX_RANGE_DAYS` de `shared/calendar`; la vista Lista pide exactamente 92). Devuelve un
          *     `ETag`; con `If-None-Match` responde 304 para que el refresco periodico (cada pocos segundos, sin
          *     WebSockets) cueste poco.
          */
@@ -464,6 +503,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/absences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ausencias de TODOS los doctores en un rango (para sombrear el calendario). */
+        get: operations["listAbsences"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedule-change-requests": {
         parameters: {
             query?: never;
@@ -490,7 +546,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Aprueba la solicitud y aplica el horario (misma salida que `setDoctorWeeklyHours`). */
+        /** Aprueba la solicitud y aplica el horario (responde la solicitud y las citas que quedaron fuera de el). */
         post: operations["approveScheduleChange"];
         delete?: never;
         options?: never;
@@ -601,7 +657,11 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Cambia nombre, rol, activo o restablece la contrasena. */
+        /**
+         * Cambia nombre, rol, activo o restablece la contrasena.
+         * @description Un administrador no puede quitarse el acceso (desactivarse), cambiar su propio rol ni dejar al sistema sin
+         *     ningun administrador activo (`validacion`). Desactivar a alguien o cambiarle la contrasena cierra sus sesiones.
+         */
         patch: operations["updateUser"];
         trace?: never;
     };
@@ -725,11 +785,12 @@ export interface components {
          *     `horario_pasado_o_muy_cercano`, `fuera_de_rango`, `fuera_de_horario`, `falta_nombre_completo`,
          *     `especialidad_no_encontrada`, `cita_no_encontrada`. Nuevos: `doctor_no_disponible` (ausencia o fuera de
          *     su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
-         *     `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`.
+         *     `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
+         *     (el servidor no tiene un secreto o token configurado), `error_interno` (500).
          *     Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
          * @enum {string}
          */
-        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida";
+        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno";
         /** @description Puede traer campos extra segun el error (`especialidades`, `horarios`, `maximo_agendable`, `nota`). */
         ErrorBody: {
             error: components["schemas"]["ErrorCode"];
@@ -780,6 +841,23 @@ export interface components {
             /** @constant */
             ok: true;
         };
+        BotConfig: {
+            /** @example America/Cancun */
+            timezone: string;
+            /** @example 30 */
+            slotMinutes: number;
+            /** @example 60 */
+            minNoticeMinutes: number;
+            /** @example 60 */
+            horizonDays: number;
+            /** @description Solo doctores activos. */
+            doctors: {
+                /** @example Dr. Cervantes Pelaez */
+                name: string;
+                /** @example Proctologia */
+                specialty: string;
+            }[];
+        };
         BotSettings: {
             active: boolean;
             /** Format: date-time */
@@ -796,16 +874,21 @@ export interface components {
             receivedAtUtc?: string;
         };
         /**
-         * @description Evento tal como lo manda Zernio (`message.received`). El bot usa `message.text`, `message.sender.id`
+         * @description Evento tal como lo manda Zernio. Todos traen `id`, `event`, `timestamp` y `test`; `profiles` solo si
+         *     el evento pertenece a un perfil. En `message.received` el bot usa `message.text`, `message.sender.id`
          *     (telefono), `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
+         *     Ojo: en el evento de prueba `webhook.test` `message` es un **texto**, no un objeto.
          */
         ZernioEvent: {
             id: string;
             event: string;
+            /** Format: date-time */
+            timestamp?: string;
             test?: boolean;
+            /** @description Objeto en `message.*`; texto libre en `webhook.test`. */
             message?: {
                 [key: string]: unknown;
-            };
+            } | string;
             account?: {
                 [key: string]: unknown;
             };
@@ -832,7 +915,7 @@ export interface components {
             scheduledAtUtc: string;
             durationMinutes: number;
             patient: {
-                /** @description Telefono (digitos) si existe; si no, el id de la cita. */
+                /** @description Telefono (digitos) si existe; si no, el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): el telefono no se le entrega por ningun campo. */
                 id: string;
                 name: string;
                 /** @description Se omite para el rol `doctor`. */
@@ -954,7 +1037,10 @@ export interface components {
             id: string;
             doctorId: string;
             weeklyHours: components["schemas"]["WeeklyHours"];
-            /** Format: date */
+            /**
+             * Format: date
+             * @description Informativa: el servidor guarda un solo horario semanal, asi que al aprobar se aplica de inmediato (no hay horarios con vigencia futura).
+             */
             effectiveFrom: string;
             note?: string | null;
             status: components["schemas"]["RequestStatus"];
@@ -963,6 +1049,10 @@ export interface components {
             decidedBy?: string | null;
             /** Format: date-time */
             decidedAtUtc?: string | null;
+        };
+        /** @description La solicitud ya resuelta mas las citas agendadas que quedaron fuera del nuevo horario (no se cancelan). */
+        ScheduleChangeApplied: components["schemas"]["ScheduleChangeRequest"] & {
+            affectedAppointments: components["schemas"]["Booking"][];
         };
         /** @enum {string} */
         Role: "admin" | "staff" | "doctor";
@@ -1021,7 +1111,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description El rol no permite la operacion (`sin_permiso`). */
+        /** @description El rol no permite la operacion, o falla el token CSRF / el `Origin` (`sin_permiso`). */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -1145,6 +1235,27 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
         };
     };
+    botConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configuracion vigente. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BotConfig"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+        };
+    };
     botAvailability: {
         parameters: {
             query: {
@@ -1232,6 +1343,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            422: components["responses"]["RuleError"];
         };
     };
     botBook: {
@@ -1300,6 +1412,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["BotNotFound"];
+            422: components["responses"]["RuleError"];
         };
     };
     botReschedule: {
@@ -1368,6 +1481,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            422: components["responses"]["RuleError"];
         };
     };
     botAckEvent: {
@@ -1398,6 +1512,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["RuleError"];
         };
     };
     botFailEvent: {
@@ -1429,6 +1544,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["RuleError"];
         };
     };
     botHandoff: {
@@ -1462,6 +1578,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            422: components["responses"]["RuleError"];
         };
     };
     zernioWebhook: {
@@ -1493,6 +1610,27 @@ export interface operations {
             };
             /** @description Firma ausente o invalida (`firma_invalida`). */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description El cuerpo no es JSON o le falta `id` o `event` (`validacion`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /**
+             * @description El servidor no tiene configurado el secreto del webhook (`no_configurado`). Es un 5xx a proposito: Zernio
+             *     lo reintenta, mientras que un 4xx mandaria el evento a su cola de eventos muertos.
+             */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1538,6 +1676,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            422: components["responses"]["RuleError"];
             /** @description `demasiados_intentos`. */
             429: {
                 headers: {
@@ -1565,6 +1704,8 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     me: {
@@ -1676,6 +1817,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -1922,7 +2064,9 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["RuleError"];
         };
     };
     createDoctorAbsence: {
@@ -1950,6 +2094,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["RuleError"];
         };
@@ -1974,7 +2119,36 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    listAbsences: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ausencias que se solapan con `[from, to)`; mismo limite de rango que `/api/appointments`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Absence"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
     listScheduleChangeRequests: {
@@ -2000,6 +2174,8 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
     approveScheduleChange: {
@@ -2013,17 +2189,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Aplicada. */
+            /** @description Aplicada. `affectedAppointments` son las citas ya agendadas fuera del nuevo horario (no se cancelan; el personal avisa). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ScheduleChangeRequest"];
+                    "application/json": components["schemas"]["ScheduleChangeApplied"];
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["RuleError"];
         };
     };
@@ -2054,7 +2232,10 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["RuleError"];
         };
     };
     getBotSettings: {
@@ -2076,6 +2257,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     setBotSettings: {
@@ -2104,6 +2286,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
     listAttention: {
@@ -2129,6 +2312,8 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
     resolveAttention: {
@@ -2152,6 +2337,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -2368,6 +2554,7 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -2456,6 +2643,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
     doctorUnsubscribePush: {
@@ -2482,6 +2670,8 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
         };
     };
 }

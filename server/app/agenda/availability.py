@@ -45,9 +45,18 @@ class Availability(Unit):
                 q = q.where(DoctorAbsence.start_utc < to_db(end))
             return list(repo.s.scalars(q))
 
+    def absences_between(self, start: datetime, end: datetime) -> list[DoctorAbsence]:
+        """Ausencias de TODOS los doctores que se solapan con [start, end) (para sombrear el calendario del personal)."""
+        with self._read() as repo:
+            q = (select(DoctorAbsence).where(DoctorAbsence.end_utc > to_db(start), DoctorAbsence.start_utc < to_db(end))
+                 .order_by(DoctorAbsence.start_utc, DoctorAbsence.id))
+            return list(repo.s.scalars(q))
+
     # ---- escritura ----
     def set_clinic_hours(self, weekly: dict, actor: Actor = SYSTEM) -> dict:
         self._validate(weekly)
+        if not any(weekly.values()):   # un `{}` por error (o un cliente con un bug) borraria el horario de TODA la clinica
+            raise AgendaError(VALIDACION, "el horario de la clinica debe tener al menos un intervalo")
 
         def work(repo: Repo, s):
             s.execute(delete(ClinicHours))
@@ -63,29 +72,42 @@ class Availability(Unit):
         Devuelve (doctor, citas agendadas futuras que quedan fuera del nuevo horario); no se tocan."""
         if weekly is not None:
             self._validate(weekly)
+        return self._write(lambda repo, s: self.apply_hours(repo, s, doctor_id, weekly, actor))
 
-        def work(repo: Repo, s):
-            doc = self._doctor(repo, doctor_id)
-            clinic = repo.clinic_schedule()
-            if weekly is None:
-                new = clinic
-            else:
-                new = Schedule.from_weekly(self.rules, weekly)
-                for wd, a, b in new.rows():
-                    if not any(ca <= a and b <= cb for ca, cb in clinic.by_weekday.get(wd, [])):
-                        raise AgendaError(FUERA_DE_HORARIO, "el horario del doctor debe quedar dentro del de la clinica")
-            s.execute(delete(DoctorHours).where(DoctorHours.doctor_id == doc.id))
-            if weekly is not None:
-                for wd, a, b in new.rows():
-                    s.add(DoctorHours(doctor_id=doc.id, weekday=wd, start_time=a, end_time=b))
-            doc.uses_clinic_hours = weekly is None
-            s.flush()
-            s.expire(doc, ["hours"])
-            affected = self._outside(repo, doc, new)
-            audit(s, actor, "doctor_hours.set", "doctor", doc.id,
-                  {"weekly": weekly, "affected": [a.id for a in affected]})
-            return doc, affected
-        return self._write(work)
+    def check_proposal(self, weekly: dict) -> None:
+        """Valida un horario propuesto (forma y que quede dentro del de la clinica) sin guardar nada."""
+        self._validate(weekly)
+        with self._read() as repo:
+            self._check_inside_clinic(repo.clinic_schedule(), Schedule.from_weekly(self.rules, weekly))
+
+    @staticmethod
+    def _check_inside_clinic(clinic: Schedule, new: Schedule) -> None:
+        for wd, a, b in new.rows():
+            if not any(ca <= a and b <= cb for ca, cb in clinic.by_weekday.get(wd, [])):
+                raise AgendaError(FUERA_DE_HORARIO, "el horario del doctor debe quedar dentro del de la clinica")
+
+    def apply_hours(self, repo: Repo, s, doctor_id, weekly: dict | None, actor: Actor) -> tuple[Doctor, list[Appointment]]:
+        """Nucleo transaccional de `set_doctor_hours`: participa en la transaccion de quien llama (p. ej. aprobar una
+        solicitud de cambio de horario, que debe ser atomico con marcarla como aprobada)."""
+        doc = self._doctor(repo, doctor_id)
+        clinic = repo.clinic_schedule()
+        if weekly is None:
+            new = clinic
+        else:
+            self._validate(weekly)
+            new = Schedule.from_weekly(self.rules, weekly)
+            self._check_inside_clinic(clinic, new)
+        s.execute(delete(DoctorHours).where(DoctorHours.doctor_id == doc.id))
+        if weekly is not None:
+            for wd, a, b in new.rows():
+                s.add(DoctorHours(doctor_id=doc.id, weekday=wd, start_time=a, end_time=b))
+        doc.uses_clinic_hours = weekly is None
+        s.flush()
+        s.expire(doc, ["hours"])
+        affected = self._outside(repo, doc, new)
+        audit(s, actor, "doctor_hours.set", "doctor", doc.id,
+              {"weekly": weekly, "affected": [a.id for a in affected]})
+        return doc, affected
 
     def add_absence(self, doctor_id, start: datetime, end: datetime, reason: str | None = None,
                     actor: Actor = SYSTEM) -> tuple[DoctorAbsence, list[Appointment]]:

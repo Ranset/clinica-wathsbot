@@ -10,6 +10,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from .agenda import Agenda, Availability, Rules
 from .config import load_config
 from .db import make_engine, make_session_factory
+from .auth import AuthService
+from .directory import Directory
+from .events import EventQueue
 
 
 @dataclass
@@ -32,6 +35,13 @@ def create_app(config: dict | None = None, *, clock=None) -> Flask:
     app.extensions["rules"] = rules
     app.extensions["agenda"] = Agenda(sf, rules, clock)
     app.extensions["availability"] = Availability(sf, rules, clock)
+    app.extensions["auth"] = AuthService(
+        sf, rules, clock, idle_minutes=int(cfg["SESSION_IDLE_MINUTES"]), max_days=int(cfg["SESSION_MAX_DAYS"]),
+        max_failures=int(cfg["LOGIN_MAX_FAILURES"]), lock_minutes=int(cfg["LOGIN_LOCK_MINUTES"]),
+        hash_method=cfg["PASSWORD_HASH_METHOD"])
+    app.extensions["directory"] = Directory(sf, rules, clock, availability=app.extensions["availability"])
+    app.extensions["events"] = EventQueue(sf, rules, clock, max_attempts=int(cfg["EVENT_MAX_ATTEMPTS"]),
+                                          backoff_seconds=int(cfg["EVENT_RETRY_BACKOFF_SECONDS"]))
 
     from .api import register_routes
     from .cli import register_cli

@@ -5,9 +5,9 @@ clinica (`TIME`), con `weekday` 0=lunes ... 6=domingo (igual que `datetime.weekd
 """
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 
-from sqlalchemy import (JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, MetaData, String, Time,
+from sqlalchemy import (JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, MetaData, String, Time,
                         UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -26,6 +26,9 @@ STATUSES = ("agendada", "realizada", "no_show", "cancelada")
 KINDS = ("session", "block")
 SOURCES = ("manual", "ai")
 EVENT_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
+ATTENTION_KINDS = ("handoff", "event_failed", "absence_affects_appointments")
+ATTENTION_STATUSES = ("open", "resolved")
+REQUEST_STATUSES = ("pending", "approved", "rejected")
 
 
 def _in(col: str, values: tuple[str, ...]) -> str:
@@ -218,6 +221,7 @@ class WebhookEvent(Base):
     payload: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(10), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    #: `claimed`: fin del plazo del bot. `pending` con valor: no volver a ofrecerlo antes de esa hora (espera entre reintentos).
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime)
     last_error: Mapped[str | None] = mapped_column(String(500))
     outcome: Mapped[str | None] = mapped_column(String(32))
@@ -239,3 +243,79 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(32))
     entity_id: Mapped[str | None] = mapped_column(String(32))
     data: Mapped[dict | None] = mapped_column(JSON)
+
+
+class AttentionCase(Base):
+    """Algo que una PERSONA debe atender: el bot paso la conversacion (`handoff`), un mensaje no se pudo contestar tras
+    varios intentos (`event_failed`) o una ausencia afecta citas (`absence_affects_appointments`, F4). Lo lista
+    `/api/attention` (F4). Guarda telefono y conversacion para poder contactar; nunca el texto del paciente."""
+    __tablename__ = "attention_cases"
+    __table_args__ = (
+        CheckConstraint(_in("kind", ATTENTION_KINDS), name="kind"),
+        CheckConstraint(_in("status", ATTENTION_STATUSES), name="status"),
+        Index("ix_attention_cases_status_id", "status", "id"),
+        Index("ix_attention_cases_conversation_id", "conversation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(10), default="open")
+    conversation_id: Mapped[str | None] = mapped_column(String(64))
+    phone: Mapped[str | None] = mapped_column(String(20))
+    #: codigo corto (`pidio_persona`, `mensaje_sin_atender`, ...)
+    reason: Mapped[str] = mapped_column(String(64))
+    detail: Mapped[str | None] = mapped_column(String(500))
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("webhook_events.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    resolved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class UserSession(Base):
+    """Sesion de una persona (cookie `clinica_session`). La cookie lleva un token aleatorio; aqui solo se guarda su hash
+    SHA-256, asi que una copia de la BD no sirve para entrar. El token CSRF es estable durante toda la sesion. Se cierra
+    al vencer (`expires_at` absoluto o inactividad desde `last_seen_at`), al salir, o al desactivar al usuario."""
+    __tablename__ = "sessions"
+    __table_args__ = (Index("ix_sessions_user_id", "user_id"), Index("ix_sessions_expires_at", "expires_at"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ScheduleChangeRequest(Base):
+    """Solicitud de un doctor para cambiar su horario semanal de forma permanente; la decide el personal."""
+    __tablename__ = "schedule_change_requests"
+    __table_args__ = (
+        CheckConstraint(_in("status", REQUEST_STATUSES), name="status"),
+        Index("ix_schedule_change_requests_status_id", "status", "id"),
+        Index("ix_schedule_change_requests_doctor_id", "doctor_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    doctor_id: Mapped[int] = mapped_column(ForeignKey("doctors.id", ondelete="CASCADE"))
+    weekly_hours: Mapped[dict] = mapped_column(JSON)
+    #: informativa: el servidor guarda un solo horario semanal, asi que al aprobar se aplica de inmediato
+    effective_from: Mapped[date] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    decided_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class PushSubscription(Base):
+    """Suscripcion Web Push de un dispositivo del doctor (el envio llega en F7)."""
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (Index("ix_push_subscriptions_user_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    endpoint: Mapped[str] = mapped_column(String(512), unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: API de la Clinica CUBAMEX
-  version: 0.1.0
-  summary: Contrato unico del servidor de la clinica (borrador F1, aun sin implementar).
+  version: 0.2.0
+  summary: "Contrato unico del servidor de la clinica. v0.2: huecos de F6 corregidos y nuevo GET /api/absences."
   description: |
     Una sola API para tres clientes: el **bot** de WhatsApp (token de servicio), la **web de
     administracion/personal** y la **PWA del doctor** (sesion por cookie). Es la fuente de verdad de
@@ -178,6 +178,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/BotAppointment" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
     post:
       operationId: botBook
       tags: [bot]
@@ -235,6 +236,7 @@ paths:
                   ok: { type: boolean, const: true }
                   cancelada: { $ref: "#/components/schemas/BotAppointment" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "404": { $ref: "#/components/responses/BotNotFound" }
   /api/bot/appointments/{citaId}/reschedule:
     post:
@@ -300,6 +302,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/BotEvent" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/bot/events/{eventId}/ack:
     post:
       operationId: botAckEvent
@@ -323,6 +326,7 @@ paths:
       responses:
         "204": { description: "Cerrado." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "404": { $ref: "#/components/responses/NotFound" }
   /api/bot/events/{eventId}/fail:
     post:
@@ -347,6 +351,7 @@ paths:
       responses:
         "204": { description: "Registrado." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "404": { $ref: "#/components/responses/NotFound" }
   /api/bot/handoffs:
     post:
@@ -380,6 +385,7 @@ paths:
                 properties:
                   id: { type: string }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "422": { $ref: "#/components/responses/RuleError" }
 
   # -------------------------------------------------------------- webhook
   /webhooks/zernio:
@@ -428,6 +434,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: El cuerpo no es JSON o le falta `id` o `event` (`validacion`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "503":
+          description: |
+            El servidor no tiene configurado el secreto del webhook (`no_configurado`). Es un 5xx a proposito: Zernio
+            lo reintenta, mientras que un 4xx mandaria el evento a su cola de eventos muertos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   # ----------------------------------------------------------------- auth
   /api/auth/login:
@@ -435,6 +453,9 @@ paths:
       operationId: login
       tags: [auth]
       summary: Inicia sesion (personal, doctor, administrador).
+      description: |
+        Cookie `clinica_session` (HttpOnly, SameSite=Lax, Secure en produccion); caduca tras 8 h sin actividad o 7 dias
+        en total. 5 contrasenas erroneas seguidas bloquean al usuario 15 min (`demasiados_intentos`, 429).
       security: []
       requestBody:
         required: true
@@ -447,6 +468,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, format: password }
       responses:
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Sesion creada (cookie `clinica_session`).
           content:
@@ -470,12 +492,14 @@ paths:
       x-roles: [admin, staff, doctor]
       security: [{ session: [], csrf: [] }]
       responses:
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "204": { description: "Sesion cerrada." }
   /api/me:
     get:
       operationId: me
       tags: [auth]
-      summary: Usuario de la sesion actual y un token CSRF nuevo.
+      summary: Usuario de la sesion actual y su token CSRF (el mismo durante toda la sesion).
       x-roles: [admin, staff, doctor]
       responses:
         "200":
@@ -492,7 +516,8 @@ paths:
       tags: [agenda]
       summary: Citas y bloqueos en un rango (alimenta el calendario).
       description: |
-        Rango maximo 92 dias (`MAX_RANGE_DAYS` de `shared/calendar`), si no `rango_invalido`. Devuelve un
+        El rango es `[from, to)` (`to` exclusivo). Maximo 92 dias: se rechaza (`rango_invalido`) solo si `to - from` es
+        MAYOR que 92 dias (`MAX_RANGE_DAYS` de `shared/calendar`; la vista Lista pide exactamente 92). Devuelve un
         `ETag`; con `If-None-Match` responde 304 para que el refresco periodico (cada pocos segundos, sin
         WebSockets) cueste poco.
       x-roles: [admin, staff]
@@ -545,6 +570,7 @@ paths:
       summary: Detalle de una cita.
       x-roles: [admin, staff]
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "200":
           description: La cita.
           content:
@@ -748,6 +774,8 @@ paths:
         - { name: from, in: query, schema: { type: string, format: date-time } }
         - { name: to, in: query, schema: { type: string, format: date-time } }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Lista.
           content:
@@ -774,6 +802,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AbsenceInput" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "201":
           description: Creada.
           content:
@@ -793,9 +822,34 @@ paths:
         - { $ref: "#/components/parameters/DoctorId" }
         - { $ref: "#/components/parameters/AbsenceId" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "204": { description: "Eliminada." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/absences:
+    get:
+      operationId: listAbsences
+      tags: [agenda]
+      summary: Ausencias de TODOS los doctores en un rango (para sombrear el calendario).
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: Ausencias que se solapan con `[from, to)`; mismo limite de rango que `/api/appointments`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Absence" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/schedule-change-requests:
     get:
       operationId: listScheduleChangeRequests
@@ -805,6 +859,8 @@ paths:
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/RequestStatus" } }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Lista.
           content:
@@ -821,17 +877,19 @@ paths:
     post:
       operationId: approveScheduleChange
       tags: [agenda]
-      summary: Aprueba la solicitud y aplica el horario (misma salida que `setDoctorWeeklyHours`).
+      summary: Aprueba la solicitud y aplica el horario (responde la solicitud y las citas que quedaron fuera de el).
       x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       parameters:
         - { $ref: "#/components/parameters/RequestId" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "200":
-          description: Aplicada.
+          description: "Aplicada. `affectedAppointments` son las citas ya agendadas fuera del nuevo horario (no se cancelan; el personal avisa)."
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ScheduleChangeRequest" }
+              schema: { $ref: "#/components/schemas/ScheduleChangeApplied" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/RuleError" }
@@ -852,6 +910,9 @@ paths:
               properties:
                 note: { type: string, maxLength: 500 }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Rechazada.
           content:
@@ -868,6 +929,7 @@ paths:
       summary: Estado del interruptor del bot.
       x-roles: [admin, staff]
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "200":
           description: Estado.
           content:
@@ -891,6 +953,7 @@ paths:
               properties:
                 active: { type: boolean }
       responses:
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Estado guardado.
           content:
@@ -907,6 +970,8 @@ paths:
       parameters:
         - { name: status, in: query, schema: { type: string, enum: [open, resolved], default: open } }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Lista, mas reciente primero.
           content:
@@ -929,6 +994,7 @@ paths:
       parameters:
         - { name: attentionId, in: path, required: true, schema: { type: string } }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "200":
           description: Cerrado.
           content:
@@ -981,6 +1047,9 @@ paths:
       operationId: updateUser
       tags: [admin]
       summary: Cambia nombre, rol, activo o restablece la contrasena.
+      description: |
+        Un administrador no puede quitarse el acceso (desactivarse), cambiar su propio rol ni dejar al sistema sin
+        ningun administrador activo (`validacion`). Desactivar a alguien o cambiarle la contrasena cierra sus sesiones.
       x-roles: [admin]
       security: [{ session: [], csrf: [] }]
       parameters:
@@ -1097,6 +1166,7 @@ paths:
       parameters:
         - { $ref: "#/components/parameters/AbsenceId" }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
         "204": { description: "Eliminada." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1169,6 +1239,7 @@ paths:
                     p256dh: { type: string }
                     auth: { type: string }
       responses:
+        "422": { $ref: "#/components/responses/RuleError" }
         "204": { description: "Registrada." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1188,6 +1259,8 @@ paths:
               properties:
                 endpoint: { type: string, format: uri }
       responses:
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
         "204": { description: "Eliminada." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
@@ -1202,7 +1275,10 @@ components:
       type: apiKey
       in: header
       name: X-CSRF-Token
-      description: Obligatorio junto con `session` en POST/PUT/PATCH/DELETE.
+      description: |
+        Obligatorio junto con `session` en POST/PUT/PATCH/DELETE. Es **estable durante la sesion** (login y `/api/me`
+        devuelven el mismo valor, asi que dos pestanas no se pisan). Si falta o no coincide, o si la cabecera `Origin`
+        no es el propio sitio, responde **403 `sin_permiso`** con `detail: csrf`.
     botToken:
       type: http
       scheme: bearer
@@ -1247,7 +1323,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
     Forbidden:
-      description: El rol no permite la operacion (`sin_permiso`).
+      description: El rol no permite la operacion, o falla el token CSRF / el `Origin` (`sin_permiso`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -1289,7 +1365,8 @@ components:
         `horario_pasado_o_muy_cercano`, `fuera_de_rango`, `fuera_de_horario`, `falta_nombre_completo`,
         `especialidad_no_encontrada`, `cita_no_encontrada`. Nuevos: `doctor_no_disponible` (ausencia o fuera de
         su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
-        `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`.
+        `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
+        (el servidor no tiene un secreto o token configurado), `error_interno` (500).
         Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
       enum:
         - horario_ocupado
@@ -1309,6 +1386,8 @@ components:
         - credenciales_invalidas
         - demasiados_intentos
         - firma_invalida
+        - no_configurado
+        - error_interno
     ErrorBody:
       type: object
       required: [error]
@@ -1456,7 +1535,7 @@ components:
           type: [object, "null"]
           required: [id, name]
           properties:
-            id: { type: string, description: "Telefono (digitos) si existe; si no, el id de la cita." }
+            id: { type: string, description: "Telefono (digitos) si existe; si no, el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): el telefono no se le entrega por ningun campo." }
             name: { type: string }
             phone: { type: string, description: "Se omite para el rol `doctor`." }
         doctor:
@@ -1591,12 +1670,22 @@ components:
         id: { type: string }
         doctorId: { type: string }
         weeklyHours: { $ref: "#/components/schemas/WeeklyHours" }
-        effectiveFrom: { type: string, format: date }
+        effectiveFrom: { type: string, format: date, description: "Informativa: el servidor guarda un solo horario semanal, asi que al aprobar se aplica de inmediato (no hay horarios con vigencia futura)." }
         note: { type: [string, "null"] }
         status: { $ref: "#/components/schemas/RequestStatus" }
         createdAtUtc: { type: string, format: date-time }
         decidedBy: { type: [string, "null"] }
         decidedAtUtc: { type: [string, "null"], format: date-time }
+    ScheduleChangeApplied:
+      description: La solicitud ya resuelta mas las citas agendadas que quedaron fuera del nuevo horario (no se cancelan).
+      allOf:
+        - $ref: "#/components/schemas/ScheduleChangeRequest"
+        - type: object
+          required: [affectedAppointments]
+          properties:
+            affectedAppointments:
+              type: array
+              items: { $ref: "#/components/schemas/Booking" }
     Role:
       type: string
       enum: [admin, staff, doctor]

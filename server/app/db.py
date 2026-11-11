@@ -25,6 +25,11 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def iso_utc(dt: datetime) -> str:
+    """UTC ingenuo de la BD -> `2026-11-12T18:30:00Z` (formato de los instantes de la API fuera del bot)."""
+    return dt.replace(tzinfo=UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def to_db(dt: datetime) -> datetime:
     """Instante con zona -> UTC ingenuo para guardar/consultar. Sin zona: se toma como UTC ya ingenuo."""
     if dt.tzinfo is None:

@@ -97,6 +97,14 @@ class Agenda(Unit):
                 "consultorio": a.room.name, "inicio": iso(a.start_utc.replace(tzinfo=_UTC), self.rules.tz),
                 "paciente": a.patient_name}
 
+    def bot_config(self) -> dict:
+        """Doctores activos y limites para armar el prompt del bot (`BotConfig` del contrato)."""
+        r = self.rules
+        with self._read() as repo:
+            return {"timezone": r.tz.key, "slotMinutes": r.slot_minutes, "minNoticeMinutes": r.min_notice_minutes,
+                    "horizonDays": r.horizon_days,
+                    "doctors": [{"name": d.name, "specialty": d.specialty} for d in repo.doctors()]}
+
     # ------------------------------------------------------------------ lectura (bot)
     def free_slots(self, specialty, from_day: date | None = None, days=7, limit=6, hora_min=None, hora_max=None):
         r = self.rules
@@ -274,6 +282,7 @@ class Agenda(Unit):
                 self._move(repo, s, a, start, room_id=room_id, allow_short_notice=allow_short_notice, actor=actor)
             if notes is not UNSET:
                 a.notes = self._clean_notes(notes)
+            a.doctor, a.room  # noqa: B018 - se cargan AHORA: la capa de rutas serializa despues de cerrar la sesion
             return a
         return self._write(work)
 

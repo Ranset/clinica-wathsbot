@@ -148,7 +148,7 @@ describe("bloqueos de consultorio", () => {
 
   it("quitar un bloqueo (cancelada) lo libera; un bloqueo no puede quedar 'realizado'", async () => {
     const blk = await api.appointments.create({ kind: "block", roomId: "r1", scheduledAtUtc: at("2026-11-12", "11:00") });
-    expect(await code(api.appointments.update(blk.id, { status: "realizada" }))).toBe("422 transicion_invalida");
+    expect(await code(api.appointments.update(blk.id, { status: "realizada" }))).toBe("409 transicion_invalida");
     await api.appointments.update(blk.id, { status: "cancelada" });
     expect((await book({ roomId: "r1" })).room!.id).toBe("r1");
   });
@@ -160,13 +160,13 @@ describe("cambiar estado", () => {
     expect((await api.appointments.update(b.id, { status: "realizada" })).status).toBe("realizada");
     expect((await api.appointments.update(b.id, { status: "no_show" })).status).toBe("no_show");
     expect((await api.appointments.update(b.id, { status: "realizada" })).status).toBe("realizada");
-    expect(await code(api.appointments.update(b.id, { status: "agendada" }))).toBe("422 transicion_invalida");
-    expect(await code(api.appointments.update(b.id, { status: "cancelada" }))).toBe("422 transicion_invalida");
+    expect(await code(api.appointments.update(b.id, { status: "agendada" }))).toBe("409 transicion_invalida");
+    expect(await code(api.appointments.update(b.id, { status: "cancelada" }))).toBe("409 transicion_invalida");
 
     const c = await book({ patientName: "Paciente Dos", doctorId: D.bordas });
     await api.appointments.update(c.id, { status: "cancelada" });
     for (const s of ["agendada", "realizada", "no_show"] as const) {
-      expect(await code(api.appointments.update(c.id, { status: s }))).toBe("422 transicion_invalida");
+      expect(await code(api.appointments.update(c.id, { status: s }))).toBe("409 transicion_invalida");
     }
   });
 
@@ -214,7 +214,7 @@ describe("mover una cita (atomico)", () => {
   it("solo se mueve una cita agendada", async () => {
     const b = await book();
     await api.appointments.update(b.id, { status: "realizada" });
-    expect(await code(api.appointments.update(b.id, { scheduledAtUtc: at("2026-11-12", "12:00") }))).toBe("422 transicion_invalida");
+    expect(await code(api.appointments.update(b.id, { scheduledAtUtc: at("2026-11-12", "12:00") }))).toBe("409 transicion_invalida");
   });
 });
 
@@ -272,9 +272,8 @@ describe("horario del doctor y ausencias", () => {
     expect(done).toMatchObject({ status: "approved", decidedBy: "Recepción Clínica" });
     const docs = await api.doctors.list();
     expect(docs.find((d) => d.id === req!.doctorId)!.weeklyHours).toEqual(req!.weeklyHours);
-    expect(await code(api.scheduleChanges.approve(req!.id))).toBe("422 transicion_invalida");
-    // El contrato no declara 422 para reject (hueco anotado en el informe): se prueba sin validar la respuesta.
-    expect(await code(lax.scheduleChanges.reject(req!.id))).toBe("422 transicion_invalida");
+    expect(await code(api.scheduleChanges.approve(req!.id))).toBe("409 transicion_invalida");
+    expect(await code(lax.scheduleChanges.reject(req!.id))).toBe("409 transicion_invalida");
     expect(await api.scheduleChanges.list("pending")).toEqual([]);
   });
 });
