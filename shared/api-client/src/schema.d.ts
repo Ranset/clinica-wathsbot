@@ -629,7 +629,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Casos que necesitan a una persona (eventos fallidos y traspasos del bot). */
+        /**
+         * Casos que necesitan a una persona (eventos fallidos y traspasos del bot), con paginacion opcional.
+         * @description Mas reciente primero. Sin `limit` devuelve TODOS los del `status` (lo que conviene a los pendientes, que son pocos). Los
+         *     atendidos (`resolved`) se acumulan sin fin: la web los pide de a una pagina con `limit` y `offset`, y `total` dice
+         *     cuantos hay en total para pintar la paginacion. `offset` solo se admite junto con `limit`.
+         */
         get: operations["listAttention"];
         put?: never;
         post?: never;
@@ -1244,6 +1249,11 @@ export interface components {
         SessionInfo: {
             user: components["schemas"]["User"];
             csrfToken: string;
+        };
+        AttentionList: {
+            items: components["schemas"]["AttentionItem"][];
+            /** @description Cuantos casos hay con ese `status` (no solo los de esta pagina). */
+            total: number;
         };
         AttentionItem: {
             id: string;
@@ -2504,6 +2514,10 @@ export interface operations {
         parameters: {
             query?: {
                 status?: "open" | "resolved";
+                /** @description Cuantos casos devolver (1 a 100). Sin el, todos. */
+                limit?: number;
+                /** @description Cuantos casos saltar (0 por defecto). Solo con `limit`. */
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -2511,15 +2525,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Lista, mas reciente primero. */
+            /** @description Los casos de esa pagina, mas reciente primero, y cuantos hay en total con ese `status`. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        items: components["schemas"]["AttentionItem"][];
-                    };
+                    "application/json": components["schemas"]["AttentionList"];
                 };
             };
             401: components["responses"]["Unauthenticated"];

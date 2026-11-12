@@ -23,9 +23,11 @@ export const account = (role: Role) => DEMO_ACCOUNTS.find((a) => a.role === role
  *
  * - `as`: ya con sesion abierta (se salta el login). `null`: sin sesion.
  * - `hash`: pantalla inicial.
+ * - `prepare`: deja la base simulada como hace falta ANTES de montar la web (la lista de doctores se pide una vez al abrir).
  */
-export async function mountApp({ as = "staff", hash = "#/calendario" }: { as?: Role | null; hash?: string } = {}) {
+export async function mountApp({ as = "staff", hash = "#/calendario", prepare }: { as?: Role | null; hash?: string; prepare?: (mock: MockApi) => void } = {}) {
   const mock = createMockApi({ now: () => new Date() });
+  prepare?.(mock);
   const cf = contractFetch(mock.fetch);
   const api = createApiClient({ fetch: cf.fetch });
   if (as) await api.auth.login(account(as).email, account(as).password);

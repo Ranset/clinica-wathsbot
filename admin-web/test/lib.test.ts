@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PAGE_SIZE, pageCountOf } from "../src/ui/pager";
 import { ApiError } from "@clinica/api-client";
 import { MAX_RANGE_DAYS, datesOf, visibleRange } from "@clinica/calendar";
 import { messageFor } from "../src/lib/errors";
@@ -121,5 +122,15 @@ describe("permisos y rutas", () => {
     expect(r.query.get("vista")).toBe("semana");
     expect(parseHash("").path).toBe("/");
     expect(parseHash("#/doctores").query.get("x")).toBeNull();
+  });
+});
+
+describe("paginación", () => {
+  it("son 10 por página y siempre hay al menos una página", () => {
+    expect(PAGE_SIZE).toBe(10);
+    expect([0, 1, 10, 11, 20, 21, 25, 100].map((n) => pageCountOf(n))).toEqual([1, 1, 1, 2, 2, 3, 3, 10]);
+    expect(pageCountOf(7, 5)).toBe(2);
+    expect(pageCountOf(Number.NaN)).toBe(1);                       // un total que no es número no rompe la cuenta
+    expect(pageCountOf(undefined as unknown as number)).toBe(1);
   });
 });

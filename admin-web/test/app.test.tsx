@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { doctorColor } from "@clinica/calendar";
+import type { MockApi } from "@clinica/api-client/mock";
 import { features } from "../src/features";
 import { NOW, account, bookingButton, freezeClock, localDay, mountApp, pickBooking } from "./helpers";
 
@@ -212,6 +213,51 @@ describe("calendario", () => {
     await user.click(screen.getByRole("button", { name: "Lista" }));
     expect(await screen.findAllByRole("button", { name: /Dr\. /i })).not.toHaveLength(0);
     expect(window.location.hash).toContain("vista=lista");
+  });
+
+  describe("al pasar el puntero por una cita se dice el doctor, su especialidad y el consultorio", () => {
+    const hover = (b: { doctor: { name: string; specialty: string } | null; room: { name: string } | null }) =>
+      `${b.doctor!.name} · ${b.doctor!.specialty} · ${b.room!.name}`;
+
+    it("día por doctor: el bloque lo dice aunque la columna ya sea del doctor", async () => {
+      const m = await mountApp({ hash: "#/calendario?dia=2026-11-12" });
+      violations = m.violations;
+      const b = pickBooking(m.mock, "2026-11-12", { doctorId: "d1" });
+      expect(await bookingButton(b)).toHaveAttribute("title", hover(b));
+      expect(hover(b)).toMatch(/^Dr\. Cervantes Peláez · Proctología · Consultorio \d$/);
+    });
+
+    it("semana (filtrada por doctor): cada cita lleva su doctor y su consultorio", async () => {
+      const m = await mountApp({ hash: "#/calendario?vista=semana&dia=2026-11-12" });
+      violations = m.violations;
+      const b = pickBooking(m.mock, "2026-11-12", { doctorId: "d1" });
+      expect(await bookingButton(b)).toHaveAttribute("title", hover(b));
+    });
+
+    it("mes: cada cita del día lleva el aviso de SU doctor y SU consultorio", async () => {
+      const m = await mountApp({ hash: "#/calendario?vista=mes&dia=2026-11-12" });
+      violations = m.violations;
+      await screen.findByText("Noviembre de 2026");
+      const chips = await waitFor(() => {
+        const c = Array.from(document.querySelectorAll<HTMLElement>("button[title]")).filter((el) => / · Consultorio \d$/.test(el.getAttribute("title")!));
+        if (c.length === 0) throw new Error("sin citas en el mes");
+        return c;
+      });
+      for (const chip of chips) {
+        const patient = m.mock.db.bookings.find((b) => b.patient && chip.textContent?.includes(b.patient.name));
+        expect(patient, chip.textContent ?? "").toBeDefined();
+        expect(chip).toHaveAttribute("title", hover(patient!));
+      }
+    });
+
+    it("un bloqueo de consultorio dice solo el consultorio", async () => {
+      const m = await mountApp({ hash: "#/calendario?dia=2026-11-12" });
+      violations = m.violations;
+      await ready();
+      const bloqueo = m.mock.db.bookings.find((b) => b.kind === "block" && localDay(b.scheduledAtUtc) === "2026-11-12");
+      expect(bloqueo, "el simulador trae un bloqueo ese día").toBeDefined();
+      expect(await screen.findByTitle(bloqueo!.room!.name)).toHaveTextContent(bloqueo!.notes!);
+    });
   });
 
   it("clic en un hueco vacio abre 'Nueva cita' con doctor, dia y hora ya puestos", async () => {
@@ -774,6 +820,22 @@ describe("doctores", () => {
     await waitFor(() => expect(mock.db.absences.some((a) => a.doctorId === "d4")).toBe(false));
   });
 
+  it("cada card de doctor lleva una franja con el color que lo identifica en el calendario (el automático por su número)", async () => {
+    const { violations: v } = await mountApp({ hash: "#/doctores" });
+    violations = v;
+    await screen.findByRole("heading", { name: "Doctores" });
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("ul[aria-label='Doctores'] > li"));
+    expect(cards).toHaveLength(7);
+    for (const card of cards) {
+      const id = ({ "Dr. Cervantes Peláez": "d1", "Dr. Pérez Lago": "d2", "Dra. Bordas Rodríguez": "d3", "Dr. Gustavo Torrealba": "d4", "Dr. Molina López": "d5", "Dra. Geydi": "d6", "Dra. Ana del Carmen Argüelles": "d7" } as Record<string, string>)[card.querySelector("p")!.textContent!];
+      expect(id, card.textContent ?? "").toBeDefined();
+      expect(card).toHaveAttribute("data-doctor-color", doctorColor(id)!);
+      expect(card).toHaveStyle({ borderLeftColor: doctorColor(id)!, borderLeftWidth: "6px" });
+    }
+    // son siete colores distintos: de un vistazo se distingue un doctor de otro
+    expect(new Set(cards.map((c) => c.getAttribute("data-doctor-color"))).size).toBe(7);
+  });
+
   it("se elige el color de un doctor (paleta, otro color, automático); se ve de inmediato en el calendario y se avisa si es muy claro o ya lo usa otro", async () => {
     const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
     violations = v;
@@ -811,6 +873,10 @@ describe("doctores", () => {
     expect(within(group).getAllByRole("radio").filter((r) => r.getAttribute("aria-checked") === "true")).toHaveLength(0);
     await save();
     await waitFor(() => expect(colorOfD1()).toBe("#047857"));
+    // la franja de su card en la lista de doctores también cambia al guardar
+    const cardD1 = () => Array.from(document.querySelectorAll<HTMLElement>("ul[aria-label='Doctores'] > li")).find((li) => li.textContent?.includes("Dr. Cervantes Peláez"))!;
+    await waitFor(() => expect(cardD1()).toHaveAttribute("data-doctor-color", "#047857"));
+    expect(cardD1()).toHaveStyle({ borderLeftColor: "#047857" });
     // y la cita ya agendada de ese doctor lleva el color nuevo (el servidor la copia)
     expect(mock.db.bookings.filter((b) => b.doctor?.id === "d1").every((b) => b.doctor?.color === "#047857")).toBe(true);
 
@@ -872,6 +938,68 @@ describe("doctores", () => {
     await user.click(within(form).getByRole("checkbox", { name: /Activo/ }));
     await user.click(within(form).getByRole("button", { name: "Guardar datos" }));
     await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Alta Recepción")!.active).toBe(false));
+  });
+
+  it("los doctores de baja no salen por defecto; el check «Mostrar doctores inactivos» los muestra (y viaja en la dirección)", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    const cards = () => Array.from(document.querySelectorAll<HTMLElement>("ul[aria-label='Doctores'] > li"));
+    const geydi = () => cards().find((c) => c.textContent?.includes("Dra. Geydi"));
+    await screen.findByRole("heading", { name: "Doctores" });
+    expect(cards()).toHaveLength(7);
+    expect(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (0)" })).not.toBeChecked();
+
+    // se da de baja a la Dra. Geydi desde «Datos»: al cerrar, su card ya no está
+    await user.click(screen.getByRole("button", { name: "Horario y ausencias de Dra. Geydi" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dra. Geydi" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: /Activo/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.id === "d6")!.active).toBe(false));
+    await user.click(within(dialog).getByRole("button", { name: /Cerrar/ }));
+    await waitFor(() => expect(geydi()).toBeUndefined());
+    expect(cards()).toHaveLength(6);
+    expect(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (1)" })).not.toBeChecked();
+
+    // con el check aparece, marcada «De baja», y la dirección lo recuerda
+    await user.click(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (1)" }));
+    await waitFor(() => expect(cards()).toHaveLength(7));
+    expect(geydi()).toHaveTextContent("De baja");
+    expect(window.location.hash).toBe("#/doctores?inactivos=1");
+
+    // quitar el check los vuelve a esconder
+    await user.click(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (1)" }));
+    await waitFor(() => expect(geydi()).toBeUndefined());
+    expect(window.location.hash).toBe("#/doctores");
+
+    // un enlace con `?inactivos=1` abre ya con el check puesto
+    window.location.hash = "#/doctores?inactivos=1";
+    await waitFor(() => expect(geydi()).toBeDefined());
+    expect(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (1)" })).toBeChecked();
+
+    // dar de alta otra vez desde su card: vuelve a salir sin el check
+    await user.click(screen.getByRole("button", { name: "Horario y ausencias de Dra. Geydi" }));
+    const again = await screen.findByRole("dialog", { name: "Dra. Geydi" });
+    await user.click(within(again).getByRole("tab", { name: "Datos" }));
+    await user.click(within(again).getByRole("checkbox", { name: /Activo/ }));
+    await user.click(within(again).getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.id === "d6")!.active).toBe(true));
+    await user.click(within(again).getByRole("button", { name: /Cerrar/ }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (0)" })).toBeInTheDocument());
+    expect(geydi()).toBeDefined();
+  });
+
+  it("si todos están de baja y el check no está puesto, lo dice en vez de dejar la lista vacía", async () => {
+    const { user, violations: v } = await mountApp({ as: "staff", hash: "#/doctores", prepare: (mock) => mock.db.doctors.forEach((d) => (d.active = false)) });
+    violations = v;
+    await screen.findByRole("heading", { name: "Doctores" });
+    const cards = () => Array.from(document.querySelectorAll<HTMLElement>("ul[aria-label='Doctores'] > li"));
+    expect(cards()).toHaveLength(0);
+    expect(screen.getByText(/No hay doctores activos\. Marca «Mostrar doctores inactivos» para verlos\./)).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Mostrar doctores inactivos (7)" }));
+    await waitFor(() => expect(cards()).toHaveLength(7));
+    expect(screen.queryByText(/No hay doctores activos/)).toBeNull();
+    expect(cards().every((c) => c.textContent?.includes("De baja"))).toBe(true);
   });
 
   it("el administrador elimina un doctor dado de alta por error (con confirmación); con citas o cuenta no se deja", async () => {
@@ -1002,6 +1130,183 @@ describe("atencion", () => {
     const done = await screen.findByRole("list", { name: "Casos atendidos" });
     expect(within(done).getAllByRole("listitem")).toHaveLength(2);
     expect(within(done).queryByRole("button", { name: "Marcar como atendido" })).not.toBeInTheDocument();
+  });
+
+  describe("atendidos: paginados de 10 en 10, los más recientes primero", () => {
+    /** `n` casos atendidos, «Caso 1» el más viejo y «Caso n» el más nuevo, metidos en la base en DESORDEN a propósito. */
+    const withResolved = (n: number) => (mock: MockApi) => {
+      mock.db.attention = mock.db.attention.filter((a) => a.status !== "resolved");
+      const base = Date.parse("2026-10-01T15:00:00.000Z");
+      const idx = Array.from({ length: n }, (_, i) => i);
+      const shuffled = [...idx.filter((i) => i % 2 === 0), ...idx.filter((i) => i % 2 === 1).reverse()];   // ni creciente ni decreciente
+      for (const i of shuffled) {
+        mock.db.attention.push({
+          id: `res-${i + 1}`, kind: "handoff", status: "resolved", createdAtUtc: new Date(base + (i + 1) * 3_600_000).toISOString(),
+          conversationId: null, phone: null, reason: "pidio_persona", detail: `Caso ${i + 1}`,
+        });
+      }
+    };
+    const details = (list: HTMLElement) => within(list).getAllByRole("listitem").map((li) => /Caso (\d+)/.exec(li.textContent ?? "")![1]);
+
+    it("10 por página, empezando por el más reciente; Anterior/Siguiente y el rango que se está viendo", async () => {
+      const { user, violations: v } = await mountApp({ hash: "#/atencion", prepare: withResolved(25) });
+      violations = v;
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      let list = await screen.findByRole("list", { name: "Casos atendidos" });
+      const nav = screen.getByRole("navigation", { name: "Paginación de casos atendidos" });
+
+      expect(details(list)).toEqual(["25", "24", "23", "22", "21", "20", "19", "18", "17", "16"]);        // los 10 más nuevos
+      expect(nav).toHaveTextContent("Mostrando 1–10 de 25");
+      expect(nav).toHaveTextContent("Página 1 de 3");
+      expect(within(nav).getByRole("button", { name: "Anterior" })).toBeDisabled();
+
+      await user.click(within(nav).getByRole("button", { name: "Siguiente" }));
+      list = screen.getByRole("list", { name: "Casos atendidos" });
+      expect(details(list)).toEqual(["15", "14", "13", "12", "11", "10", "9", "8", "7", "6"]);
+      expect(nav).toHaveTextContent("Mostrando 11–20 de 25");
+      expect(nav).toHaveTextContent("Página 2 de 3");
+
+      await user.click(within(nav).getByRole("button", { name: "Siguiente" }));
+      list = screen.getByRole("list", { name: "Casos atendidos" });
+      expect(details(list)).toEqual(["5", "4", "3", "2", "1"]);                                           // la última, con lo que sobra
+      expect(nav).toHaveTextContent("Mostrando 21–25 de 25");
+      expect(nav).toHaveTextContent("Página 3 de 3");
+      expect(within(nav).getByRole("button", { name: "Siguiente" })).toBeDisabled();
+
+      await user.click(within(nav).getByRole("button", { name: "Anterior" }));
+      expect(details(screen.getByRole("list", { name: "Casos atendidos" }))[0]).toBe("15");
+      expect(nav).toHaveTextContent("Página 2 de 3");
+    });
+
+    it("al cambiar a Pendientes y volver, empieza otra vez en la primera página; los pendientes no se paginan", async () => {
+      const { user, violations: v } = await mountApp({ hash: "#/atencion", prepare: withResolved(25) });
+      violations = v;
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      expect(screen.queryByRole("navigation", { name: /Paginación/ })).toBeNull();                         // pendientes: todos, sin paginar
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      await screen.findByRole("list", { name: "Casos atendidos" });
+      await user.click(within(screen.getByRole("navigation", { name: /Paginación/ })).getByRole("button", { name: "Siguiente" }));
+      expect(screen.getByRole("navigation", { name: /Paginación/ })).toHaveTextContent("Página 2 de 3");
+
+      await user.click(screen.getByRole("button", { name: "Pendientes" }));
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      expect(screen.queryByRole("navigation", { name: /Paginación/ })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      const list = await screen.findByRole("list", { name: "Casos atendidos" });
+      expect(details(list)[0]).toBe("25");
+      expect(screen.getByRole("navigation", { name: /Paginación/ })).toHaveTextContent("Página 1 de 3");
+    });
+
+    it("pide al servidor UNA página a la vez (limit/offset), nunca todos los atendidos; los pendientes sí vienen completos", async () => {
+      const urls: string[] = [];
+      const { user, violations: v } = await mountApp({
+        hash: "#/atencion",
+        prepare: (mock) => {
+          withResolved(25)(mock);
+          const original = mock.fetch;
+          mock.fetch = (input, init) => {
+            urls.push(String(input));
+            return original(input, init);
+          };
+        },
+      });
+      violations = v;
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      const attention = () => urls.filter((u) => u.includes("/api/attention?"));
+      expect(attention().every((u) => !u.includes("limit="))).toBe(true);                                  // pendientes: sin límite
+
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      await screen.findByRole("list", { name: "Casos atendidos" });
+      await user.click(within(screen.getByRole("navigation", { name: /Paginación/ })).getByRole("button", { name: "Siguiente" }));
+      await waitFor(() => expect(attention().some((u) => u.includes("status=resolved") && u.includes("offset=10"))).toBe(true));
+      const resolved = attention().filter((u) => u.includes("status=resolved"));
+      expect(resolved.length).toBeGreaterThanOrEqual(2);
+      expect(resolved.every((u) => u.includes("limit=10"))).toBe(true);                                    // ninguna pide todos
+      expect(resolved.some((u) => u.includes("offset=0"))).toBe(true);
+    });
+
+    /** Un servidor de la versión ANTERIOR (sin reiniciar): ignora `limit`/`offset` y no manda `total`. */
+    const oldServer = (n: number) => (mock: MockApi) => {
+      withResolved(n)(mock);
+      const original = mock.fetch;
+      mock.fetch = async (input, init) => {
+        const url = new URL(String(input), "http://local.test");
+        if (url.pathname !== "/api/attention") return original(input, init);
+        url.searchParams.delete("limit");
+        url.searchParams.delete("offset");
+        const res = await original(url.pathname + url.search, init);
+        const { items } = (await res.json()) as { items: unknown[] };
+        return new Response(JSON.stringify({ items }), { status: res.status, headers: { "Content-Type": "application/json" } });
+      };
+    };
+
+    it("con un servidor de la versión anterior (sin `total`, que manda todos) no sale «NaN»: se pagina aquí mismo", async () => {
+      // (no se revisa el contrato: ese servidor responde sin `total` a propósito)
+      const { user } = await mountApp({ hash: "#/atencion", prepare: oldServer(25) });
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      let list = await screen.findByRole("list", { name: "Casos atendidos" });
+      const nav = screen.getByRole("navigation", { name: /Paginación/ });
+      expect(details(list)).toEqual(["25", "24", "23", "22", "21", "20", "19", "18", "17", "16"]);        // solo 10, aunque llegaron 25
+      expect(nav).toHaveTextContent("Mostrando 1–10 de 25");
+      expect(nav).toHaveTextContent("Página 1 de 3");
+      await user.click(within(nav).getByRole("button", { name: "Siguiente" }));
+      list = screen.getByRole("list", { name: "Casos atendidos" });
+      expect(details(list)).toEqual(["15", "14", "13", "12", "11", "10", "9", "8", "7", "6"]);
+      expect(nav).toHaveTextContent("Página 2 de 3");
+      expect(document.body.textContent).not.toMatch(/NaN/);
+    });
+
+    it("con un servidor de la versión anterior y pocos atendidos (4), la lista sale completa y sin paginación ni «NaN»", async () => {
+      const { user } = await mountApp({ hash: "#/atencion", prepare: oldServer(4) });
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      const list = await screen.findByRole("list", { name: "Casos atendidos" });
+      expect(details(list)).toEqual(["4", "3", "2", "1"]);
+      expect(screen.queryByRole("navigation", { name: /Paginación/ })).toBeNull();
+      expect(document.body.textContent).not.toMatch(/NaN/);
+    });
+
+    it("si la lista se achica mientras se mira la última página, pasa sola a la última que exista", async () => {
+      const { user, mock, violations: v } = await mountApp({ hash: "#/atencion", prepare: withResolved(25) });
+      violations = v;
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await user.click(screen.getByRole("button", { name: "Atendidos" }));
+      await screen.findByRole("list", { name: "Casos atendidos" });
+      const nav = () => screen.getByRole("navigation", { name: /Paginación/ });
+      await user.click(within(nav()).getByRole("button", { name: "Siguiente" }));
+      await user.click(within(nav()).getByRole("button", { name: "Siguiente" }));
+      await waitFor(() => expect(nav()).toHaveTextContent("Página 3 de 3"));
+
+      // otro deja solo 12 atendidos: la página 3 ya no existe
+      mock.db.attention = mock.db.attention.filter((a) => a.status !== "resolved" || Number(/(\d+)$/.exec(a.id)![1]) > 13);
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(nav()).toHaveTextContent("Página 2 de 2"));
+      expect(nav()).toHaveTextContent("Mostrando 11–12 de 12");
+      expect(within(screen.getByRole("list", { name: "Casos atendidos" })).getAllByRole("listitem")).toHaveLength(2);
+    });
+
+    it("con 10 o menos no hay paginación; con 11 hay dos páginas (10 y 1)", async () => {
+      const diez = await mountApp({ hash: "#/atencion", prepare: withResolved(10) });
+      violations = diez.violations;
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await diez.user.click(screen.getByRole("button", { name: "Atendidos" }));
+      expect(within(await screen.findByRole("list", { name: "Casos atendidos" })).getAllByRole("listitem")).toHaveLength(10);
+      expect(screen.queryByRole("navigation", { name: /Paginación/ })).toBeNull();
+      diez.unmount();
+
+      const once = await mountApp({ hash: "#/atencion", prepare: withResolved(11) });
+      await screen.findByRole("list", { name: "Casos pendientes" });
+      await once.user.click(screen.getByRole("button", { name: "Atendidos" }));
+      expect(within(await screen.findByRole("list", { name: "Casos atendidos" })).getAllByRole("listitem")).toHaveLength(10);
+      const nav = screen.getByRole("navigation", { name: /Paginación/ });
+      expect(nav).toHaveTextContent("Página 1 de 2");
+      await once.user.click(within(nav).getByRole("button", { name: "Siguiente" }));
+      expect(within(screen.getByRole("list", { name: "Casos atendidos" })).getAllByRole("listitem")).toHaveLength(1);
+      expect(nav).toHaveTextContent("Mostrando 11–11 de 11");
+      violations = [...violations, ...once.violations];
+    });
   });
 
   it("la insignia de la barra cuenta los casos abiertos", async () => {

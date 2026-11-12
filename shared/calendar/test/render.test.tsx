@@ -291,6 +291,63 @@ describe("Eventos personales del doctor en su agenda (con su texto)", () => {
   });
 });
 
+describe("Al pasar el puntero por una cita se dice el doctor, su especialidad y el consultorio", () => {
+  const titleOf = (html: string, patient: string) => {
+    const btn = html.split("<button").find((b) => b.includes(patient)) ?? "";
+    return btn.match(/ title="([^"]*)"/)?.[1];
+  };
+  const drCervantes = { id: "cervantes", name: "Dr. cervantes", specialty: "Proctología" };
+  const drPerez = { id: "perez", name: "Dr. perez", specialty: "Ginecología" };
+  const cita = mk("1", "10:00", "cervantes", "1", { doctor: drCervantes });   // «Dr. cervantes», Proctología, «Consultorio 1»
+
+  it("rejilla de día o semana: «doctor · especialidad · consultorio»", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} />);
+    expect(titleOf(html, "Paciente 1,")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+  });
+
+  it("con carriles (el doctor ya es la columna y la cita solo escribe el consultorio) el aviso lleva los dos", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} lanes={lanes} />);
+    expect(titleOf(html, "Paciente 1,")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+    expect(html).toContain('aria-label="Paciente 1, Consultorio 1,');   // lo visible/accesible no cambia
+  });
+
+  it("también en una cita corta o angosta que no alcanza a escribirlos", () => {
+    const a = mk("2", "10:00", "cervantes", "1", { doctor: drCervantes });
+    const b = mk("3", "10:00", "perez", "2", { doctor: drPerez });          // se encima con la otra: columna a medias
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[a, b]} />);
+    expect(titleOf(html, "Paciente 2,")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+    expect(titleOf(html, "Paciente 3,")).toBe("Dr. perez · Ginecología · Consultorio 2");
+  });
+
+  it("un bloqueo de consultorio no tiene doctor: solo el consultorio", () => {
+    const bloqueo = mk("4", "12:00", "x", "2", { kind: "block", doctor: null, patient: null, notes: "Mantenimiento" });
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[bloqueo]} />);
+    expect(titleOf(html, "Mantenimiento,")).toBe("Consultorio 2");
+  });
+
+  it("lo que falte se omite: sin especialidad (o en blanco) o sin consultorio no quedan «·» sueltos", () => {
+    const sinEsp = mk("7", "14:00", "x", "1", { doctor: { id: "x", name: "Dr. x", specialty: "  " } });
+    const sinSala = mk("8", "15:00", "cervantes", "1", { doctor: drCervantes, room: null });
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[sinEsp, sinSala]} />);
+    expect(titleOf(html, "Paciente 7,")).toBe("Dr. x · Consultorio 1");
+    expect(titleOf(html, "Paciente 8,")).toBe("Dr. cervantes · Proctología");
+  });
+
+  it("sin doctor ni consultorio no hay aviso (en vez de un aviso vacío)", () => {
+    const sola = mk("5", "13:00", "x", "x", { doctor: null, room: null });
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[sola]} />);
+    expect(titleOf(html, "Paciente 5,")).toBeUndefined();
+  });
+
+  it("vista de mes: cada cita del día lleva el aviso", () => {
+    const html = renderToStaticMarkup(
+      <MonthGrid weeks={monthWeeks(DAY)} month="2026-11" bookings={[cita, mk("6", "11:00", "perez", "2", { doctor: drPerez })]} timezone={TZ} today={DAY} selectedId={null} onSelect={() => {}} onOpenDay={() => {}} />
+    );
+    expect(titleOf(html, "Paciente 1")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+    expect(titleOf(html, "Paciente 6")).toBe("Dr. perez · Ginecología · Consultorio 2");
+  });
+});
+
 describe("Cada doctor se ve con su color", () => {
   const AZUL = "#1d4ed8"; // doctor "1"
   const NARANJA = "#c2410c"; // doctor "2"

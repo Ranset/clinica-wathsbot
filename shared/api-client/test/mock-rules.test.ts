@@ -546,6 +546,40 @@ describe("bot y casos de atencion", () => {
     expect(await code(api.attention.resolve("at99"))).toBe("404 no_encontrado");
   });
 
+  it("los casos se piden por paginas (limit/offset) con su total, igual que el servidor", async () => {
+    // 25 atendidos en desorden: «caso 25» es el mas nuevo
+    mock.db.attention = mock.db.attention.filter((a) => a.status !== "resolved");
+    const base = Date.parse("2026-10-01T15:00:00.000Z");
+    const orden = Array.from({ length: 25 }, (_, i) => i);
+    for (const i of [...orden.filter((n) => n % 2 === 0), ...orden.filter((n) => n % 2 === 1).reverse()]) {
+      mock.db.attention.push({ id: `r${i + 1}`, kind: "handoff", status: "resolved", createdAtUtc: new Date(base + (i + 1) * 3_600_000).toISOString(), conversationId: null, phone: null, reason: "otro", detail: `caso ${i + 1}` });
+    }
+    const detalles = (r: { items: { detail?: string | null }[] }) => r.items.map((x) => x.detail);
+    const p1 = await api.attention.page("resolved", { limit: 10 });
+    expect(p1.total).toBe(25);
+    expect(detalles(p1)).toEqual(Array.from({ length: 10 }, (_, i) => `caso ${25 - i}`));            // el mas reciente primero
+    const p2 = await api.attention.page("resolved", { limit: 10, offset: 10 });
+    expect(detalles(p2)).toEqual(Array.from({ length: 10 }, (_, i) => `caso ${15 - i}`));
+    const p3 = await api.attention.page("resolved", { limit: 10, offset: 20 });
+    expect(detalles(p3)).toEqual(["caso 5", "caso 4", "caso 3", "caso 2", "caso 1"]);
+    expect(await api.attention.page("resolved", { limit: 10, offset: 30 })).toEqual({ items: [], total: 25 });
+    // sin `limit` salen todos (como antes) y cada estado cuenta lo suyo
+    expect(await api.attention.list("resolved")).toHaveLength(25);
+    const abiertos = await api.attention.page("open", { limit: 1 });
+    expect(abiertos.items).toHaveLength(1);
+    expect(abiertos.total).toBe((await api.attention.list("open")).length);
+  });
+
+  it("limit y offset invalidos son 422, como en el servidor (y offset solo con limit)", async () => {
+    const q = (qs: string) => mock.fetch(`/api/attention?status=resolved${qs}`).then((r) => r.status);
+    for (const qs of ["&limit=0", "&limit=101", "&limit=abc", "&limit=1.5", "&limit=10&offset=-1", "&limit=10&offset=x", "&offset=5"]) {
+      expect(await q(qs), qs).toBe(422);
+    }
+    expect(await q("&limit=100")).toBe(200);
+    expect(await q("&limit=10&offset=0")).toBe(200);
+    expect(await q("&offset=0")).toBe(200);                                                          // offset 0 no necesita limit
+  });
+
   it("una ausencia del doctor con citas agendadas avisa al personal", async () => {
     const before = (await api.attention.list("open")).length;
     await book({ scheduledAtUtc: at("2026-11-12", "11:00") });

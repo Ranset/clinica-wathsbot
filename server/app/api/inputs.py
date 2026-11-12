@@ -77,6 +77,20 @@ def query_id(name: str):
     return int(raw)
 
 
+def query_int(name: str, lo: int, hi: int | None = None):
+    """Parametro `?limit=` / `?offset=`: un entero entre `lo` y `hi` (o `lo` en adelante), o None si no viene."""
+    raw = request.args.get(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise bad(f"{name}: debe ser un entero") from None
+    if value < lo or (hi is not None and value > hi):
+        raise bad(f"{name}: debe estar entre {lo} y {hi}" if hi is not None else f"{name}: debe ser {lo} o mas")
+    return value
+
+
 def query_range() -> tuple[datetime, datetime]:
     """`[from, to)` obligatorio; `to - from` no puede pasar de 92 dias (justo 92 si cabe)."""
     start, end = instant(request.args.get("from"), "from"), instant(request.args.get("to"), "to")

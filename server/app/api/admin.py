@@ -6,12 +6,13 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from ..agenda import Actor
 from ..settings import get_bot_settings, set_bot_active
-from .inputs import bad, body, opt_bool
+from .inputs import bad, body, opt_bool, query_int
 from .security import require
 from .serializers import attention_json, bot_settings_json, doctor_json, user_json
 
 bp = Blueprint("admin", __name__)
 STAFF = ("admin", "staff")
+MAX_PAGE_SIZE = 100      # tope de `?limit=` en las listas paginadas
 
 
 def _x(name):
@@ -70,7 +71,12 @@ def set_bot():
 @bp.get("/api/attention")
 @require(*STAFF)
 def list_attention():
-    return jsonify(items=[attention_json(c) for c in _x("directory").attention(request.args.get("status", "open"))])
+    """Mas reciente primero. Sin `limit` salen todos (los pendientes son pocos); los atendidos se piden por paginas."""
+    limit, offset = query_int("limit", 1, MAX_PAGE_SIZE), query_int("offset", 0)
+    if offset and limit is None:
+        raise bad("offset: solo se admite junto con limit")
+    rows, total = _x("directory").attention(request.args.get("status", "open"), limit=limit, offset=offset or 0)
+    return jsonify(items=[attention_json(c) for c in rows], total=total)
 
 
 @bp.post("/api/attention/<attention_id>/resolve")

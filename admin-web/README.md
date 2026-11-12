@@ -54,14 +54,22 @@ __clinicaMock.reset()                       // datos de ejemplo de nuevo
   su doctor) y en «Día»/«Semana» con un doctor filtrado; las citas quedan encima. Cuando un doctor tiene un **evento personal** (lo anota en su PWA)
   se ve una franja **gris rayada «No disponible»**, sin motivo ni texto (el detalle es privado del doctor; la API solo da doctor y horario): en ese
   horario el doctor no se puede agendar, pero el consultorio sigue libre para los demás doctores.
+  Al **pasar el puntero por una cita** (Día, Semana y Mes) sale el **doctor, su especialidad y el consultorio** («Dra. Bordas Rodríguez · Ortopedia y Traumatología · Consultorio 2»; un
+  bloqueo, solo el consultorio): es el atributo `title` (`bookingHover` de `@clinica/calendar`), útil cuando el nombre del paciente se corta en una columna angosta.
   Clic en un hueco → *Nueva cita*; clic en una cita → detalle (mover / cancelar / notas; «realizada» / «no asistió» están apagadas, ver *Funciones apagadas*).
   Los filtros viven en la dirección (`?vista=semana&dia=2026-11-12&doctor=d1`). Se actualiza solo cada 5 s con
   `If-None-Match` (un 304 no toca el estado) y `coalesce` junta las ráfagas de avisos en una consulta.
-- **Doctores** (`#/doctores`): horario semanal propio o de la clínica, ausencias, solicitudes de cambio de horario
+- **Doctores** (`#/doctores`): cada card lleva una **franja a la izquierda del color del doctor** (el mismo con el que se ve en el calendario: el elegido o el
+  automático; `colorOf`). **Los doctores de baja no salen por defecto**: el check «Mostrar doctores inactivos (N)» los muestra, con su etiqueta «De baja»
+  (viaja en la dirección: `#/doctores?inactivos=1`; si no queda ninguno activo, la pantalla lo dice). Horario semanal propio o de la clínica, ausencias, solicitudes de cambio de horario
   de los doctores. El administrador y el personal de recepción dan de alta, editan y dan de baja doctores y cambian el
   horario de la clínica (pestaña «Datos» de cada doctor). Solo el administrador puede además *eliminar* un doctor dado de alta por error
   (si nunca tuvo citas ni cuenta de usuario; en cualquier otro caso se da de baja).
-- **Atención** (`#/atencion`): casos que el bot no pudo resolver (`/api/attention`).
+- **Atención** (`#/atencion`): casos que el bot no pudo resolver (`/api/attention`). «Pendientes» sale completo; **«Atendidos» se pagina de 10 en 10**, de los más
+  recientes a los más antiguos (por la fecha de cada caso), con «Mostrando 11–20 de 47», Anterior / Siguiente y «Página 2 de 5» (`src/ui/pager.tsx`; no se pinta si
+  caben en una página; al cambiar de pestaña vuelve a la primera). **La paginación la hace el servidor**: la web pide `GET /api/attention?status=resolved&limit=10&offset=N` y
+  recibe esa página y el `total`; si la lista se achica mientras se mira la última página, pasa sola a la última que exista. Si el servidor todavía es de la versión anterior
+  (sin reiniciar: ignora `limit` y no manda `total`), la web pagina la lista completa por su cuenta en vez de mostrar «Página 1 de NaN».
 - **Usuarios** (`#/usuarios`): solo `admin` (junto con eliminar doctores, es lo que el personal de recepción no hace).
 - **Botón del bot** en el encabezado: siempre visible, muestra si está activo y quién lo cambió; apagarlo pide confirmación.
 

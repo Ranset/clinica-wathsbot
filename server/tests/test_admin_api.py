@@ -418,3 +418,64 @@ def test_casos_de_atencion_se_listan_y_se_resuelven(app, login):
     assert staff.get("/api/attention", query_string={"status": "otro"}).status_code == 422
     assert staff.post("/api/attention/999999/resolve").status_code == 404
     assert staff.post("/api/attention/abc/resolve").status_code == 404
+
+
+def test_casos_atendidos_se_piden_por_paginas_con_su_total(app, login):
+    """Los atendidos se acumulan sin fin: la web pide `limit`/`offset` y el servidor solo trae esa pagina (+ el total)."""
+    ev = app.extensions["events"]
+    for i in range(1, 26):
+        ev.handoff(f"conv-{i}", "pidio_persona", None, f"caso {i}")
+    staff = login("staff")
+    sin_limite = staff.get("/api/attention").get_json()
+    assert sin_limite["total"] == 25 and len(sin_limite["items"]) == 25                 # sin `limit`: todos, como antes, mas el total
+    assert_schema("AttentionList", sin_limite)
+    por_id = {i["conversationId"]: i["id"] for i in sin_limite["items"]}
+    for n in range(1, 24):                                                                # se atienden 23 (quedan abiertos el 24 y el 25)
+        assert staff.post(f"/api/attention/{por_id[f'conv-{n}']}/resolve").status_code == 200
+
+    def page(**qs):
+        r = staff.get("/api/attention", query_string={"status": "resolved", **qs})
+        assert r.status_code == 200, r.get_json()
+        j = r.get_json()
+        assert_schema("AttentionList", j)
+        return [i["conversationId"] for i in j["items"]], j["total"]
+
+    p1, total = page(limit=10)
+    assert total == 23 and p1 == [f"conv-{n}" for n in range(23, 13, -1)]                # el mas reciente primero
+    p2, total2 = page(limit=10, offset=10)
+    assert total2 == 23 and p2 == [f"conv-{n}" for n in range(13, 3, -1)]
+    p3, _ = page(limit=10, offset=20)
+    assert p3 == ["conv-3", "conv-2", "conv-1"]                                           # la ultima, con lo que sobra
+    assert page(limit=10, offset=30) == ([], 23)                                          # mas alla del final: vacia, pero el total sigue
+    assert p1 + p2 + p3 == [f"conv-{n}" for n in range(23, 0, -1)]                        # sin huecos ni repetidos
+    assert page(limit=100)[0] == p1 + p2 + p3 and page()[1] == 23                         # el tope y «sin limit»
+
+    # los pendientes tambien aceptan paginar, y cada estado cuenta lo suyo
+    r = staff.get("/api/attention", query_string={"limit": 1}).get_json()
+    assert [i["conversationId"] for i in r["items"]] == ["conv-25"] and r["total"] == 2
+
+    for qs in ({"limit": 0}, {"limit": 101}, {"limit": "abc"}, {"limit": 1.5}, {"limit": 10, "offset": -1}, {"limit": 10, "offset": "x"},
+               {"offset": 5}):                                                            # `offset` solo con `limit`
+        r = staff.get("/api/attention", query_string={"status": "resolved", **qs})
+        assert r.status_code == 422 and r.get_json()["error"] == "validacion", qs
+
+
+def test_la_pagina_de_atendidos_solo_trae_esas_filas_de_la_bd(app):
+    """El `LIMIT` va en la consulta (no se trae todo para recortar despues)."""
+    from sqlalchemy import event
+    ev, directory = app.extensions["events"], app.extensions["directory"]
+    for i in range(1, 31):
+        ev.handoff(f"c-{i}", "otro", None, None)
+    for c in directory.attention("open")[0]:
+        directory.resolve_attention(c.id)
+    consultas: list[str] = []
+    engine = app.extensions["db"].engine
+    listener = lambda conn, cur, statement, *a: consultas.append(statement)
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        rows, total = directory.attention("resolved", limit=10, offset=10)
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+    assert len(rows) == 10 and total == 30
+    listado = [q for q in consultas if "FROM attention_cases" in q and "count(" not in q.lower()]
+    assert len(listado) == 1 and "LIMIT" in listado[0].upper(), consultas

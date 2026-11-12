@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { Check, Clock, UserPlus, X } from "lucide-react";
-import { Button, type WeeklyHours } from "@clinica/calendar";
+import { Button, colorOf, type WeeklyHours } from "@clinica/calendar";
 import type { Booking, Doctor, ScheduleChangeRequest } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { useAuth } from "../../auth";
@@ -11,7 +11,8 @@ import { compactHours, summarizeHours, validateHours } from "../../lib/hours";
 import { useNow } from "../../lib/use-now";
 import { usePolling } from "../../lib/use-polling";
 import { useToast } from "../../toast";
-import { BusyButton, FormError, Notice, PageMessage, Pill, Spinner, TextArea, Field } from "../../ui/controls";
+import { useQueryState } from "../../router";
+import { BusyButton, Checkbox, FormError, Notice, PageMessage, Pill, Spinner, TextArea, Field } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
 import { AffectedList } from "./affected-list";
 import { DoctorDataForm, DoctorDialog } from "./doctor-dialog";
@@ -187,6 +188,9 @@ export function DoctorsPage() {
   const now = useNow(60_000);
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Los doctores de baja no salen por defecto; el check los muestra. Viaja en la dirección (`#/doctores?inactivos=1`).
+  const [query, setQuery] = useQueryState();
+  const showInactive = query.get("inactivos") === "1";
 
   if (error && !dir) {
     return (
@@ -204,6 +208,8 @@ export function DoctorsPage() {
   }
 
   const open = dir.doctors.find((d) => d.id === openId) ?? null;
+  const inactiveCount = dir.doctors.filter((d) => !d.active).length;
+  const shown = showInactive ? dir.doctors : dir.doctors.filter((d) => d.active);
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
@@ -220,9 +226,32 @@ export function DoctorsPage() {
       <ScheduleRequests doctors={dir.doctors} onApplied={() => void reload()} />
       <ClinicHoursCard key={JSON.stringify(dir.clinicHours)} hours={dir.clinicHours} onSaved={() => void reload()} />
 
+      <div className="-mb-2 flex justify-end">
+        <Checkbox
+          label={`Mostrar doctores inactivos (${inactiveCount})`}
+          className="text-text-2"
+          checked={showInactive}
+          onChange={(e) => setQuery({ inactivos: e.target.checked ? "1" : null })}
+        />
+      </div>
+
+      {shown.length === 0 && (
+        <p className="rounded-xl border border-dashed p-4 text-sm text-text-3">
+          {inactiveCount > 0 ? "No hay doctores activos. Marca «Mostrar doctores inactivos» para verlos." : "Todavía no hay doctores."}
+        </p>
+      )}
+
       <ul className="grid gap-3 sm:grid-cols-2" aria-label="Doctores">
-        {dir.doctors.map((d) => (
-          <li key={d.id} className="flex flex-col gap-2 rounded-xl border bg-background p-4">
+        {shown.map((d) => {
+          // la marca de la card: una franja del color con el que se ve este doctor en el calendario (el elegido o el automático)
+          const color = colorOf(d);
+          return (
+          <li
+            key={d.id}
+            data-doctor-color={color ?? undefined}
+            style={color ? { borderLeftWidth: 6, borderLeftColor: color } : undefined}
+            className="flex flex-col gap-2 rounded-xl border bg-background p-4"
+          >
             <div className="flex items-start gap-2">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[15px] font-bold">{d.name}</p>
@@ -239,10 +268,11 @@ export function DoctorsPage() {
               </Button>
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
 
-      {open && <DoctorDialog doctor={open} doctors={dir.doctors} clinicHours={dir.clinicHours} now={now} onClose={() => setOpenId(null)} onChanged={() => void reload()} />}
+      {open &&<DoctorDialog doctor={open} doctors={dir.doctors} clinicHours={dir.clinicHours} now={now} onClose={() => setOpenId(null)} onChanged={() => void reload()} />}
 
       {creating && (
         <Modal title="Nuevo doctor" onClose={() => setCreating(false)}>

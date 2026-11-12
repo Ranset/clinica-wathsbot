@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { PREFIX } from "../src/lib/storage";
 import { account, bookingButton, freezeClock, localDay, makeServer, mountApp, pickBooking, storedKeys } from "./helpers";
 
@@ -93,6 +93,55 @@ describe("Hoy", () => {
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Martes, 10 de noviembre"));
     expect(window.location.hash).toBe("#/hoy");
     expect(screen.getByRole("button", { name: "Hoy" })).toBeDisabled();
+  });
+
+  describe("tocar la fecha abre el selector de día", () => {
+    const pickerButton = () => screen.getByRole("button", { name: /Elegir otra fecha$/ });
+    const pickerInput = () => document.querySelector<HTMLInputElement>('input[type="date"][aria-hidden="true"]')!;
+
+    it("el título es un botón que dice «Elegir otra fecha» y pone el foco en el selector nativo (sin showPicker, como en jsdom)", async () => {
+      const t = await mountApp();
+      await heading();
+      expect(pickerButton()).toHaveAccessibleName("Martes, 10 de noviembre de 2026. Elegir otra fecha");
+      expect(pickerInput()).toHaveValue("2026-11-10");                          // el selector parte del día que se ve
+      await t.user.click(pickerButton());
+      expect(pickerInput()).toHaveFocus();
+    });
+
+    it("al elegir otro día de la misma semana salta a él sin volver a pedir la agenda; al elegir otra semana, pide esa semana", async () => {
+      const t = await mountApp();
+      await heading();
+      await screen.findByText("Dr. Cervantes Peláez");
+      await waitFor(() => expect(agendaRequests(t.log)).toHaveLength(1));
+
+      fireEvent.change(pickerInput(), { target: { value: "2026-11-13" } });
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Viernes, 13 de noviembre de 2026"));
+      expect(window.location.hash).toBe("#/hoy?dia=2026-11-13");
+      expect(pickerInput()).toHaveValue("2026-11-13");
+      expect(agendaRequests(t.log)).toHaveLength(1);                            // la semana ya estaba
+
+      fireEvent.change(pickerInput(), { target: { value: "2026-11-24" } });
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Martes, 24 de noviembre de 2026"));
+      await waitFor(() => expect(agendaRequests(t.log)).toHaveLength(2));       // otra semana: su propia consulta
+      expect(screen.getByRole("button", { name: "Hoy" })).toBeEnabled();        // y «Hoy» regresa
+
+      await t.user.click(screen.getByRole("button", { name: "Hoy" }));
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Martes, 10 de noviembre"));
+    });
+
+    it("borrar la fecha en el selector (valor vacío) no cambia nada", async () => {
+      await mountApp();
+      await heading();
+      fireEvent.change(pickerInput(), { target: { value: "" } });
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Martes, 10 de noviembre de 2026");
+      expect(window.location.hash).toBe("#/hoy");
+    });
+
+    it("en Semana el título es solo texto (el selector es de la vista Hoy)", async () => {
+      await mountApp({ hash: "#/semana" });
+      expect(await heading()).toHaveTextContent("9 – 15 de nov de 2026");
+      expect(screen.queryByRole("button", { name: /Elegir otra fecha$/ })).toBeNull();
+    });
   });
 
   it("avisa de mi ausencia registrada para ese día", async () => {

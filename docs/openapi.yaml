@@ -1011,24 +1011,24 @@ paths:
     get:
       operationId: listAttention
       tags: [admin]
-      summary: Casos que necesitan a una persona (eventos fallidos y traspasos del bot).
+      summary: Casos que necesitan a una persona (eventos fallidos y traspasos del bot), con paginacion opcional.
+      description: |
+        Mas reciente primero. Sin `limit` devuelve TODOS los del `status` (lo que conviene a los pendientes, que son pocos). Los
+        atendidos (`resolved`) se acumulan sin fin: la web los pide de a una pagina con `limit` y `offset`, y `total` dice
+        cuantos hay en total para pintar la paginacion. `offset` solo se admite junto con `limit`.
       x-roles: [admin, staff]
       parameters:
         - { name: status, in: query, schema: { type: string, enum: [open, resolved], default: open } }
+        - { name: limit, in: query, description: "Cuantos casos devolver (1 a 100). Sin el, todos.", schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: offset, in: query, description: "Cuantos casos saltar (0 por defecto). Solo con `limit`.", schema: { type: integer, minimum: 0, default: 0 } }
       responses:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/RuleError" }
         "200":
-          description: Lista, mas reciente primero.
+          description: Los casos de esa pagina, mas reciente primero, y cuantos hay en total con ese `status`.
           content:
             application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items: { $ref: "#/components/schemas/AttentionItem" }
+              schema: { $ref: "#/components/schemas/AttentionList" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
   /api/attention/{attentionId}/resolve:
     post:
@@ -1952,6 +1952,17 @@ components:
       properties:
         user: { $ref: "#/components/schemas/User" }
         csrfToken: { type: string }
+    AttentionList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AttentionItem" }
+        total:
+          type: integer
+          minimum: 0
+          description: Cuantos casos hay con ese `status` (no solo los de esta pagina).
     AttentionItem:
       type: object
       required: [id, kind, status, createdAtUtc, reason]

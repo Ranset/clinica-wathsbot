@@ -24,6 +24,7 @@ import { useNow } from "../../lib/use-now";
 import { useProfile } from "../../profile";
 import { navigate, useQueryState } from "../../router";
 import { Checkbox, PageMessage, Spinner } from "../../ui/controls";
+import { DayPickerTitle } from "../../ui/day-picker";
 import { useAbsences } from "../absences/use-absences";
 import { BookingSheet } from "./booking-sheet";
 import { EventDialog, type EventTarget } from "./event-dialog";
@@ -101,7 +102,10 @@ export function AgendaPage({ view }: { view: "hoy" | "semana" }) {
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       {/* En el celular el título va arriba, completo; en escritorio todo en una fila (flechas, título, estado). */}
       <div className="flex flex-col gap-2 border-b px-3 py-2.5 sm:flex-row sm:items-center sm:gap-4 sm:px-6">
-        <h1 className="text-[15px] font-bold tracking-tight sm:order-2 sm:min-w-0 sm:truncate sm:text-base">{title}</h1>
+        <h1 className="text-[15px] font-bold tracking-tight sm:order-2 sm:min-w-0 sm:truncate sm:text-base">
+          {/* En «Hoy», tocar la fecha abre el selector del sistema para saltar a cualquier día. */}
+          {view === "hoy" ? <DayPickerTitle label={title} value={anchor} onPick={(day) => go({ dia: day })} /> : title}
+        </h1>
         <div className="flex items-center gap-1.5 sm:order-1">
           <Button variant="outline" size="icon" aria-label={view === "hoy" ? "Día anterior" : "Semana anterior"} onClick={() => go({ dia: addDaysISO(anchor, -step) })}>
             <ChevronLeft className="h-4 w-4" aria-hidden />

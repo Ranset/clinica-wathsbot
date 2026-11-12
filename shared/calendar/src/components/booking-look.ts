@@ -34,6 +34,17 @@ export function bookingSubtitle(b: Booking, parts: { doctor?: boolean; room?: bo
 }
 
 /**
+ * Lo que sale al pasar el puntero por una cita (atributo `title`): el doctor, su especialidad y el consultorio
+ * («Dr. Cervantes Peláez · Proctología · Consultorio 1»), aunque la vista no tenga lugar para escribirlos (columna angosta,
+ * cita corta, mes) o ya los diga la columna. Un bloqueo no tiene doctor: solo el consultorio. Lo que falte se omite, y
+ * `undefined` (sin aviso) si la cita no trae nada de eso.
+ */
+export function bookingHover(b: Booking): string | undefined {
+  const parts = [b.doctor?.name, b.doctor?.specialty, b.room?.name].map((s) => s?.trim()).filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/**
  * El color del DOCTOR sobre la cita, para saber de un vistazo de quien es. Va como estilo en linea (encima de las clases
  * de `bookingTone`): una cita "agendada" se rellena con el color del doctor; las demas conservan el aspecto de su estado
  * (realizada, no asistio, cancelada) con una franja a la izquierda del color del doctor. Un bloqueo no tiene doctor: sin color.

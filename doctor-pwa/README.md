@@ -40,7 +40,9 @@ pública VAPID para los avisos; en `.env.development`/`.env.mock` hay una **de d
 
 - **Hoy / Semana**: `TimeGrid` de `@clinica/calendar` con UN solo carril (mi agenda: encabezado con mi nombre y
   especialidad, horario propio sombreado). Flechas, «Hoy» y «Mostrar canceladas»; el día va en la dirección
-  (`#/hoy?dia=2026-11-12`). Tocar una cita abre el detalle (solo lectura; **sin teléfono del paciente**). Mis **ausencias se ven en la
+  (`#/hoy?dia=2026-11-12`). En **Hoy**, tocar la fecha del título (lleva una flechita) abre el selector de fecha del sistema para saltar a
+  cualquier día (`src/ui/day-picker.tsx`: un `<input type="date">` nativo escondido bajo el botón y `showPicker()`, como el calendario de la web de
+  administración); en **Semana** el título es solo texto. Tocar una cita abre el detalle (solo lectura; **sin teléfono del paciente**). Mis **ausencias se ven en la
   rejilla** como una franja ámbar rayada (de la hora en que empiezan a la en que terminan; con su motivo, que se queda a la vista al
   desplazarse) y además un aviso arriba con el texto; las citas siguen visibles encima de la franja. El doctor no agenda pacientes ni cambia estados desde aquí.
   **Eventos personales**: el botón «Evento» (o tocar un hueco vacío de la rejilla) abre un formulario con título, día, hora de inicio y duración (o «todo

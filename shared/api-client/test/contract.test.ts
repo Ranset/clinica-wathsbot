@@ -92,6 +92,9 @@ describe("un recorrido completo por el cliente cumple el contrato en cada interc
     await api.bot.get();
     await api.bot.set(false);
     const open = await api.attention.list("open");
+    const pagina = await api.attention.page("open", { limit: 2, offset: 0 });            // una pagina + su total, validado contra el contrato
+    expect(pagina.items.length).toBeLessThanOrEqual(2);
+    expect(pagina.total).toBe(open.length);
     await api.attention.resolve(open[0]!.id);
     await api.attention.list("resolved");
 

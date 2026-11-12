@@ -13,7 +13,7 @@ import type { CalendarAbsence, CalendarPersonalEvent, Lane, WeeklyHours } from "
 import { absenceDaySegment, absenceLabel, type AbsenceSegment } from "../lib/absences";
 import { cn } from "../lib/utils";
 import { timeLabel } from "../lib/time-format";
-import { bookingStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
+import { bookingHover, bookingStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
 
 /**
  * La rejilla de horas de las vistas Dia y Semana (adaptada de Vocero CRM, MIT):
@@ -451,6 +451,8 @@ function EventBlock({
         onSelect(b);
       }}
       aria-label={`${title}${subtitle ? ", " + subtitle : ""}, ${start} a ${end}`}
+      // al pasar el puntero: el doctor y el consultorio (en carriles el doctor ya es la columna, pero igual se dice)
+      title={bookingHover(b)}
       className={cn(
         "absolute z-10 overflow-hidden rounded-[6px] border text-left leading-tight shadow-sm transition-[box-shadow,filter] hover:brightness-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft",
         cols > 1 ? "px-1" : "px-1.5",

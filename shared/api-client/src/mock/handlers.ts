@@ -496,7 +496,20 @@ export function buildRoutes(db: DB): MockRoute[] {
     route<StoredUser>("listAttention", STAFF, (c) => {
       const status = c.query.get("status") ?? "open";
       if (status !== "open" && status !== "resolved") throw invalid(`"status" debe ser open o resolved.`);
-      return ok({ items: db.attention.filter((a) => a.status === status).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc)) });
+      // paginacion opcional, igual que el servidor: `limit` 1 a 100, `offset` desde 0 y solo junto con `limit`
+      const intParam = (name: string, lo: number, hi?: number): number | undefined => {
+        const raw = c.query.get(name);
+        if (raw === null || raw === "") return undefined;
+        const n = Number(raw);
+        if (!Number.isInteger(n)) throw invalid(`${name}: debe ser un entero`);
+        if (n < lo || (hi !== undefined && n > hi)) throw invalid(hi !== undefined ? `${name}: debe estar entre ${lo} y ${hi}` : `${name}: debe ser ${lo} o más`);
+        return n;
+      };
+      const limit = intParam("limit", 1, 100);
+      const offset = intParam("offset", 0);
+      if (offset && limit === undefined) throw invalid("offset: solo se admite junto con limit");
+      const all = db.attention.filter((a) => a.status === status).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
+      return ok({ items: limit === undefined ? all : all.slice(offset ?? 0, (offset ?? 0) + limit), total: all.length });
     }),
 
     route<StoredUser>("resolveAttention", STAFF, (c) => {

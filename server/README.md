@@ -89,6 +89,9 @@ responde 503, reintentable) y los ajustes de la cola `EVENT_MAX_ATTEMPTS` (5) y 
   una ausencia ajena es 404 (no 403); sus citas salen SIN telefono (`patient.id` es el id de la cita). Una ausencia suya con citas
   agendadas deja un caso de atencion para el personal SIN nombres ni telefonos. Cambios de usuarios, doctores, horarios, ausencias y
   del bot quedan en `audit_log` sin contrasenas, correos ni nombres de pacientes.
+- **Casos de atención paginados** (`GET /api/attention?status=&limit=&offset=`): sin `limit` salen todos (los pendientes son pocos); los atendidos se piden por
+  páginas (`limit` 1 a 100, `offset` solo junto con `limit`) y la respuesta lleva `total`. El `LIMIT` va en la consulta y ordena por `id` (índice `(status, id)`):
+  no se trae toda la tabla para recortar. `Directory.attention()` devuelve `(casos, total)`.
 - **Eventos personales del doctor** (`/api/doctor/personal-events`, tabla `doctor_personal_events`, migracion 0005): el doctor anota lo suyo en su
   PWA. Mientras dura uno el doctor no se ofrece ni se le agenda (bot, personal, reprogramar: `doctor_no_disponible`, sin decir por que) pero el
   consultorio queda libre para los demas. **El texto (titulo, notas) es privado**: solo lo devuelve la API del propio doctor; el personal recibe

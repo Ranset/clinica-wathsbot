@@ -5,6 +5,7 @@ import type {
   AbsenceInput,
   AbsenceResult,
   AttentionItem,
+  AttentionList,
   Booking,
   BookingCreate,
   BookingList,
@@ -274,8 +275,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
     },
 
     attention: {
+      /** TODOS los casos de ese estado (lo que conviene a los pendientes, que son pocos). */
       list: (status: "open" | "resolved" = "open", o?: RequestOptions) =>
         items<AttentionItem>("listAttention", { query: { status }, ...o }),
+      /**
+       * UNA pagina de casos (mas recientes primero) y cuantos hay en total con ese estado. Los atendidos se acumulan sin
+       * fin: asi el servidor solo trae `limit` (1 a 100) a partir de `offset`.
+       */
+      page: (status: "open" | "resolved", page: { limit: number; offset?: number }, o?: RequestOptions) =>
+        json<AttentionList>("listAttention", { query: { status, limit: page.limit, offset: page.offset ?? 0 }, ...o }),
       resolve: (id: string, o?: RequestOptions) =>
         json<AttentionItem>("resolveAttention", { path: { attentionId: id }, ...o }),
     },

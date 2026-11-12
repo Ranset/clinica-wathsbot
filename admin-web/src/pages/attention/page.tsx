@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { AlertTriangle, Bot, CalendarOff, Check, Copy, MessageSquareWarning } from "lucide-react";
 import { Button, cn } from "@clinica/calendar";
 import { isAbortError, type AttentionItem } from "@clinica/api-client";
@@ -8,6 +8,7 @@ import { fmtDateTime, fmtPhone } from "../../lib/fmt";
 import { usePolling } from "../../lib/use-polling";
 import { useToast } from "../../toast";
 import { BusyButton, PageMessage, Pill, Spinner } from "../../ui/controls";
+import { PAGE_SIZE, Pager, pageCountOf } from "../../ui/pager";
 
 const KIND = {
   event_failed: { label: "Mensaje que el bot no pudo atender", icon: MessageSquareWarning, tone: "danger" as const },
@@ -76,27 +77,61 @@ function Case({ item, onResolve, busy }: { item: AttentionItem; onResolve?: () =
   );
 }
 
-/** Lo que el bot no pudo resolver y necesita a una persona. Se atiende desde Zernio; aquí solo se lleva la cuenta. */
+/**
+ * Lo que el bot no pudo resolver y necesita a una persona. Se atiende desde Zernio; aquí solo se lleva la cuenta.
+ * Los pendientes salen todos; los ATENDIDOS (que se acumulan sin fin) se piden al servidor DE 10 EN 10, de los más recientes a
+ * los más antiguos: solo viaja la página que se está viendo (`limit`/`offset`) y el total para pintar la paginación.
+ */
 export function AttentionPage() {
   const api = useApi();
   const toast = useToast();
   const [status, setStatus] = useState<"open" | "resolved">("open");
+  const [page, setPage] = useState(1);
   const [items, setItems] = useState<AttentionItem[] | null>(null);
+  const [total, setTotal] = useState(0);
+  /** De qué estado y página son `items` (al pasar de página se siguen viendo los de antes hasta que llegan los nuevos). */
+  const [loadedKey, setLoadedKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const key = `${status}:${page}`;
+  const goToPage = (p: number) => {
+    setPage(p);
+    listRef.current?.scrollIntoView?.({ block: "start" });
+  };
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        setItems(await api.attention.list(status, { signal }));
+        if (status === "open") {
+          const all = await api.attention.list("open", { signal });
+          setItems(all);
+          setTotal(all.length);
+        } else {
+          const offset = (page - 1) * PAGE_SIZE;
+          const res = await api.attention.page("resolved", { limit: PAGE_SIZE, offset }, { signal });
+          // Un servidor que todavía no se actualizó (versión anterior: sin reiniciar) ignora `limit`/`offset` y no manda `total`:
+          // se sigue viendo bien, con la lista completa y la paginación hecha aquí, en vez de «Página 1 de NaN».
+          const total = Number.isInteger(res.total) ? res.total : res.items.length;
+          const rows = res.items.length > PAGE_SIZE ? res.items.slice(offset, offset + PAGE_SIZE) : res.items;
+          // Si la lista se achicó mientras se miraba (esta página ya no existe), se pasa a la última que sí.
+          if (rows.length === 0 && total > 0 && page > 1) {
+            setPage(pageCountOf(total));
+            return;
+          }
+          setItems(rows);
+          setTotal(total);
+        }
+        setLoadedKey(`${status}:${page}`);
         setError(null);
       } catch (e) {
         if (!isAbortError(e)) setError(messageFor(e));
       }
     },
-    [api, status]
+    [api, status, page]
   );
-  usePolling(load, 15_000, true, status);
+  usePolling(load, 15_000, true, key);
 
   const resolve = async (item: AttentionItem) => {
     setBusyId(item.id);
@@ -123,6 +158,7 @@ export function AttentionPage() {
               aria-pressed={status === s}
               onClick={() => {
                 setItems(null);
+                setPage(1);
                 setStatus(s);
               }}
               className={cn(
@@ -156,12 +192,18 @@ export function AttentionPage() {
         </div>
       )}
       {items && items.length > 0 && (
-        <ul aria-label={status === "open" ? "Casos pendientes" : "Casos atendidos"} className="flex flex-col gap-3">
+        <ul
+          ref={listRef}
+          aria-label={status === "open" ? "Casos pendientes" : "Casos atendidos"}
+          aria-busy={loadedKey !== key || undefined}
+          className={cn("flex scroll-mt-4 flex-col gap-3 transition-opacity", loadedKey !== key && "opacity-60")}
+        >
           {items.map((it) => (
             <Case key={it.id} item={it} busy={busyId === it.id} onResolve={status === "open" ? () => void resolve(it) : undefined} />
           ))}
         </ul>
       )}
+      {status === "resolved" && items && <Pager label="Paginación de casos atendidos" page={page} total={total} onPage={goToPage} />}
     </div>
   );
 }

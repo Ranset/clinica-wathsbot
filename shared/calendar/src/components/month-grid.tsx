@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { bookingSegments, weekdayShortNames } from "../lib/calendar";
 import { timeLabel } from "../lib/time-format";
 import { cn } from "../lib/utils";
-import { bookingDotStyle, bookingTitle, bookingTone, type Booking } from "./booking-look";
+import { bookingDotStyle, bookingHover, bookingTitle, bookingTone, type Booking } from "./booking-look";
 
 /**
  * 215 — La vista de mes: de lunes a domingo, hasta tres citas por día y
@@ -100,6 +100,8 @@ export function MonthGrid({
                     e.stopPropagation();
                     onSelect(b);
                   }}
+                  // al pasar el puntero: el doctor y el consultorio (la celda del mes no tiene lugar para escribirlos)
+                  title={bookingHover(b)}
                   className={cn(
                     "flex w-full min-w-0 items-center gap-1.5 rounded-[5px] px-1 py-px text-left text-[11.5px] hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft",
                     b.id === selectedId && "bg-accent",

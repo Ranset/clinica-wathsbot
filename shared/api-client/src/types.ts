@@ -35,6 +35,7 @@ export type UserCreate = S["UserCreate"];
 export type UserPatch = S["UserPatch"];
 export type SessionInfo = S["SessionInfo"];
 export type AttentionItem = S["AttentionItem"];
+export type AttentionList = S["AttentionList"];
 export type BotSettings = S["BotSettings"];
 
 /** Respuesta de `PUT /api/doctors/{id}/weekly-hours` (y de aprobar una solicitud, por dentro). */
