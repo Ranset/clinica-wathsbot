@@ -311,6 +311,177 @@ describe("calendario", () => {
   });
 });
 
+describe("ausencias de los doctores en la rejilla", () => {
+  const bands = (root: ParentNode = document) => Array.from(root.querySelectorAll<HTMLElement>("[data-absence]"));
+  const lane = (id: string) => document.querySelector<HTMLElement>(`[data-lane="${id}"]`)!;
+  const ausencia = (id: string, doctorId: string, startUtc: string, endUtc: string, reason: string | null) => ({ id, doctorId, startUtc, endUtc, reason });
+  /** Lo que hace la pantalla al volver a la pestaña: consultar de nuevo (el servidor no tiene WebSockets). */
+  const refrescar = () => document.dispatchEvent(new Event("visibilitychange"));
+
+  it("día por doctor: cada ausencia va SOLO en la columna de su doctor, con su motivo y su horario (hora de Cancún)", async () => {
+    const { mock, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-12" });
+    violations = v;
+    await ready();
+    // el Dr. Torrealba (d4) todo el día con motivo; el Dr. Cervantes (d1) de 10:00 a 12:00 sin motivo
+    mock.db.absences.push(
+      ausencia("a-d4", "d4", "2026-11-12T05:00:00.000Z", "2026-11-13T05:00:00.000Z", "Congreso"),
+      ausencia("a-d1", "d1", "2026-11-12T15:00:00.000Z", "2026-11-12T17:00:00.000Z", null)
+    );
+    refrescar();
+    await waitFor(() => expect(bands()).toHaveLength(2));
+
+    expect(bands(lane("d4"))).toHaveLength(1);
+    expect(bands(lane("d4"))[0]).toHaveAttribute("aria-label", "Ausencia · Congreso");
+    expect(bands(lane("d4"))[0]).toHaveStyle({ top: "1px", height: `${24 * 48 - 1}px` });
+    expect(bands(lane("d1"))).toHaveLength(1);
+    expect(bands(lane("d1"))[0]).toHaveAttribute("aria-label", "Ausencia");
+    expect(bands(lane("d1"))[0]).toHaveStyle({ top: `${10 * 48 + 1}px`, height: `${2 * 48 - 1}px` });
+    for (const id of ["d2", "d3", "d5", "d6", "d7"]) expect(bands(lane(id)), id).toHaveLength(0);
+  });
+
+  it("la ausencia que ya trae la agenda de ejemplo (Dr. Molina, dos días) se ve en su carril y en su día", async () => {
+    const { violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-14" });
+    violations = v;
+    await waitFor(() => expect(bands(lane("d5"))).toHaveLength(1));
+    expect(bands(lane("d5"))[0]).toHaveAttribute("aria-label", "Ausencia · Congreso médico");
+    expect(bands()).toHaveLength(1);                                                                // y de nadie más
+    // el día siguiente (segundo día de esa ausencia): también, y el anterior no
+    window.location.hash = "#/calendario?dia=2026-11-15";
+    await waitFor(() => expect(bands(lane("d5"))).toHaveLength(1));
+    window.location.hash = "#/calendario?dia=2026-11-13";
+    await waitFor(() => expect(lane("d5")).toBeInTheDocument());
+    await waitFor(() => expect(bands()).toHaveLength(0));
+  });
+
+  it("semana: sin filtro no se pintan (mezclarian a todos los doctores); con un doctor filtrado, solo las de ese doctor", async () => {
+    const { mock, violations: v } = await mountApp({ hash: "#/calendario?vista=semana&dia=2026-11-12" });
+    violations = v;
+    await waitFor(() => expect(document.querySelectorAll("[data-day]")).toHaveLength(7));
+    mock.db.absences.push(
+      ausencia("a-d4", "d4", "2026-11-11T05:00:00.000Z", "2026-11-14T05:00:00.000Z", "Vacaciones"),   // mié, jue y vie
+      ausencia("a-d1", "d1", "2026-11-12T05:00:00.000Z", "2026-11-13T05:00:00.000Z", "Otra")
+    );
+    refrescar();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(bands()).toHaveLength(0);                                                               // sin filtro: nada
+
+    window.location.hash = "#/calendario?vista=semana&dia=2026-11-12&doctor=d4";
+    await waitFor(() => expect(bands()).toHaveLength(3));
+    expect(bands().map((b) => b.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-11", "2026-11-12", "2026-11-13"]);
+    expect(bands().every((b) => b.getAttribute("aria-label") === "Ausencia · Vacaciones")).toBe(true);   // las de d4, no la de d1
+  });
+
+  it("por consultorio, en mes y en lista no se pintan franjas (ahi no se sabe de quién es cada columna)", async () => {
+    const { user, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-14" });
+    violations = v;
+    await waitFor(() => expect(bands()).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Consultorio" }));
+    await waitFor(() => expect(document.querySelectorAll("[data-lane]")).toHaveLength(2));
+    expect(bands()).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Doctor" }));
+    await waitFor(() => expect(bands()).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Mes" }));
+    await screen.findByText("Noviembre de 2026");
+    expect(bands()).toHaveLength(0);
+  });
+
+  it("una ausencia nueva (que registró el doctor desde su app) aparece al actualizar, y si se quita desaparece", async () => {
+    const { mock, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-12" });
+    violations = v;
+    await ready();
+    expect(bands()).toHaveLength(0);
+    mock.db.absences.push(ausencia("a-nueva", "d3", "2026-11-12T05:00:00.000Z", "2026-11-13T05:00:00.000Z", "Trámite"));
+    refrescar();
+    await waitFor(() => expect(bands(lane("d3"))).toHaveLength(1));
+    mock.db.absences.splice(mock.db.absences.findIndex((a) => a.id === "a-nueva"), 1);
+    refrescar();
+    await waitFor(() => expect(bands()).toHaveLength(0));
+  });
+});
+
+describe("«No disponible»: doctores ocupados por un evento personal (privado) en la rejilla", () => {
+  const busy = (root: ParentNode = document) => Array.from(root.querySelectorAll<HTMLElement>("[data-busy]"));
+  const absences = () => Array.from(document.querySelectorAll<HTMLElement>("[data-absence]"));
+  const lane = (id: string) => document.querySelector<HTMLElement>(`[data-lane="${id}"]`)!;
+  const refrescar = () => document.dispatchEvent(new Event("visibilitychange"));
+  /** El simulador trae, de ejemplo, a d1 el miércoles 11 (1:00–2:00 PM) y el jueves 12 (11:30 AM–1:00 PM), y a d3 el miércoles 11 (12:30–1:30 PM). */
+  const TEXTOS = ["Comida con residentes", "Reservación a nombre", "Dentista", "Junta de especialidad"];
+  const sinTexto = () => {
+    const body = document.body.textContent ?? "";
+    for (const t of TEXTOS) expect(body, t).not.toContain(t);
+  };
+
+  it("día por doctor: franja gris «No disponible» SOLO en la columna de su doctor, en su horario (hora de Cancún), sin título ni notas", async () => {
+    const { violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-11" });
+    violations = v;
+    await waitFor(() => expect(busy()).toHaveLength(2));
+    expect(busy(lane("d1"))).toHaveLength(1);
+    expect(busy(lane("d1"))[0]).toHaveAttribute("aria-label", "No disponible");
+    expect(busy(lane("d1"))[0]).toHaveClass("cal-busy");
+    expect(busy(lane("d1"))[0]).toHaveStyle({ top: `${13 * 48 + 1}px`, height: `${48 - 1}px` });
+    expect(busy(lane("d3"))).toHaveLength(1);
+    expect(busy(lane("d3"))[0]).toHaveStyle({ top: `${12.5 * 48 + 1}px`, height: `${48 - 1}px` });
+    for (const id of ["d2", "d4", "d5", "d6", "d7"]) expect(busy(lane(id)), id).toHaveLength(0);
+    expect(absences()).toHaveLength(0);                                   // no se confunde con una ausencia
+    sinTexto();                                                            // y el detalle privado no llega a la pantalla
+  });
+
+  it("convive con una ausencia del mismo doctor: cada una con su estilo", async () => {
+    const { mock, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-11" });
+    violations = v;
+    await waitFor(() => expect(busy()).toHaveLength(2));
+    mock.db.absences.push({ id: "a-d1", doctorId: "d1", startUtc: "2026-11-11T15:00:00.000Z", endUtc: "2026-11-11T17:00:00.000Z", reason: "Trámite" });
+    refrescar();
+    await waitFor(() => expect(absences()).toHaveLength(1));
+    expect(absences()[0]).toHaveAttribute("aria-label", "Ausencia · Trámite");
+    expect(busy(lane("d1"))).toHaveLength(1);
+    expect(busy()).toHaveLength(2);
+  });
+
+  it("semana: sin filtro no se pintan; con un doctor filtrado, una franja por cada día con un evento de ese doctor", async () => {
+    const { violations: v } = await mountApp({ hash: "#/calendario?vista=semana&dia=2026-11-12" });
+    violations = v;
+    await waitFor(() => expect(document.querySelectorAll("[data-day]")).toHaveLength(7));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(busy()).toHaveLength(0);                                       // sin filtro: mezclarian a todos los doctores
+
+    window.location.hash = "#/calendario?vista=semana&dia=2026-11-12&doctor=d1";
+    await waitFor(() => expect(busy()).toHaveLength(2));
+    expect(busy().map((b) => b.closest("[data-day]")!.getAttribute("data-day"))).toEqual(["2026-11-11", "2026-11-12"]);
+    sinTexto();
+  });
+
+  it("por consultorio, en mes y en lista no se pintan", async () => {
+    const { user, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-11" });
+    violations = v;
+    await waitFor(() => expect(busy()).toHaveLength(2));
+    await user.click(screen.getByRole("button", { name: "Consultorio" }));
+    await waitFor(() => expect(document.querySelectorAll("[data-lane]")).toHaveLength(2));
+    expect(busy()).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Doctor" }));
+    await waitFor(() => expect(busy()).toHaveLength(2));
+    await user.click(screen.getByRole("button", { name: "Mes" }));
+    await screen.findByText("Noviembre de 2026");
+    expect(busy()).toHaveLength(0);
+    sinTexto();
+  });
+
+  it("un evento nuevo del doctor aparece al actualizar, y si lo borra desaparece (sin que el personal vea jamás de qué se trata)", async () => {
+    const { mock, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-13" });
+    violations = v;
+    await ready();
+    expect(busy()).toHaveLength(0);
+    mock.db.personalEvents.push({ id: "pe-nuevo", doctorId: "d4", title: "Cirugía de la Sra. Quintana", notes: "hipertensión", startUtc: "2026-11-13T15:00:00.000Z", endUtc: "2026-11-13T16:00:00.000Z" });
+    refrescar();
+    await waitFor(() => expect(busy(lane("d4"))).toHaveLength(1));
+    expect(busy(lane("d4"))[0]).toHaveStyle({ top: `${10 * 48 + 1}px`, height: `${48 - 1}px` });
+    expect(document.body.textContent).not.toMatch(/Quintana|Cirug|hipertensi/);
+    mock.db.personalEvents.splice(mock.db.personalEvents.findIndex((e) => e.id === "pe-nuevo"), 1);
+    refrescar();
+    await waitFor(() => expect(busy()).toHaveLength(0));
+  });
+});
+
 describe("detalle de una cita", () => {
   const DAY = "2026-11-12";
   const openBooking = async (mount: Awaited<ReturnType<typeof mountApp>>, b = pickBooking(mount.mock, DAY, { doctorId: "d1" })) => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { affectedMessage, describeAbsence, overlapsRange } from "../src/lib/absence";
 import { ago, fmtSyncTime } from "../src/lib/fmt";
 import { compactHours, sameHours } from "../src/lib/hours";
+import { DURATIONS, START_TIMES, durationLabel, formOf, instantsOf, overlaps } from "../src/lib/events";
 import { rangeToUtc } from "../src/lib/range";
 import { MAX_AGENDA_ENTRIES, PREFIX, clearStoredData, createSnapshotStore, readStoredSession, writeStoredSession } from "../src/lib/storage";
 import { detectPush, isIos, urlBase64ToUint8Array, type PushEnv } from "../src/pwa/push";
@@ -204,5 +205,48 @@ describe("avisos push (lado del cliente)", () => {
     expect(safeUrl("//malo.example")).toBe("./");
     expect(safeUrl("javascript:alert(1)")).toBe("./");
     expect(safeUrl(42)).toBe("./");
+  });
+});
+
+describe("eventos personales: del formulario a la API y de vuelta", () => {
+  it("las horas de inicio son cada 15 min todo el día y las duraciones se leen bien", () => {
+    expect(START_TIMES).toHaveLength(96);
+    expect([START_TIMES[0], START_TIMES[1], START_TIMES[95]]).toEqual(["00:00", "00:15", "23:45"]);
+    expect(DURATIONS.map(durationLabel)).toEqual(["15 min", "30 min", "45 min", "1 h", "1 h 30 min", "2 h", "3 h", "4 h", "6 h", "8 h"]);
+    expect(durationLabel(80)).toBe("1 h 20 min");
+  });
+
+  it("día + hora + duración -> instantes UTC (Cancún = UTC-5) y de vuelta", () => {
+    const f = { day: "2026-11-12", allDay: false, time: "10:30", duration: 90 };
+    const at = instantsOf(f)!;
+    expect(at).toEqual({ startUtc: "2026-11-12T15:30:00.000Z", endUtc: "2026-11-12T17:00:00.000Z" });
+    expect(formOf(at)).toEqual(f);
+  });
+
+  it("todo el día = de 00:00 a 00:00 del día siguiente; un evento de 24 h que empieza a medianoche vuelve como «todo el día»", () => {
+    const at = instantsOf({ day: "2026-11-12", allDay: true, time: "09:00", duration: 60 })!;    // hora y duración se ignoran
+    expect(at).toEqual({ startUtc: "2026-11-12T05:00:00.000Z", endUtc: "2026-11-13T05:00:00.000Z" });
+    expect(formOf(at)).toMatchObject({ day: "2026-11-12", allDay: true });
+    // el mismo intervalo que no empieza a medianoche NO es «todo el día»
+    expect(formOf({ startUtc: "2026-11-12T10:00:00.000Z", endUtc: "2026-11-13T10:00:00.000Z" })).toMatchObject({ allDay: false, duration: 1440 });
+  });
+
+  it("un evento que cruza la medianoche conserva su día de inicio", () => {
+    const f = formOf({ startUtc: "2026-11-13T03:00:00.000Z", endUtc: "2026-11-13T05:00:00.000Z" });        // 22:00 a 00:00 del 12 en Cancún
+    expect(f).toEqual({ day: "2026-11-12", allDay: false, time: "22:00", duration: 120 });
+  });
+
+  it("datos que no existen no producen instantes", () => {
+    expect(instantsOf({ day: "no-es-dia", allDay: false, time: "10:00", duration: 60 })).toBeNull();
+    expect(instantsOf({ day: "2026-11-12", allDay: false, time: "10:00", duration: 0 })).toBeNull();
+    expect(instantsOf({ day: "2026-11-12", allDay: false, time: "10:00", duration: Number.NaN })).toBeNull();
+  });
+
+  it("overlaps: [a0, a1) y [b0, b1); pegados no se solapan", () => {
+    const t = (h: number) => `2026-11-12T${String(h).padStart(2, "0")}:00:00.000Z`;
+    expect(overlaps(t(10), t(11), t(10), t(11))).toBe(true);
+    expect(overlaps(t(10), t(12), t(11), t(13))).toBe(true);
+    expect(overlaps(t(10), t(11), t(11), t(12))).toBe(false);
+    expect(overlaps(t(11), t(12), t(10), t(11))).toBe(false);
   });
 });

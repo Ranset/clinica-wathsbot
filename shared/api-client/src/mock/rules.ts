@@ -119,6 +119,9 @@ export function placeInSchedule(db: DB, now: Date, p: Placement): { roomId: stri
     const e = endMs(p.startUtc, p.durationMinutes);
     const absent = db.absences.some((a) => a.doctorId === doctor!.id && Date.parse(a.startUtc) < e && start < Date.parse(a.endUtc));
     if (absent) throw rule("doctor_no_disponible", `${doctor.name} está ausente en ese horario.`);
+    // un evento personal bloquea al doctor, pero NO ocupa consultorio; y no se dice por que (es privado del doctor)
+    const personal = db.personalEvents.some((ev) => ev.doctorId === doctor!.id && Date.parse(ev.startUtc) < e && start < Date.parse(ev.endUtc));
+    if (personal) throw rule("doctor_no_disponible", `${doctor.name} no está disponible en ese horario.`);
   }
 
   const busy = overlapping(db, p.startUtc, p.durationMinutes, p.excludeId);

@@ -1,18 +1,18 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { CalendarClock, Clock } from "lucide-react";
+import { CalendarClock, Clock, Trash2 } from "lucide-react";
 import { Button, WEEKDAYS, addDaysISO, hhmmLabel, isIsoDate, todayInTz, type WeeklyHours } from "@clinica/calendar";
-import type { ScheduleChangeRequest } from "@clinica/api-client";
+import { isApiError, type ScheduleChangeRequest } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { SyncStatus } from "../../layout/status";
 import { useCanWrite } from "../../lib/can-write";
-import { messageFor } from "../../lib/errors";
+import { isConflict, messageFor } from "../../lib/errors";
 import { TZ, fmtDateTime, fmtDay } from "../../lib/fmt";
 import { DAY_NAME, compactHours, sameHours, summarizeHours, validateHours } from "../../lib/hours";
 import { useNow } from "../../lib/use-now";
 import { useResource } from "../../lib/use-resource";
 import { useProfile } from "../../profile";
 import { useToast } from "../../toast";
-import { BusyButton, Field, FormError, Notice, PageMessage, Pill, Spinner, TextArea, TextInput } from "../../ui/controls";
+import { BusyButton, Field, FormError, Notice, PageMessage, Pill, Spinner, TextArea, TextInput, dangerButton } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
 import { HoursEditor } from "./hours-editor";
 
@@ -61,6 +61,10 @@ export function SchedulePage() {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Eliminar una solicitud pendiente (con confirmación, como «Quitar ausencia»)
+  const [removing, setRemoving] = useState<ScheduleChangeRequest | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const start = () => {
     setHours(doctor ? structuredClone(doctor.weeklyHours) : {});
@@ -95,6 +99,31 @@ export function SchedulePage() {
       setError(messageFor(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * Elimina una solicitud MIA que sigue pendiente. Si el personal ya la aprobó o rechazó (409) o ya no existe (404), no se
+   * puede: se dice por qué y se recarga la lista para que se vea su estado real.
+   */
+  const confirmRemove = async () => {
+    if (!removing || removeBusy || !canWrite) return;
+    setRemoveBusy(true);
+    setRemoveError(null);
+    try {
+      await api.doctorSelf.scheduleChanges.remove(removing.id);
+      setRemoving(null);
+      toast.show("Solicitud eliminada: el personal ya no la verá.");
+      requests.apply((list) => (list ?? []).filter((r) => r.id !== removing.id));
+      await requests.reload();
+    } catch (err) {
+      reportFailure(err);
+      if (isConflict(err)) setRemoveError("El personal ya resolvió esta solicitud, así que ya no se puede eliminar. Se actualizó la lista.");
+      else if (isApiError(err) && err.status === 404) setRemoveError("Esa solicitud ya no existe. Se actualizó la lista.");
+      else setRemoveError(messageFor(err));
+      if (isConflict(err) || (isApiError(err) && err.status === 404)) await requests.reload();
+    } finally {
+      setRemoveBusy(false);
     }
   };
 
@@ -139,7 +168,7 @@ export function SchedulePage() {
           </a>
           .
         </p>
-        {hasPending && <Notice tone="warn">Ya tienes una solicitud pendiente. Puedes enviar otra, pero el personal verá las dos.</Notice>}
+        {hasPending && <Notice tone="warn">Ya tienes una solicitud pendiente. Puedes enviar otra, pero el personal verá las dos; si te equivocaste, elimina la pendiente en «Mis solicitudes».</Notice>}
         {reason && <Notice tone="warn">{reason}</Notice>}
         <div>
           <Button onClick={start} disabled={!canWrite}>
@@ -159,7 +188,25 @@ export function SchedulePage() {
             <li key={r.id} className="flex flex-col gap-1.5 rounded-lg border bg-background px-3 py-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Pill tone={STATUS[r.status].tone}>{STATUS[r.status].label}</Pill>
-                <span className="text-xs text-text-3">Enviada {fmtDateTime(r.createdAtUtc)}</span>
+                <span className="flex items-center gap-1 text-xs text-text-3">
+                  Enviada {fmtDateTime(r.createdAtUtc)}
+                  {/* solo una PENDIENTE se puede eliminar: una aprobada o rechazada es historial */}
+                  {r.status === "pending" && (
+                    <button
+                      type="button"
+                      disabled={!canWrite}
+                      title={reason ?? "Eliminar esta solicitud"}
+                      onClick={() => {
+                        setRemoveError(null);
+                        setRemoving(r);
+                      }}
+                      aria-label={`Eliminar la solicitud enviada ${fmtDateTime(r.createdAtUtc)}`}
+                      className="-my-1 -mr-1.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-3 hover:bg-accent hover:text-danger-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </button>
+                  )}
+                </span>
               </div>
               <p className="text-sm">{summarizeHours(r.weeklyHours)}</p>
               <p className="text-xs text-text-3">
@@ -171,6 +218,36 @@ export function SchedulePage() {
           ))}
         </ul>
       </section>
+
+      {removing && (
+        <Modal
+          title="¿Eliminar esta solicitud?"
+          onClose={() => setRemoving(null)}
+          initialFocus="panel"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setRemoving(null)}>
+                Cancelar
+              </Button>
+              <BusyButton className={dangerButton} busy={removeBusy} disabled={!canWrite} onClick={() => void confirmRemove()}>
+                Eliminar solicitud
+              </BusyButton>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-3 text-sm">
+            <p>
+              <span className="font-semibold">{summarizeHours(removing.weeklyHours)}</span>
+              <span className="block text-xs text-text-3">
+                Enviada {fmtDateTime(removing.createdAtUtc)} · Inicio pedido: {fmtDay(removing.effectiveFrom)}
+              </span>
+            </p>
+            <p className="text-text-2">El personal ya no la verá y no se aplicará ningún cambio. Si quieres, puedes enviar otra cuando quieras.</p>
+            <FormError>{removeError}</FormError>
+            {reason && <Notice tone="warn">{reason}</Notice>}
+          </div>
+        </Modal>
+      )}
 
       {open && (
         <Modal

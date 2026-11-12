@@ -82,6 +82,9 @@ describe("un recorrido completo por el cliente cumple el contrato en cada interc
     const abs = await api.doctors.absences.create(doctors[2]!.id, { startUtc: "2026-11-20T14:00:00.000Z", endUtc: "2026-11-20T23:00:00.000Z", reason: "Curso" });
     await api.doctors.absences.list(doctors[2]!.id);
     await api.doctors.absences.remove(doctors[2]!.id, abs.absence.id);
+    const busy = await api.busyTimes.list(range);              // lo que el personal sabe de los eventos personales: solo «ocupado»
+    expect(busy.length).toBeGreaterThan(0);
+    expect(Object.keys(busy[0]!).sort()).toEqual(["doctorId", "endUtc", "id", "startUtc"]);
 
     const requests = await api.scheduleChanges.list("pending");
     await api.scheduleChanges.reject(requests[0]!.id, "No es posible por ahora");
@@ -136,8 +139,16 @@ describe("un recorrido completo por el cliente cumple el contrato en cada interc
     const a = await api.doctorSelf.absences.create({ startUtc: "2026-11-24T14:00:00.000Z", endUtc: "2026-11-24T20:00:00.000Z", reason: "Personal" });
     await api.doctorSelf.absences.list();
     await api.doctorSelf.absences.remove(a.absence.id);
-    await api.doctorSelf.scheduleChanges.create({ weeklyHours: { mon: [{ start: "10:00", end: "14:00" }] }, effectiveFrom: "2026-12-01", note: "Cambio" });
+    const ev = await api.doctorSelf.personalEvents.create({ title: "Dentista", notes: "Llevar radiografía", startUtc: "2026-11-26T16:00:00.000Z", endUtc: "2026-11-26T17:00:00.000Z" });
+    const evs = await api.doctorSelf.personalEvents.list({ from: "2026-11-23T05:00:00.000Z", to: "2026-11-30T05:00:00.000Z" });
+    expect(evs.map((x) => x.id)).toEqual([ev.id]);
+    const edited = await api.doctorSelf.personalEvents.update(ev.id, { title: "Dentista (cambio)", notes: null });
+    expect(edited).toMatchObject({ title: "Dentista (cambio)", notes: null });
+    await api.doctorSelf.personalEvents.remove(ev.id);
+    await expect(api.doctorSelf.personalEvents.remove(ev.id)).rejects.toMatchObject({ status: 404 });
+    const req = await api.doctorSelf.scheduleChanges.create({ weeklyHours: { mon: [{ start: "10:00", end: "14:00" }] }, effectiveFrom: "2026-12-01", note: "Cambio" });
     await api.doctorSelf.scheduleChanges.list();
+    await api.doctorSelf.scheduleChanges.remove(req.id);
     await api.doctorSelf.push.subscribe({ endpoint: "https://push.example.test/abc", keys: { p256dh: "k", auth: "a" } });
     await api.doctorSelf.push.unsubscribe("https://push.example.test/abc");
   });

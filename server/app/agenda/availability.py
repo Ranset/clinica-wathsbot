@@ -12,15 +12,22 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 
 from ..db import to_db
-from ..models import Appointment, ClinicHours, Doctor, DoctorAbsence, DoctorHours
+from ..models import Appointment, ClinicHours, Doctor, DoctorAbsence, DoctorHours, PersonalEvent
 from .audit import SYSTEM, Actor, audit
-from .errors import FUERA_DE_HORARIO, NO_ENCONTRADO, VALIDACION, AgendaError
+from .errors import EVENTO_CON_CITA, FUERA_DE_HORARIO, NO_ENCONTRADO, VALIDACION, AgendaError
 from .hours import Schedule, validate_weekly
 from .repo import Repo
+from .service import UNSET
 from .uow import Unit
 from .util import iso
 
 _UTC = timezone.utc
+
+# Eventos personales del doctor
+EVENT_TITLE_MAX = 120
+EVENT_NOTES_MAX = 1000
+EVENT_MAX_HOURS = 24          # mas largo (varios dias) es una ausencia, que si avisa al personal
+EVENT_WINDOW_DAYS = 400       # no se aceptan fechas absurdas (ni 1900 ni 2100)
 
 
 class Availability(Unit):
@@ -51,6 +58,25 @@ class Availability(Unit):
             q = (select(DoctorAbsence).where(DoctorAbsence.end_utc > to_db(start), DoctorAbsence.start_utc < to_db(end))
                  .order_by(DoctorAbsence.start_utc, DoctorAbsence.id))
             return list(repo.s.scalars(q))
+
+    def list_personal_events(self, doctor_id, start: datetime, end: datetime) -> list[PersonalEvent]:
+        """Los eventos PROPIOS del doctor que se solapan con [start, end) (con titulo y notas: solo para su duenio)."""
+        with self._read() as repo:
+            self._doctor(repo, doctor_id)
+            q = (select(PersonalEvent).where(PersonalEvent.doctor_id == int(doctor_id), PersonalEvent.end_utc > to_db(start),
+                                             PersonalEvent.start_utc < to_db(end))
+                 .order_by(PersonalEvent.start_utc, PersonalEvent.id))
+            return list(repo.s.scalars(q))
+
+    def busy_between(self, start: datetime, end: datetime) -> list[tuple[int, int, datetime, datetime]]:
+        """`(id, doctor_id, start_utc, end_utc)` de los eventos personales de TODOS los doctores en [start, end), para
+        sombrear el calendario del personal. A proposito solo se consultan esas 4 columnas: el titulo y las notas son
+        privados del doctor y no deben cargarse siquiera en el camino del personal."""
+        with self._read() as repo:
+            q = (select(PersonalEvent.id, PersonalEvent.doctor_id, PersonalEvent.start_utc, PersonalEvent.end_utc)
+                 .where(PersonalEvent.end_utc > to_db(start), PersonalEvent.start_utc < to_db(end))
+                 .order_by(PersonalEvent.start_utc, PersonalEvent.id))
+            return [tuple(r) for r in repo.s.execute(q)]
 
     # ---- escritura ----
     def set_clinic_hours(self, weekly: dict, actor: Actor = SYSTEM) -> dict:
@@ -144,7 +170,104 @@ class Availability(Unit):
             audit(s, actor, "absence.delete", "doctor", doc.id, {"absenceId": ab.id})
         self._write(work)
 
+    # ---- eventos personales del doctor ----
+    def add_personal_event(self, doctor_id, title, notes, start: datetime, end: datetime,
+                           actor: Actor = SYSTEM) -> PersonalEvent:
+        """Crea un evento personal: el doctor deja de ofrecerse en esa franja (bot, personal y reprogramaciones) pero
+        el consultorio queda libre para los demas doctores. NO se admite sobre una cita agendada del doctor
+        (`evento_con_cita`): primero hay que mover la cita. En la bitacora solo quedan ids y horas, nunca el texto."""
+        start, end = self._aware(start), self._aware(end)
+        title, notes = self._clean_event_text(title, notes)
+        self._check_event_span(start, end)
+
+        def work(repo: Repo, s):
+            # lo primero que lee la transaccion (ver Repo.lock_rooms): hace cola con las reservas, asi o la cita llega
+            # antes (y este evento se rechaza) o el evento llega antes (y la reserva ve al doctor ocupado)
+            repo.lock_rooms(None)
+            doc = self._doctor(repo, doctor_id)
+            self._reject_if_session(repo, doc, to_db(start), to_db(end))
+            ev = PersonalEvent(doctor_id=doc.id, title=title, notes=notes, start_utc=to_db(start), end_utc=to_db(end))
+            s.add(ev)
+            s.flush()
+            audit(s, actor, "personal_event.create", "doctor", doc.id,
+                  {"eventId": ev.id, "from": iso(start, self.rules.tz), "to": iso(end, self.rules.tz)})
+            return ev
+        return self._write(work)
+
+    def update_personal_event(self, doctor_id, event_id, *, title=UNSET, notes=UNSET, start: datetime | None = None,
+                              end: datetime | None = None, actor: Actor = SYSTEM) -> PersonalEvent:
+        """Cambia texto y/o horario de un evento PROPIO (ajeno o inexistente: 404). Si cambia el horario se vuelve a
+        comprobar contra las citas. Es un parche: lo que no se manda no se toca."""
+        def work(repo: Repo, s):
+            repo.lock_rooms(None)
+            doc = self._doctor(repo, doctor_id)
+            ev = self._own_event(s, doc, event_id)
+            new_title, new_notes = ev.title, ev.notes
+            if title is not UNSET or notes is not UNSET:
+                new_title, new_notes = self._clean_event_text(ev.title if title is UNSET else title,
+                                                              ev.notes if notes is UNSET else notes)
+            new_start = self._aware(start) if start is not None else ev.start_utc.replace(tzinfo=_UTC)
+            new_end = self._aware(end) if end is not None else ev.end_utc.replace(tzinfo=_UTC)
+            moved = (to_db(new_start), to_db(new_end)) != (ev.start_utc, ev.end_utc)
+            if moved:
+                self._check_event_span(new_start, new_end)
+                self._reject_if_session(repo, doc, to_db(new_start), to_db(new_end))
+            ev.title, ev.notes = new_title, new_notes
+            ev.start_utc, ev.end_utc = to_db(new_start), to_db(new_end)
+            audit(s, actor, "personal_event.update", "doctor", doc.id,
+                  {"eventId": ev.id, "from": iso(new_start, self.rules.tz), "to": iso(new_end, self.rules.tz)})
+            s.flush()
+            return ev
+        return self._write(work)
+
+    def delete_personal_event(self, doctor_id, event_id, actor: Actor = SYSTEM) -> None:
+        def work(repo: Repo, s):
+            doc = self._doctor(repo, doctor_id)
+            ev = self._own_event(s, doc, event_id)
+            s.delete(ev)
+            audit(s, actor, "personal_event.delete", "doctor", doc.id, {"eventId": ev.id})
+        self._write(work)
+
     # ---- internos ----
+    @staticmethod
+    def _own_event(s, doc: Doctor, event_id) -> PersonalEvent:
+        try:
+            ev = s.get(PersonalEvent, int(event_id))
+        except (TypeError, ValueError):
+            ev = None
+        if ev is None or ev.doctor_id != doc.id:      # ajeno o inexistente: igual (nunca se distingue)
+            raise AgendaError(NO_ENCONTRADO)
+        return ev
+
+    @staticmethod
+    def _clean_event_text(title, notes) -> tuple[str, str | None]:
+        title = " ".join(str(title or "").split())
+        if not title:
+            raise AgendaError(VALIDACION, "el evento necesita un titulo")
+        if len(title) > EVENT_TITLE_MAX:
+            raise AgendaError(VALIDACION, f"titulo: maximo {EVENT_TITLE_MAX} caracteres")
+        if notes is not None and not isinstance(notes, str):
+            raise AgendaError(VALIDACION, "notas: debe ser texto")
+        notes = (notes or "").strip() or None
+        if notes is not None and len(notes) > EVENT_NOTES_MAX:
+            raise AgendaError(VALIDACION, f"notas: maximo {EVENT_NOTES_MAX} caracteres")
+        return title, notes
+
+    def _check_event_span(self, start: datetime, end: datetime) -> None:
+        if start >= end:
+            raise AgendaError(VALIDACION, "el evento debe terminar despues de empezar")
+        if end - start > timedelta(hours=EVENT_MAX_HOURS):
+            raise AgendaError(VALIDACION, "un evento dura como maximo 24 horas; para varios dias marca una ausencia")
+        now = self.now()
+        window = timedelta(days=EVENT_WINDOW_DAYS)
+        if not (now - window <= start <= now + window):
+            raise AgendaError(VALIDACION, "fecha fuera de rango")
+
+    def _reject_if_session(self, repo: Repo, doc: Doctor, start_u: datetime, end_u: datetime) -> None:
+        if self._overlapping(repo, doc, start_u, end_u):
+            raise AgendaError(EVENTO_CON_CITA,
+                              "Ya tienes una cita agendada en ese horario. Pide a recepcion que la mueva y vuelve a intentarlo.")
+
     def _aware(self, dt: datetime) -> datetime:
         return dt.replace(tzinfo=self.rules.tz) if dt.tzinfo is None else dt.astimezone(self.rules.tz)
 

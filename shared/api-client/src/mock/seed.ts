@@ -74,6 +74,7 @@ export function createSeededDb(now: Date): DB {
     clinicHours: structuredClone(CLINIC_HOURS),
     bookings: [],
     absences: [],
+    personalEvents: [],
     requests: [],
     bot: { active: true, updatedAt: now.toISOString(), updatedBy: null },
     attention: [],
@@ -160,6 +161,20 @@ export function createSeededDb(now: Date): DB {
       detail: `${hit.length} cita(s) del ${addDaysISO(today, 4)} al ${addDaysISO(today, 5)}: avisa a los pacientes.`,
     });
   }
+
+  // Eventos personales de ejemplo (solo en huecos sin citas del doctor): el del Dr. Cervantes lo ve en su PWA con su texto;
+  // el personal solo ve «No disponible».
+  const personal = (doctorId: string, off: number, time: string, minutes: number, title: string, notes: string | null) => {
+    const startUtc = zonedWallClockToUtc(addDaysISO(today, off), time, TZ)!.toISOString();
+    const endUtc = new Date(Date.parse(startUtc) + minutes * 60_000).toISOString();
+    const clash = db.bookings.some(
+      (b) => b.doctor?.id === doctorId && b.status !== "cancelada" && Date.parse(b.scheduledAtUtc) < Date.parse(endUtc) && Date.parse(startUtc) < Date.parse(b.scheduledAtUtc) + b.durationMinutes * 60_000
+    );
+    if (!clash) db.personalEvents.push({ id: nextId(db, "pe"), doctorId, title, notes, startUtc, endUtc });
+  };
+  personal("d1", 1, "13:00", 60, "Comida con residentes", "Reservación a nombre del Dr. Cervantes");
+  personal("d1", 2, "11:30", 90, "Dentista", null);
+  personal("d3", 1, "12:30", 60, "Junta de especialidad", null);
 
   db.requests.push({
     id: nextId(db, "s"),

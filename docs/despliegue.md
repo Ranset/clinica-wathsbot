@@ -24,7 +24,7 @@ proceso, porque habra 3 workers; el servidor no usa hilos; el calendario del per
 
 ## 1b. Tu cuenta de PythonAnywhere (capturas del 2026-11-10)
 - **Cuenta GRATUITA anterior a enero de 2026** (la pagina de MySQL dice "since you have a free account"). Conserva **MySQL 8.0.46** (consola MySQL) y, segun la documentacion, 1 tarea programada diaria (**comprobar en la pestana *Tasks***). Esos beneficios son de "cuentas anteriores": una cuenta nueva no los tiene.
-- **MySQL:** host `Ranset83.mysql.pythonanywhere-services.com`, usuario `Ranset83`. **Solo se puede conectar desde codigo que corre dentro de PythonAnywhere**: las migraciones (`flask --app wsgi upgrade-db`), el `seed` y los respaldos se ejecutan en una consola de PythonAnywhere, no desde la PC. Ya existe una base `Ranset83$crud` (de otra prueba): **no reutilizarla**; crear `Ranset83$clinica` (y `Ranset83$clinica_test` para las pruebas).
+- **MySQL:** host `Ranset83.mysql.pythonanywhere-services.com`, usuario `Ranset83`. **Solo se puede conectar desde codigo que corre dentro de PythonAnywhere**: las migraciones (`flask --app wsgi upgrade-db`; la `0004` agrega el color del doctor y la `0005` la tabla de eventos personales), el `seed` y los respaldos se ejecutan en una consola de PythonAnywhere, no desde la PC. Ya existe una base `Ranset83$crud` (de otra prueba): **no reutilizarla**; crear `Ranset83$clinica` (y `Ranset83$clinica_test` para las pruebas).
 - **Dominio:** el gratuito `ranset83.pythonanywhere.com` (HTTPS incluido, sin CNAME). El webhook de Zernio quedaria en `https://ranset83.pythonanywhere.com/webhooks/zernio`.
 - **Python:** consola con 3.10.5 -> ver fila "Version de Python" arriba.
 

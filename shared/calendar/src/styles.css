@@ -49,6 +49,28 @@
     background-size: 100% var(--cal-hour, 48px);
   }
   .cal-off { background-color: var(--cal-off); }
+  /* Una ausencia del doctor: franja ambar rayada sobre el horario (las citas quedan por encima). */
+  .cal-absence {
+    background-color: color-mix(in srgb, var(--warning) 11%, var(--bg));
+    background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning) 34%, transparent) 0 1.5px, transparent 1.5px 9px);
+    border-left: 3px solid var(--warning);
+    color: var(--warning-text);
+  }
+  /* El doctor esta ocupado por un evento personal (privado): franja gris rayada «No disponible», sin motivo. */
+  .cal-busy {
+    background-color: color-mix(in srgb, var(--text-3) 10%, var(--bg));
+    background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-3) 30%, transparent) 0 1.5px, transparent 1.5px 9px);
+    border-left: 3px solid var(--text-3);
+    color: var(--text-2);
+  }
+  /* Un evento personal en la agenda de SU doctor: tinte neutro con borde punteado, distinto de una cita (relleno de color)
+     y de un bloqueo (rayado). */
+  .cal-personal {
+    background-color: color-mix(in srgb, var(--text-3) 12%, var(--bg));
+    border: 1px dashed var(--border-strong);
+    border-left: 3px solid var(--text-2);
+    color: var(--text);
+  }
   .booking-hatch {
     background-color: var(--bg-panel);
     background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-3) 22%, transparent) 0 1px, transparent 1px 7px);

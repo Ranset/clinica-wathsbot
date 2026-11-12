@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CalendarOff, ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarOff, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import {
   TimeGrid,
   Button,
@@ -17,6 +17,7 @@ import {
 import type { Booking } from "@clinica/api-client";
 import { SyncStatus } from "../../layout/status";
 import { describeAbsence, overlapsRange } from "../../lib/absence";
+import { useCanWrite } from "../../lib/can-write";
 import { TZ } from "../../lib/fmt";
 import { rangeToUtc } from "../../lib/range";
 import { useNow } from "../../lib/use-now";
@@ -25,18 +26,25 @@ import { navigate, useQueryState } from "../../router";
 import { Checkbox, PageMessage, Spinner } from "../../ui/controls";
 import { useAbsences } from "../absences/use-absences";
 import { BookingSheet } from "./booking-sheet";
+import { EventDialog, type EventTarget } from "./event-dialog";
 import { useAgenda } from "./use-agenda";
+import { usePersonalEvents } from "./use-personal-events";
 
 /**
  * Hoy y Semana: MI agenda en la rejilla de `@clinica/calendar`, con UN solo carril (el mío). La API se
  * consulta por semana (lunes a domingo) y Hoy/Semana comparten esa consulta, su copia guardada y su ETag:
  * pasar de una vista a otra no vuelve a pedir nada. El día y las canceladas viajan en la dirección
  * (`#/hoy?dia=2026-11-12`), así se puede recargar o compartir.
+ *
+ * También mis eventos personales de esa semana (privados): se ven en la rejilla con su título, un toque los abre para
+ * editarlos o borrarlos, y un toque en un hueco vacío (o el botón «Evento») crea uno nuevo. NO son citas: en ese horario no
+ * recibo citas, pero el consultorio sigue libre para los demás doctores.
  */
 export function AgendaPage({ view }: { view: "hoy" | "semana" }) {
   const [query, setQuery] = useQueryState();
   const { doctor, error: profileError, reload } = useProfile();
   const absences = useAbsences();
+  const { canWrite, reason: readOnlyReason } = useCanWrite();
   const now = useNow(30_000);
   const today = todayInTz(now, TZ);
 
@@ -48,6 +56,10 @@ export function AgendaPage({ view }: { view: "hoy" | "semana" }) {
   const week = useMemo(() => ({ from: weekFrom, to: addDaysISO(weekFrom, 6) }), [weekFrom]);
   const utc = useMemo(() => rangeToUtc(week), [week]);
   const { bookings, ready, error, stale, syncedAt, refreshNow } = useAgenda(utc);
+  const personal = usePersonalEvents(utc);
+  // El evento abierto (o el que se va a crear). Un evento abierto se mantiene al día con el refresco.
+  const [eventTarget, setEventTarget] = useState<EventTarget | null>(null);
+  const openEvent = eventTarget?.mode === "edit" ? (personal.events.find((e) => e.id === eventTarget.event.id) ?? eventTarget.event) : null;
 
   const visible = useMemo(() => calendarVisible(bookings, { showCancelled }), [bookings, showCancelled]);
   const days = useMemo(() => (view === "hoy" ? [anchor] : datesOf(week)), [view, anchor, week]);
@@ -100,6 +112,17 @@ export function AgendaPage({ view }: { view: "hoy" | "semana" }) {
           <Button variant="outline" size="sm" disabled={view === "hoy" ? anchor === today : startOfWeek(anchor) === startOfWeek(today)} onClick={() => go({ dia: null })}>
             Hoy
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="Nuevo evento personal"
+            disabled={!canWrite}
+            title={readOnlyReason ?? "Agrega un evento personal a tu agenda"}
+            onClick={() => setEventTarget({ mode: "new", day: anchor, time: "09:00" })}
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            Evento
+          </Button>
           <span className="ml-auto text-xs font-semibold text-text-2 sm:ml-2" data-testid="booking-count">
             {inView.length} {inView.length === 1 ? "cita" : "citas"}
           </span>
@@ -139,15 +162,33 @@ export function AgendaPage({ view }: { view: "hoy" | "semana" }) {
             ready={ready}
             lanes={lanes}
             laneOf={laneOf}
+            // mis ausencias, como franjas rayadas en la rejilla (de la fecha y hora en que empiezan a la en que terminan)
+            absences={absences.data ?? undefined}
+            // mis eventos personales (privados), con su título; NO son citas de la clínica
+            personalEvents={personal.events}
+            selectedEventId={openEvent?.id ?? null}
             onSelect={setSelected}
-            // El doctor no agenda desde aquí: tocar un hueco no hace nada.
-            onEmptySlot={() => undefined}
+            onSelectEvent={(ev) => {
+              const full = personal.events.find((x) => x.id === ev.id);
+              if (full) setEventTarget({ mode: "edit", event: full });
+            }}
+            // El doctor no agenda pacientes desde aquí: tocar un hueco propone un EVENTO PERSONAL (sin conexión no hace nada).
+            onEmptySlot={(day, time) => canWrite && setEventTarget({ mode: "new", day, time })}
             onOpenDay={(day) => navigate("/hoy", { dia: day })}
           />
         )}
       </div>
 
       {live && <BookingSheet key={live.id} booking={live} onClose={() => setSelected(null)} />}
+      {eventTarget && (
+        <EventDialog
+          key={eventTarget.mode === "edit" ? `e${eventTarget.event.id}` : `n${eventTarget.day}${eventTarget.time}`}
+          target={openEvent ? { mode: "edit", event: openEvent } : eventTarget}
+          bookings={bookings}
+          onClose={() => setEventTarget(null)}
+          onChanged={() => personal.reload()}
+        />
+      )}
     </div>
   );
 }

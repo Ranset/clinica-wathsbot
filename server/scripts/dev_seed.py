@@ -82,6 +82,12 @@ def main() -> int:
     d1 = days[1]
     avail.add_absence(3, datetime(d1.year, d1.month, d1.day, 9, 0, tzinfo=tz), datetime(d1.year, d1.month, d1.day, 13, 0, tzinfo=tz),
                       "congreso")
+    # dos eventos personales de doctores (privados: el doctor ve el texto en su PWA; el personal solo ve «No disponible»)
+    d0, d2 = days[0], days[2]
+    avail.add_personal_event(1, "Comida con residentes", "Reservacion a nombre del doctor",
+                             datetime(d0.year, d0.month, d0.day, 13, 0, tzinfo=tz), datetime(d0.year, d0.month, d0.day, 14, 0, tzinfo=tz))
+    avail.add_personal_event(3, "Junta de especialidad", None,
+                             datetime(d2.year, d2.month, d2.day, 11, 0, tzinfo=tz), datetime(d2.year, d2.month, d2.day, 12, 0, tzinfo=tz))
     directory.create_schedule_change(1, {"mon": [{"start": "10:00", "end": "14:00"}], "wed": [{"start": "10:00", "end": "14:00"}]},
                                      date.today() + timedelta(days=14), "Quiero atender solo lunes y miercoles por la manana")
     events.handoff("conv-dev-1", "pidio_persona", "5219981119999", "La paciente pidio hablar con una persona")

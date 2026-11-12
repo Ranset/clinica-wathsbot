@@ -161,6 +161,66 @@ def test_maximo_tres_solicitudes_pendientes(login, agenda):
     assert r.status_code == 422 and "pendientes" in r.get_json()["detail"]
 
 
+def _solicitud(d, agenda, **over):
+    body = {"weeklyHours": {"mon": [{"start": "10:00", "end": "14:00"}]},
+            "effectiveFrom": (agenda.now().date() + timedelta(days=7)).isoformat(), "note": "prueba", **over}
+    r = d.post("/api/doctor/schedule-change-requests", body)
+    assert r.status_code == 201, r.get_json()
+    return r.get_json()["id"]
+
+
+def test_el_doctor_elimina_una_solicitud_pendiente_suya(login, users, db, agenda):
+    from app.models import AuditLog, ScheduleChangeRequest
+    d1, staff = login("doctor"), login("staff")
+    rid, otra = _solicitud(d1, agenda), _solicitud(d1, agenda, note="otra")
+    assert [x["id"] for x in staff.get("/api/schedule-change-requests", query_string={"status": "pending"}).get_json()["items"]] == [otra, rid]
+
+    r = d1.delete(f"/api/doctor/schedule-change-requests/{rid}")
+    assert r.status_code == 204 and r.data == b""
+    assert [x["id"] for x in d1.get("/api/doctor/schedule-change-requests").get_json()["items"]] == [otra]       # ya no sale en la suya...
+    assert [x["id"] for x in staff.get("/api/schedule-change-requests", query_string={"status": "pending"}).get_json()["items"]] == [otra]  # ...ni en la del personal
+    assert staff.post(f"/api/schedule-change-requests/{rid}/approve").status_code == 404                        # y ya no se puede aprobar
+    assert d1.delete(f"/api/doctor/schedule-change-requests/{rid}").status_code == 404                           # ni eliminar otra vez
+    with db() as s:   # se borro de verdad (no quedo marcada), y la bitacora dice quien
+        assert s.get(ScheduleChangeRequest, int(rid)) is None
+        log = [a for a in s.scalars(select(AuditLog)) if a.action == "schedule_change.delete"]
+        assert len(log) == 1 and log[0].actor_kind == "user" and log[0].actor_user_id == users["doctor"][2].id and log[0].data == {"requestId": int(rid)}
+
+
+def test_al_eliminar_una_solicitud_pendiente_se_libera_un_lugar_de_los_tres(login, agenda):
+    d1 = login("doctor")
+    ids = [_solicitud(d1, agenda) for _ in range(3)]
+    body = {"weeklyHours": {"mon": [{"start": "10:00", "end": "14:00"}]}, "effectiveFrom": (agenda.now().date() + timedelta(days=7)).isoformat()}
+    assert d1.post("/api/doctor/schedule-change-requests", body).status_code == 422                          # tope de 3
+    assert d1.delete(f"/api/doctor/schedule-change-requests/{ids[1]}").status_code == 204
+    assert d1.post("/api/doctor/schedule-change-requests", body).status_code == 201                          # ya cabe una
+
+
+def test_una_solicitud_ya_resuelta_no_se_elimina_y_una_ajena_no_existe(login, agenda):
+    d1, d2, staff = login("doctor"), login("doctor2"), login("staff")
+    aprobada, rechazada, pendiente = (_solicitud(d1, agenda) for _ in range(3))
+    assert staff.post(f"/api/schedule-change-requests/{aprobada}/approve").status_code == 200
+    assert staff.post(f"/api/schedule-change-requests/{rechazada}/reject", {"note": "no se puede"}).status_code == 200
+    for rid in (aprobada, rechazada):
+        r = d1.delete(f"/api/doctor/schedule-change-requests/{rid}")
+        assert r.status_code == 409 and r.get_json()["error"] == "transicion_invalida" and "ya fue resuelta" in r.get_json()["detail"], rid
+    assert sorted(x["status"] for x in d1.get("/api/doctor/schedule-change-requests").get_json()["items"]) == ["approved", "pending", "rejected"]
+    # la de otro doctor: 404 (igual que una inexistente), y no se toca
+    assert d2.delete(f"/api/doctor/schedule-change-requests/{pendiente}").status_code == 404
+    for raro in ("999", "abc", "0", "-1", "1.5"):
+        assert d1.delete(f"/api/doctor/schedule-change-requests/{raro}").status_code == 404, raro
+    assert pendiente in [x["id"] for x in d1.get("/api/doctor/schedule-change-requests").get_json()["items"]]
+
+
+def test_solo_el_doctor_elimina_solicitudes_de_horario(login, client, agenda):
+    d1 = login("doctor")
+    rid = _solicitud(d1, agenda)
+    for who in ("staff", "admin"):
+        assert login(who).delete(f"/api/doctor/schedule-change-requests/{rid}").status_code == 403, who
+    assert client.delete(f"/api/doctor/schedule-change-requests/{rid}").status_code == 401
+    assert rid in [x["id"] for x in d1.get("/api/doctor/schedule-change-requests").get_json()["items"]]      # sigue ahi
+
+
 # ------------------------------------------------------------------ notificaciones push
 SUB = {"endpoint": "https://push.example.test/abc", "keys": {"p256dh": "clave-publica", "auth": "secreto-auth"}}
 

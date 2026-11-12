@@ -134,6 +134,24 @@ class DoctorAbsence(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class PersonalEvent(Base):
+    """Evento personal de un doctor (lo crea el en la PWA). Bloquea su agenda igual que una ausencia, pero el detalle
+    (`title`, `notes`) es PRIVADO del doctor: solo la API del doctor lo devuelve; el personal y el bot solo saben que
+    esa franja esta ocupada (nunca se carga el texto en esa ruta, ver `Availability.busy_between`)."""
+    __tablename__ = "doctor_personal_events"
+    __table_args__ = (CheckConstraint("start_utc < end_utc", name="interval"),
+                      Index("ix_doctor_personal_events_doctor_id_start_utc", "doctor_id", "start_utc"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    doctor_id: Mapped[int] = mapped_column(ForeignKey("doctors.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(120))
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    start_utc: Mapped[datetime] = mapped_column(DateTime)
+    end_utc: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Appointment(Base):
     """Una cita (`kind='session'`) o un bloqueo manual de consultorio (`kind='block'`).
 

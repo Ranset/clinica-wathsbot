@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, lazyload
 
 from ..db import to_db
-from ..models import (Appointment, AppointmentBlock, ClinicHours, Doctor, DoctorAbsence, DoctorHours, Room)
+from ..models import (Appointment, AppointmentBlock, ClinicHours, Doctor, DoctorAbsence, DoctorHours, PersonalEvent, Room)
 from .hours import Schedule
 from .rules import Rules
 
@@ -93,6 +93,13 @@ class Repo:
         """Ausencias del doctor que se solapan con [start_utc, end_utc)."""
         q = select(DoctorAbsence.start_utc, DoctorAbsence.end_utc).where(
             DoctorAbsence.doctor_id == doctor_id, DoctorAbsence.start_utc < end_utc, DoctorAbsence.end_utc > start_utc)
+        return [(a, b) for a, b in self.s.execute(q)]
+
+    def personal_events(self, doctor_id: int, start_utc: datetime, end_utc: datetime) -> list[tuple[datetime, datetime]]:
+        """Franjas de los eventos personales del doctor que se solapan con [start_utc, end_utc). SOLO las horas: el texto
+        del evento es privado y el motor de agenda nunca lo necesita."""
+        q = select(PersonalEvent.start_utc, PersonalEvent.end_utc).where(
+            PersonalEvent.doctor_id == doctor_id, PersonalEvent.start_utc < end_utc, PersonalEvent.end_utc > start_utc)
         return [(a, b) for a, b in self.s.execute(q)]
 
     # ---- ocupacion ----

@@ -4,6 +4,7 @@ import type {
   Booking,
   BotSettings,
   Doctor,
+  PersonalEvent,
   Role,
   Room,
   ScheduleChangeRequest,
@@ -12,6 +13,9 @@ import type {
 } from "../types";
 
 export type StoredUser = User & { password: string };
+
+/** Un evento personal con su dueno: la API del doctor lo sirve SIN `doctorId`, y el personal solo ve horas + doctor. */
+export type StoredPersonalEvent = PersonalEvent & { doctorId: string };
 
 /** El doctor tal como se guarda: `ownHours: null` = sigue el horario de la clinica. */
 export type StoredDoctor = {
@@ -35,6 +39,8 @@ export type DB = {
   /** Citas y bloqueos, con `patient.phone` completo (se quita al servir al doctor). */
   bookings: Booking[];
   absences: Absence[];
+  /** Eventos personales de los doctores (privados: titulo y notas solo salen por las rutas del propio doctor). */
+  personalEvents: StoredPersonalEvent[];
   requests: ScheduleChangeRequest[];
   bot: BotSettings;
   attention: AttentionItem[];

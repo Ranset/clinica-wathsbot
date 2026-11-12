@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Bot } from "lucide-react";
+import { Bot, User } from "lucide-react";
 import {
   bookingSegments,
   dayHeading,
@@ -9,7 +9,8 @@ import {
   workingBands,
   type DaySegment,
 } from "../lib/calendar";
-import type { Lane, WeeklyHours } from "../types";
+import type { CalendarAbsence, CalendarPersonalEvent, Lane, WeeklyHours } from "../types";
+import { absenceDaySegment, absenceLabel, type AbsenceSegment } from "../lib/absences";
 import { cn } from "../lib/utils";
 import { timeLabel } from "../lib/time-format";
 import { bookingStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
@@ -32,7 +33,13 @@ const DAY_PX = HOUR_PX * 24;
 const MIN_EVENT_PX = 18;
 const DEFAULT_SCROLL_MIN = 8 * 60;
 
-type Placed = DaySegment & { booking: Booking; col: number; cols: number };
+type PlacedBooking = DaySegment & { booking: Booking; col: number; cols: number };
+/** Un evento personal ya recortado al dia de su columna. Comparte el reparto de ancho con las citas: si alguna vez se encimaran, se ven las dos. */
+type PlacedEvent = DaySegment & { event: CalendarPersonalEvent; col: number; cols: number };
+type Placed = PlacedBooking | PlacedEvent;
+
+/** Una franja de ausencia (o de «No disponible») ya recortada al dia de su columna. */
+type AbsenceBand = AbsenceSegment & { key: string; label: string; busy: boolean };
 
 type Col = {
   key: string;
@@ -54,7 +61,11 @@ export function TimeGrid({
   ready,
   lanes,
   laneOf,
+  absences,
+  personalEvents,
+  selectedEventId,
   onSelect,
+  onSelectEvent,
   onEmptySlot,
   onOpenDay,
 }: {
@@ -74,7 +85,14 @@ export function TimeGrid({
   lanes?: Lane[];
   /** A que carril pertenece una cita. Por defecto, su doctor. */
   laneOf?: (b: Booking) => string | undefined;
+  /** Ausencias a pintar como franjas rayadas (con carriles, solo en el carril de su `laneId`; sin `laneId`, en todas las columnas). */
+  absences?: CalendarAbsence[];
+  /** Eventos personales del doctor (con su texto), para la agenda de UN doctor. NO son citas de la clinica. Con carriles, en el de su `laneId` (o en todos). */
+  personalEvents?: CalendarPersonalEvent[];
+  /** El evento resaltado (aparte de `selectedId`: un id de cita y uno de evento pueden coincidir). */
+  selectedEventId?: string | null;
   onSelect: (b: Booking) => void;
+  onSelectEvent?: (e: CalendarPersonalEvent) => void;
   /** `laneId` llega cuando la rejilla esta en modo carriles. */
   onEmptySlot: (day: string, time: string, laneId?: string) => void;
   onOpenDay: (day: string) => void;
@@ -106,22 +124,49 @@ export function TimeGrid({
     });
   }, [laneMode, lanes, days, weeklyHours, today]);
 
+  // Las franjas de ausencia de cada columna: cada ausencia se recorta contra el dia de la columna (puede durar semanas).
+  const absenceByCol = useMemo(() => {
+    const out = new Map<string, AbsenceBand[]>();
+    if (!absences?.length) return out;
+    for (const c of cols) {
+      const bands: AbsenceBand[] = [];
+      absences.forEach((a, i) => {
+        if (laneMode && a.laneId !== undefined && a.laneId !== c.laneId) return;
+        const seg = absenceDaySegment(a, c.day, timezone);
+        if (seg) bands.push({ key: `${i}`, label: absenceLabel(a), busy: a.kind === "busy", ...seg });
+      });
+      if (bands.length) out.set(c.key, bands);
+    }
+    return out;
+  }, [absences, cols, laneMode, timezone]);
+
   const byCol = useMemo(() => {
     const out = new Map<string, Placed[]>();
-    const raw = new Map<string, (DaySegment & { booking: Booking })[]>();
+    type Raw = DaySegment & ({ booking: Booking } | { event: CalendarPersonalEvent });
+    const raw = new Map<string, Raw[]>();
+    const push = (key: string, item: Raw) => {
+      const list = raw.get(key) ?? [];
+      list.push(item);
+      raw.set(key, list);
+    };
     for (const b of bookings) {
       for (const s of bookingSegments(b.scheduledAtUtc, b.durationMinutes, timezone)) {
         if (!days.includes(s.day)) continue;
-        const key = laneMode ? `${s.day}|${getLane(b) ?? ""}` : s.day;
-        const list = raw.get(key) ?? [];
-        list.push({ ...s, booking: b });
-        raw.set(key, list);
+        push(laneMode ? `${s.day}|${getLane(b) ?? ""}` : s.day, { ...s, booking: b });
       }
     }
-    for (const [key, list] of raw) out.set(key, layoutOverlaps(list));
+    // Cada evento personal se recorta contra el dia de cada columna; con carriles, solo en el de su `laneId` (o en todos si no trae).
+    for (const ev of personalEvents ?? []) {
+      for (const c of cols) {
+        if (laneMode && ev.laneId !== undefined && ev.laneId !== c.laneId) continue;
+        const seg = absenceDaySegment(ev, c.day, timezone);
+        if (seg) push(c.key, { ...seg, day: c.day, event: ev });
+      }
+    }
+    for (const [key, list] of raw) out.set(key, layoutOverlaps(list) as Placed[]);
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookings, days, timezone, laneMode, laneOf]);
+  }, [bookings, personalEvents, cols, days, timezone, laneMode, laneOf]);
 
   // Abre donde empieza el dia de trabajo (o antes, si hay una cita mas
   // temprano), una sola vez por rango: un refresco no debe mover la rejilla
@@ -202,11 +247,14 @@ export function TimeGrid({
             key={c.key}
             col={c}
             placed={byCol.get(c.key) ?? []}
+            absences={absenceByCol.get(c.key) ?? []}
             nowMinutes={c.day === today ? nowMinutes : null}
             narrow={multi}
             laneMode={laneMode}
             selectedId={selectedId}
+            selectedEventId={selectedEventId ?? null}
             onSelect={onSelect}
+            onSelectEvent={onSelectEvent}
             onEmptySlot={onEmptySlot}
           />
         ))}
@@ -218,20 +266,26 @@ export function TimeGrid({
 function DayColumn({
   col,
   placed,
+  absences,
   nowMinutes,
   narrow,
   laneMode,
   selectedId,
+  selectedEventId,
   onSelect,
+  onSelectEvent,
   onEmptySlot,
 }: {
   col: Col;
   placed: Placed[];
+  absences: AbsenceBand[];
   nowMinutes: number | null;
   narrow: boolean;
   laneMode: boolean;
   selectedId: string | null;
+  selectedEventId: string | null;
   onSelect: (b: Booking) => void;
+  onSelectEvent?: (e: CalendarPersonalEvent) => void;
   onEmptySlot: (day: string, time: string, laneId?: string) => void;
 }) {
   return (
@@ -257,17 +311,46 @@ function DayColumn({
         />
       ))}
 
-      {placed.map((p) => (
-        <EventBlock
-          key={`${p.booking.id}:${p.day}`}
-          placed={p}
-          narrow={narrow}
-          // En carriles el doctor ya es la columna: la segunda linea es el consultorio.
-          subtitle={laneMode ? bookingSubtitle(p.booking, { room: true }) : bookingSubtitle(p.booking)}
-          selected={p.booking.id === selectedId}
-          onSelect={onSelect}
-        />
-      ))}
+      {/* Ausencias del doctor: debajo de las citas (si hay una cita dentro de una ausencia se ve y se nota) y sin tapar los clics del hueco. */}
+      {absences.map((a) => {
+        const height = ((a.endMin - a.startMin) / 60) * HOUR_PX - 1;
+        return (
+          <div
+            key={a.key}
+            // `data-busy`: el doctor ocupado por un evento personal (privado); `data-absence`: una ausencia con su motivo
+            {...(a.busy ? { "data-busy": "" } : { "data-absence": "" })}
+            role="img"
+            aria-label={a.label}
+            title={a.label}
+            className={cn("pointer-events-none absolute inset-x-0 z-[5] overflow-clip", a.busy ? "cal-busy" : "cal-absence")}
+            style={{ top: (a.startMin / 60) * HOUR_PX + 1, height }}
+          >
+            {/* La etiqueta se queda pegada abajo del encabezado mientras se desplaza la rejilla (si cabe). `overflow-clip`, no `hidden`: este ultimo crearia un contenedor de desplazamiento propio y el `sticky` no funcionaria. */}
+            {height >= 24 && <span className="sticky top-[4.5rem] block truncate px-1.5 py-0.5 text-[10.5px] font-semibold">{a.label}</span>}
+          </div>
+        );
+      })}
+
+      {placed.map((p) =>
+        "event" in p ? (
+          <PersonalEventBlock
+            key={`ev-${p.event.id}:${p.day}`}
+            placed={p}
+            selected={p.event.id === selectedEventId}
+            onSelect={onSelectEvent}
+          />
+        ) : (
+          <EventBlock
+            key={`${p.booking.id}:${p.day}`}
+            placed={p}
+            narrow={narrow}
+            // En carriles el doctor ya es la columna: la segunda linea es el consultorio.
+            subtitle={laneMode ? bookingSubtitle(p.booking, { room: true }) : bookingSubtitle(p.booking)}
+            selected={p.booking.id === selectedId}
+            onSelect={onSelect}
+          />
+        )
+      )}
 
       {nowMinutes !== null && (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 z-20 border-t-2 border-danger" style={{ top: (nowMinutes / 60) * HOUR_PX }}>
@@ -278,6 +361,61 @@ function DayColumn({
   );
 }
 
+/**
+ * Un evento personal en la agenda de SU doctor. Se ve distinto a una cita (tinte neutro, borde punteado, icono de persona) para
+ * que no se confunda con un paciente: no es una cita de la clinica.
+ */
+function PersonalEventBlock({
+  placed,
+  selected,
+  onSelect,
+}: {
+  placed: PlacedEvent;
+  selected: boolean;
+  onSelect?: (e: CalendarPersonalEvent) => void;
+}) {
+  const { event: ev, startMin, endMin, col, cols } = placed;
+  const top = (startMin / 60) * HOUR_PX;
+  const height = Math.max(MIN_EVENT_PX, ((endMin - startMin) / 60) * HOUR_PX - 2);
+  const start = timeLabel(startMin);
+  const end = timeLabel(endMin);
+  const compact = height < 36;
+  const range = cols > 1 ? start : `${placed.continuesBefore ? "…" : start} – ${placed.continuesAfter ? "…" : end}`;
+
+  return (
+    <button
+      type="button"
+      data-personal-event={ev.id}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect?.(ev);
+      }}
+      aria-label={`Evento personal: ${ev.title}, ${start} a ${end}`}
+      className={cn(
+        "cal-personal absolute z-10 overflow-hidden rounded-[6px] text-left leading-tight shadow-sm transition-[box-shadow,filter] hover:brightness-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft",
+        cols > 1 ? "px-1" : "px-1.5",
+        compact ? "flex flex-wrap content-start items-center gap-x-1 text-[11px]" : "py-1 text-[11.5px]",
+        selected && "ring-2 ring-brand ring-offset-1 ring-offset-background"
+      )}
+      style={{
+        top: top + 1,
+        height,
+        left: `calc(${(col / cols) * 100}% + 2px)`,
+        width: `calc(${100 / cols}% - 4px)`,
+        paddingTop: compact ? Math.max(1, (height - 14) / 2) : undefined,
+      }}
+    >
+      <span className="flex min-w-0 max-w-full items-center gap-1 font-semibold">
+        <User aria-hidden className="h-3 w-3 shrink-0" strokeWidth={2} />
+        <span className="truncate">{ev.title}</span>
+      </span>
+      <span className={cn("font-mono text-[10.5px] opacity-80", compact ? "shrink-0 whitespace-nowrap" : "mt-0.5 block truncate")}>
+        {compact ? start : range}
+      </span>
+    </button>
+  );
+}
+
 function EventBlock({
   placed,
   narrow,
@@ -285,7 +423,7 @@ function EventBlock({
   selected,
   onSelect,
 }: {
-  placed: Placed;
+  placed: PlacedBooking;
   narrow: boolean;
   subtitle: string;
   selected: boolean;

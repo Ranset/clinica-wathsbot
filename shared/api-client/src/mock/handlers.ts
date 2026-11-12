@@ -1,7 +1,7 @@
 import { addDaysISO, todayInTz } from "@clinica/calendar/src/lib/slots";
 import { wallClock } from "@clinica/calendar/src/lib/calendar";
 import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
-import type { Absence, AttentionItem, Booking, BookingStatus, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
+import type { Absence, AttentionItem, Booking, BookingStatus, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
 import {
   HttpError,
   asObject,
@@ -22,7 +22,18 @@ import {
   type Route,
 } from "./http";
 import { HORIZON_DAYS, TZ, hoursInside, outsideHours, parseWeeklyHours, placeInSchedule } from "./rules";
-import { bookingFor, doctorRef, doctorView, fnv1a, nextId, publicUser, type DB, type StoredDoctor, type StoredUser } from "./state";
+import {
+  bookingFor,
+  doctorRef,
+  doctorView,
+  fnv1a,
+  nextId,
+  publicUser,
+  type DB,
+  type StoredDoctor,
+  type StoredPersonalEvent,
+  type StoredUser,
+} from "./state";
 
 /** Maximo de rango que acepta `GET /api/appointments` (`MAX_RANGE_DAYS` de shared/calendar). */
 const MAX_RANGE_DAYS = 92;
@@ -225,6 +236,32 @@ export function buildRoutes(db: DB): MockRoute[] {
     return absence;
   }
 
+  /* ------------------------------------------- eventos personales del doctor */
+
+  const EVENT_MAX_MS = 24 * 3_600_000; // mas largo (varios dias) es una ausencia
+  const EVENT_WINDOW_MS = 400 * 86_400_000;
+
+  /** La forma que ve su dueno (sin `doctorId`): con titulo y notas. */
+  const eventView = ({ id, title, notes, startUtc, endUtc }: StoredPersonalEvent): PersonalEvent => ({ id, title, notes, startUtc, endUtc });
+
+  function checkEventSpan(c: C, startUtc: string, endUtc: string) {
+    const s = Date.parse(startUtc);
+    const e = Date.parse(endUtc);
+    if (e <= s) throw invalid("El evento debe terminar después de empezar.");
+    if (e - s > EVENT_MAX_MS) throw invalid("Un evento dura como máximo 24 horas; para varios días marca una ausencia.");
+    if (Math.abs(s - c.now.getTime()) > EVENT_WINDOW_MS) throw invalid("La fecha está fuera de rango.");
+  }
+
+  /** Un evento no puede caer sobre una cita agendada del doctor (hay que mover la cita primero). */
+  function rejectIfSession(doctorId: string, startUtc: string, endUtc: string) {
+    if (affectedBy(doctorId, { startUtc, endUtc }).length) {
+      throw new HttpError(409, "evento_con_cita", "Ya tienes una cita agendada en ese horario. Pide a recepción que la mueva y vuelve a intentarlo.");
+    }
+  }
+
+  const eventNotes = (b: ReturnType<typeof asObject>): string | null => (b.notes === null ? null : optString(b, "notes", 1000) || null);
+  const eventTitle = (b: ReturnType<typeof asObject>): string => reqString(b, "title", 120).replace(/\s+/g, " ");
+
   function decide(c: C, status: "approved" | "rejected", note?: string): { req: ScheduleChangeRequest; affected: Booking[] } {
     const req = db.requests.find((r) => r.id === c.params.requestId);
     if (!req) throw notFound("La solicitud no existe.");
@@ -373,6 +410,7 @@ export function buildRoutes(db: DB): MockRoute[] {
       }
       db.doctors.splice(db.doctors.indexOf(doc), 1);
       db.absences = db.absences.filter((a) => a.doctorId !== doc.id);
+      db.personalEvents = db.personalEvents.filter((ev) => ev.doctorId !== doc.id);
       db.requests = db.requests.filter((r) => r.doctorId !== doc.id);
       return noContent();
     }),
@@ -404,6 +442,16 @@ export function buildRoutes(db: DB): MockRoute[] {
         throw invalid(`Se requieren "from" y "to" (instantes) con from < to.`);
       const lo = new Date(from).toISOString(), hi = new Date(to).toISOString();
       return ok({ items: db.absences.filter((a) => a.endUtc > lo && a.startUtc < hi).sort((a, b) => a.startUtc.localeCompare(b.startUtc)) });
+    }),
+
+    // Lo que el personal sabe de un evento personal: SOLO que el doctor esta ocupado (nunca el titulo ni las notas).
+    route<StoredUser>("listBusyTimes", STAFF, (c) => {
+      const { from, to } = parseRange(c.query);
+      const items = db.personalEvents
+        .filter((ev) => ev.endUtc > from && ev.startUtc < to)
+        .sort((a, b) => a.startUtc.localeCompare(b.startUtc) || a.id.localeCompare(b.id))
+        .map(({ id, doctorId, startUtc, endUtc }) => ({ id, doctorId, startUtc, endUtc }));
+      return ok({ items });
     }),
 
     route<StoredUser>("createDoctorAbsence", STAFF, (c) => {
@@ -535,6 +583,57 @@ export function buildRoutes(db: DB): MockRoute[] {
       return noContent();
     }),
 
+    route<StoredUser>("doctorListPersonalEvents", DOCTOR, (c) => {
+      const doc = mine(c);
+      const { from, to } = parseRange(c.query);
+      const items = db.personalEvents
+        .filter((ev) => ev.doctorId === doc.id && ev.endUtc > from && ev.startUtc < to)
+        .sort((a, b) => a.startUtc.localeCompare(b.startUtc) || a.id.localeCompare(b.id))
+        .map(eventView);
+      return ok({ items });
+    }),
+
+    route<StoredUser>("doctorCreatePersonalEvent", DOCTOR, (c) => {
+      const doc = mine(c);
+      const b = asObject(c.body);
+      const title = eventTitle(b);
+      const notes = eventNotes(b);
+      const startUtc = isoInstant(b, "startUtc");
+      const endUtc = isoInstant(b, "endUtc");
+      checkEventSpan(c, startUtc, endUtc);
+      rejectIfSession(doc.id, startUtc, endUtc);
+      const ev: StoredPersonalEvent = { id: nextId(db, "pe"), doctorId: doc.id, title, notes, startUtc, endUtc };
+      db.personalEvents.push(ev);
+      return ok(eventView(ev), 201);
+    }),
+
+    // Parche: solo cambia lo que se manda. Ajeno o inexistente = 404 (no se distingue).
+    route<StoredUser>("doctorUpdatePersonalEvent", DOCTOR, (c) => {
+      const doc = mine(c);
+      const b = asObject(c.body);
+      if (!["title", "notes", "startUtc", "endUtc"].some((k) => k in b)) throw invalid("No hay nada que cambiar.");
+      const ev = db.personalEvents.find((x) => x.id === c.params.eventId && x.doctorId === doc.id);
+      if (!ev) throw notFound("El evento no existe.");
+      const title = "title" in b ? eventTitle(b) : ev.title;
+      const notes = "notes" in b ? eventNotes(b) : ev.notes;
+      const startUtc = "startUtc" in b ? isoInstant(b, "startUtc") : ev.startUtc;
+      const endUtc = "endUtc" in b ? isoInstant(b, "endUtc") : ev.endUtc;
+      if (startUtc !== ev.startUtc || endUtc !== ev.endUtc) {
+        checkEventSpan(c, startUtc, endUtc);
+        rejectIfSession(doc.id, startUtc, endUtc);
+      }
+      Object.assign(ev, { title, notes, startUtc, endUtc });
+      return ok(eventView(ev));
+    }),
+
+    route<StoredUser>("doctorDeletePersonalEvent", DOCTOR, (c) => {
+      const doc = mine(c);
+      const i = db.personalEvents.findIndex((x) => x.id === c.params.eventId && x.doctorId === doc.id);
+      if (i < 0) throw notFound("El evento no existe.");
+      db.personalEvents.splice(i, 1);
+      return noContent();
+    }),
+
     route<StoredUser>("doctorListScheduleChanges", DOCTOR, (c) => {
       const doc = mine(c);
       return ok({ items: db.requests.filter((r) => r.doctorId === doc.id).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc)) });
@@ -556,6 +655,16 @@ export function buildRoutes(db: DB): MockRoute[] {
       };
       db.requests.push(req);
       return ok(req, 201);
+    }),
+
+    // Solo una solicitud MIA y pendiente: ajena o inexistente = 404 (no se distingue); ya resuelta = 409.
+    route<StoredUser>("doctorDeleteScheduleChange", DOCTOR, (c) => {
+      const doc = mine(c);
+      const i = db.requests.findIndex((r) => r.id === c.params.requestId && r.doctorId === doc.id);
+      if (i < 0) throw notFound("La solicitud no existe.");
+      if (db.requests[i]!.status !== "pending") throw stateConflict("la solicitud ya fue resuelta por el personal: ya no se puede eliminar");
+      db.requests.splice(i, 1);
+      return noContent();
     }),
 
     route<StoredUser>("doctorSubscribePush", DOCTOR, (c) => {

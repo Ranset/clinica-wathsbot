@@ -19,6 +19,7 @@ import {
   tzOffsetLabel,
   visibleRange,
   wallClock,
+  type CalendarAbsence,
   type CalendarView,
   type Lane,
 } from "@clinica/calendar";
@@ -33,6 +34,7 @@ import { useToast } from "../../toast";
 import { Checkbox, PageMessage, Select, Spinner } from "../../ui/controls";
 import { BookingDetail } from "./booking-detail";
 import { BookingFormDialog, type SlotDraft } from "./booking-form";
+import { useAbsences, useBusyTimes } from "./use-absences";
 import { useBookings } from "./use-bookings";
 
 const BLOCKS_LANE = "__bloqueos";
@@ -70,6 +72,22 @@ export function CalendarPage() {
   const utc = useMemo(() => rangeToUtc(range), [range.from, range.to]); // eslint-disable-line react-hooks/exhaustive-deps
   const { bookings, ready, error, syncedAt, refresh, refreshNow } = useBookings({ ...utc, doctorId: doctorFilter || undefined });
   const visible = useMemo(() => calendarVisible(bookings, { showCancelled }), [bookings, showCancelled]);
+
+  // Las ausencias de los doctores (franjas ámbar rayadas con su motivo) y los eventos PERSONALES que los tienen ocupados (franjas
+  // grises «No disponible», sin motivo: el detalle es privado del doctor). Solo donde se sabe de QUIEN es cada columna: en «Día»
+  // por doctor (cada carril, la suya) y en «Día»/«Semana» con un doctor filtrado (las de ese doctor). En «Semana» sin filtro, o
+  // por consultorio, mezclarian a todos los doctores en las mismas columnas: ahi no se pintan.
+  const absencesInGrid = (view === "dia" && laneBy === "doctor") || (view === "semana" && !!doctorFilter);
+  const absencesList = useAbsences(utc, absencesInGrid);
+  const busyList = useBusyTimes(utc, absencesInGrid);
+  const gridAbsences = useMemo<CalendarAbsence[] | undefined>(() => {
+    if (!absencesInGrid) return undefined;
+    const ofDoctor = (d: string) => !doctorFilter || d === doctorFilter;
+    return [
+      ...absencesList.filter((a) => ofDoctor(a.doctorId)).map((a): CalendarAbsence => ({ startUtc: a.startUtc, endUtc: a.endUtc, reason: a.reason, laneId: a.doctorId })),
+      ...busyList.filter((b) => ofDoctor(b.doctorId)).map((b): CalendarAbsence => ({ startUtc: b.startUtc, endUtc: b.endUtc, kind: "busy", laneId: b.doctorId })),
+    ];
+  }, [absencesInGrid, absencesList, busyList, doctorFilter]);
 
   const [selected, setSelected] = useState<Booking | null>(null);
   const [draft, setDraft] = useState<SlotDraft | null>(null);
@@ -207,6 +225,7 @@ export function CalendarPage() {
                 ready={ready}
                 lanes={lanes}
                 laneOf={laneOf}
+                absences={gridAbsences}
                 onSelect={setSelected}
                 onEmptySlot={(day, time, laneId) =>
                   setDraft({

@@ -18,10 +18,12 @@ NO_ENCONTRADO = "no_encontrado"
 RANGO_INVALIDO = "rango_invalido"
 DOCTOR_CON_CITAS = "doctor_con_citas"        # no se puede eliminar: tiene (o tuvo) citas; se da de baja
 DOCTOR_CON_USUARIO = "doctor_con_usuario"    # no se puede eliminar: hay una cuenta de usuario ligada a el
+EVENTO_CON_CITA = "evento_con_cita"          # un evento personal no puede caer sobre una cita ya agendada del doctor
 
 #: estado HTTP que el contrato asigna a cada codigo (lo usara la capa de rutas)
 HTTP_STATUS = {
     HORARIO_OCUPADO: 409,
+    EVENTO_CON_CITA: 409,
     TRANSICION_INVALIDA: 409,
     DOCTOR_CON_CITAS: 409,
     DOCTOR_CON_USUARIO: 409,

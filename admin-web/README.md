@@ -50,6 +50,10 @@ __clinicaMock.reset()                       // datos de ejemplo de nuevo
   Cada doctor tiene su **color** (en las citas, los encabezados de columna y los puntos de mes y lista); la leyenda de colores arriba del calendario, que además
   filtra por doctor al hacer clic, está apagada (ver *Funciones apagadas*). El color se elige en la pestaña «Datos» del doctor (paleta, «Otro color» o «Automático»,
   que usa un color de la paleta según su número); no se aceptan colores tan claros que el texto blanco de las citas no se lea.
+  Las **ausencias** de los doctores se ven como franjas ámbar rayadas con su motivo: en «Día» por doctor (cada una en la columna de
+  su doctor) y en «Día»/«Semana» con un doctor filtrado; las citas quedan encima. Cuando un doctor tiene un **evento personal** (lo anota en su PWA)
+  se ve una franja **gris rayada «No disponible»**, sin motivo ni texto (el detalle es privado del doctor; la API solo da doctor y horario): en ese
+  horario el doctor no se puede agendar, pero el consultorio sigue libre para los demás doctores.
   Clic en un hueco → *Nueva cita*; clic en una cita → detalle (mover / cancelar / notas; «realizada» / «no asistió» están apagadas, ver *Funciones apagadas*).
   Los filtros viven en la dirección (`?vista=semana&dia=2026-11-12&doctor=d1`). Se actualiza solo cada 5 s con
   `If-None-Match` (un 304 no toca el estado) y `coalesce` junta las ráfagas de avisos en una consulta.

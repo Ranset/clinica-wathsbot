@@ -40,14 +40,22 @@ pública VAPID para los avisos; en `.env.development`/`.env.mock` hay una **de d
 
 - **Hoy / Semana**: `TimeGrid` de `@clinica/calendar` con UN solo carril (mi agenda: encabezado con mi nombre y
   especialidad, horario propio sombreado). Flechas, «Hoy» y «Mostrar canceladas»; el día va en la dirección
-  (`#/hoy?dia=2026-11-12`). Tocar una cita abre el detalle (solo lectura; **sin teléfono del paciente**). Avisa si hay una
-  ausencia mía en lo que se ve. El doctor no agenda ni cambia estados desde aquí.
+  (`#/hoy?dia=2026-11-12`). Tocar una cita abre el detalle (solo lectura; **sin teléfono del paciente**). Mis **ausencias se ven en la
+  rejilla** como una franja ámbar rayada (de la hora en que empiezan a la en que terminan; con su motivo, que se queda a la vista al
+  desplazarse) y además un aviso arriba con el texto; las citas siguen visibles encima de la franja. El doctor no agenda pacientes ni cambia estados desde aquí.
+  **Eventos personales**: el botón «Evento» (o tocar un hueco vacío de la rejilla) abre un formulario con título, día, hora de inicio y duración (o «todo
+  el día») y notas; el formulario aclara que **no es una cita de la clínica**: en ese horario no recibes citas, pero el consultorio queda libre para los
+  demás doctores, y para agendar a un paciente lo registra el personal. Se ven en la rejilla como un bloque gris punteado con icono de persona; un toque los
+  abre para editarlos o eliminarlos (con confirmación). Son **privados**: el personal solo ve «No disponible». Si caen sobre una cita ya agendada el servidor
+  los rechaza (409) y la PWA dice a qué hora está la cita (sin el paciente). Duran hasta 24 h (para varios días, una ausencia) y no se repiten. Sin conexión
+  se leen (copia guardada) pero no se crean ni se borran.
 - **Ausencias**: lista (próximas / «Ver pasadas»), registrar (rango de fechas inclusivo, todo el día o por horas, motivo) y
   quitar (con confirmación). Al registrar muestra `affectedCount`: cuántas citas agendadas quedan en el rango (no se
   cancelan; el servidor avisa al personal).
 - **Horario**: el horario semanal vigente (`doctorHours`), solicitar un **cambio permanente** (`doctorCreateScheduleChange`:
   editor por día validado contra el horario de la clínica, fecha de inicio, nota) y mis solicitudes con su estado
-  (pendiente / aprobada / rechazada).
+  (pendiente / aprobada / rechazada). Una **pendiente** se puede **eliminar** (icono de papelera y confirmación); una aprobada o
+  rechazada es historial y ya no (`doctorDeleteScheduleChange`).
 - **Cuenta**: avisos push de este dispositivo, instalar la app y cerrar sesión.
 
 ## Decisiones (todas cambiables)
@@ -60,11 +68,11 @@ viviera aparte, un `304` dejaría la pantalla sin datos); (2) se puede **borrar 
 pacientes) y se separa por usuario; (3) la pantalla dice «Última sincronización: hoy 10:42» con la hora de la última
 confirmación del servidor; (4) se prueba con vitest. El service worker solo hace el precache del shell.
 
-- Se guarda por usuario: las últimas 8 semanas de agenda, el perfil/horario, las ausencias y quién entró.
+- Se guarda por usuario: las últimas 8 semanas de agenda (y los eventos personales de cada una: hasta 16 copias), el perfil/horario, las ausencias y quién entró.
 - **Abre sin conexión**: si `GET /api/me` no contesta y este dispositivo ya conocía a un doctor, la app abre en solo lectura con
   lo guardado (`verified: false`: aún no hay token CSRF). Cada 10 s y al volver la red intenta confirmar la sesión; si
   responde 401 va al login con el aviso. Una sesión recordada de alguien que no es doctor **no** abre nada.
-- **Solo lectura**: `useCanWrite()` deshabilita crear/borrar (ausencias, solicitud de horario, activar/desactivar avisos) y
+- **Solo lectura**: `useCanWrite()` deshabilita crear/borrar (ausencias, eventos personales, solicitud de horario y eliminar una pendiente, activar/desactivar avisos) y
   dice por qué. «Sin conexión» sale de `navigator.onLine` **o** de que la última petición falló (red/5xx): el navegador
   se equivoca a veces. Mientras está «sin conexión» por una petición fallida, una sonda barata (`GET /api/health`, cada 5 s y
   al volver la red/pestaña) la recupera sin esperar al siguiente refresco.

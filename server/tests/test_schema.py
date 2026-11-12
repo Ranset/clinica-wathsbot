@@ -16,7 +16,8 @@ from app.seed import load_agenda_config, seed
 from app.settings import get_bot_settings, set_bot_active
 
 TABLAS = {"users", "doctors", "rooms", "clinic_hours", "doctor_hours", "doctor_absences", "appointments",
-          "appointment_blocks", "settings", "webhook_events", "audit_log", "attention_cases", "sessions", "schedule_change_requests", "push_subscriptions"}
+          "appointment_blocks", "settings", "webhook_events", "audit_log", "attention_cases", "sessions", "schedule_change_requests", "push_subscriptions",
+          "doctor_personal_events"}
 
 
 def diff_with_models(url):
@@ -70,6 +71,38 @@ def test_migracion_0004_agrega_el_color_del_doctor_sin_tocar_los_datos_y_se_desh
     downgrade(url, "0003")                  # volver atras quita la columna y conserva al doctor
     engine = create_engine(url)
     assert "color" not in {c["name"] for c in inspect(engine).get_columns("doctors")}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+
+
+def test_migracion_0005_crea_la_tabla_de_eventos_personales_sin_tocar_los_datos_y_se_deshace(tmp_path):
+    """Una base en 0004 con un doctor sube a 0005: aparece la tabla (vacia) y el doctor sigue igual; al bajar se va."""
+    from sqlalchemy import text
+    url = "sqlite:///" + (tmp_path / "vieja.db").as_posix()
+    upgrade(url, "0004")
+    engine = create_engine(url)
+    assert "doctor_personal_events" not in inspect(engine).get_table_names()
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO doctors (name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                       "VALUES ('Dr. Existente', 'Proctologia', '[]', 1, 1, '2026-11-10 10:00:00')"))
+    engine.dispose()
+
+    upgrade(url)
+    engine = create_engine(url)
+    insp = inspect(engine)
+    assert {c["name"] for c in insp.get_columns("doctor_personal_events")} == {
+        "id", "doctor_id", "title", "notes", "start_utc", "end_utc", "created_at", "updated_at"}
+    assert {c["name"] for c in insp.get_columns("doctor_personal_events") if c["nullable"]} == {"notes"}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT COUNT(*) FROM doctor_personal_events")).scalar_one() == 0
+        assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+    assert diff_with_models(url) == []
+
+    downgrade(url, "0004")
+    engine = create_engine(url)
+    assert "doctor_personal_events" not in inspect(engine).get_table_names()
     with engine.connect() as c:
         assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
     engine.dispose()

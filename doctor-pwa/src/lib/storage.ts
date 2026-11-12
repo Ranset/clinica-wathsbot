@@ -12,8 +12,8 @@ import type { User } from "@clinica/api-client";
 
 export const PREFIX = "clinica-doctor:v1:";
 const SESSION_KEY = `${PREFIX}session`;
-/** Rangos de agenda que se conservan por usuario (las semanas más recientes). */
-export const MAX_AGENDA_ENTRIES = 8;
+/** Copias `agenda:*` que se conservan por usuario (lo más reciente): cada semana guarda dos, sus citas y sus eventos personales. */
+export const MAX_AGENDA_ENTRIES = 16;
 
 export type Snapshot<T> = {
   /** Cuándo el servidor confirmó por última vez que esto era lo vigente (ISO UTC). */

@@ -8,7 +8,7 @@ from __future__ import annotations
 from ..auth import UserView
 from ..db import iso_utc
 from ..directory import DoctorView, RequestView
-from ..models import Appointment, AttentionCase, DoctorAbsence, Room
+from ..models import Appointment, AttentionCase, DoctorAbsence, PersonalEvent, Room
 from ..settings import BotSettings
 
 
@@ -41,6 +41,19 @@ def room_json(r: Room) -> dict:
 def absence_json(a: DoctorAbsence) -> dict:
     return {"id": str(a.id), "doctorId": str(a.doctor_id), "startUtc": iso_utc(a.start_utc), "endUtc": iso_utc(a.end_utc),
             "reason": a.reason}
+
+
+def personal_event_json(e: PersonalEvent) -> dict:
+    """El evento COMPLETO (con titulo y notas): solo lo usa la API del doctor, siempre de su propio doctor."""
+    return {"id": str(e.id), "title": e.title, "notes": e.notes, "startUtc": iso_utc(e.start_utc),
+            "endUtc": iso_utc(e.end_utc)}
+
+
+def busy_json(row) -> dict:
+    """Lo que ve el personal de un evento personal: SOLO que el doctor esta ocupado. `row` es `(id, doctor_id, start, end)`
+    (la consulta del personal nunca carga el titulo ni las notas)."""
+    event_id, doctor_id, start, end = row
+    return {"id": str(event_id), "doctorId": str(doctor_id), "startUtc": iso_utc(start), "endUtc": iso_utc(end)}
 
 
 def user_json(u: UserView) -> dict:

@@ -13,7 +13,7 @@ from .inputs import (bad, body, bookings_response, instant, opt_bool, opt_int, o
                      query_status)
 from .common import valid_phone
 from .security import require
-from .serializers import (absence_json, booking_json, doctor_json, request_json, room_json)
+from .serializers import (absence_json, booking_json, busy_json, doctor_json, request_json, room_json)
 
 bp = Blueprint("staff", __name__)
 STAFF = ("admin", "staff")
@@ -150,6 +150,15 @@ def list_all_absences():
     """Ausencias de TODOS los doctores que se solapan con `[from, to)` (para sombrear el calendario)."""
     start, end = query_range()
     return _items(_x("availability").absences_between(start, end), absence_json)
+
+
+@bp.get("/api/busy-times")
+@require(*STAFF)
+def list_busy_times():
+    """Franjas en que cada doctor esta ocupado por un evento PERSONAL (sombrean el calendario como «No disponible»).
+    Solo id, doctor y horas: el titulo y las notas son privados del doctor y no salen por aqui."""
+    start, end = query_range()
+    return _items(_x("availability").busy_between(start, end), busy_json)
 
 
 # --------------------------------------------------------------------------- solicitudes de cambio de horario

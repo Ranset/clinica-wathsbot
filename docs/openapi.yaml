@@ -867,6 +867,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/RuleError" }
+  /api/busy-times:
+    get:
+      operationId: listBusyTimes
+      tags: [agenda]
+      summary: Franjas en que cada doctor esta ocupado por un evento PERSONAL (para sombrear el calendario).
+      description: |
+        Solo `id`, `doctorId` y el horario: el titulo y las notas del evento son PRIVADOS del doctor y nunca salen por esta
+        ruta (ni por ninguna del personal, del administrador o del bot). El calendario las pinta como «No disponible», sin
+        motivo. En esas franjas el doctor no se ofrece y no se le puede agendar (`doctor_no_disponible`), pero el
+        consultorio queda libre para los demas doctores.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: Eventos que se solapan con `[from, to)`; mismo limite de rango que `/api/appointments`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/BusyTime" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/schedule-change-requests:
     get:
       operationId: listScheduleChangeRequests
@@ -1187,6 +1216,99 @@ paths:
         "204": { description: "Eliminada." }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /api/doctor/personal-events:
+    get:
+      operationId: doctorListPersonalEvents
+      tags: [doctor]
+      summary: Mis eventos personales en un rango.
+      description: |
+        Con titulo y notas: solo los ve su dueno. Un evento personal NO es una cita de la clinica: el doctor no recibe
+        citas en esa franja, pero el consultorio queda libre para los demas doctores.
+      x-roles: [doctor]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: Eventos que se solapan con `[from, to)` (mismo limite de rango que las citas), ordenados por inicio.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PersonalEvent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+    post:
+      operationId: doctorCreatePersonalEvent
+      tags: [doctor]
+      summary: Creo un evento personal; bloquea mi agenda en esa franja.
+      description: |
+        Surte efecto de inmediato: el bot y el personal ya no pueden agendarme ahi (`doctor_no_disponible`). Si en esa
+        franja ya tengo una cita agendada se rechaza con 409 `evento_con_cita` (hay que mover la cita primero). Dura como
+        maximo 24 horas (para varios dias se marca una ausencia). En la bitacora quedan solo ids y horas, nunca el texto.
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonalEventInput" }
+      responses:
+        "201":
+          description: Creado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalEvent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctor/personal-events/{eventId}:
+    patch:
+      operationId: doctorUpdatePersonalEvent
+      tags: [doctor]
+      summary: Cambio el texto y/o el horario de un evento mio.
+      description: |
+        Parche: solo cambia lo que se manda (`notes: null` borra las notas). Si cambia el horario se vuelve a comprobar
+        contra las citas (409 `evento_con_cita`). Un evento de otro doctor o inexistente es 404.
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/PersonalEventId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonalEventPatch" }
+      responses:
+        "200":
+          description: Actualizado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalEvent" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
+    delete:
+      operationId: doctorDeletePersonalEvent
+      tags: [doctor]
+      summary: Quito un evento personal mio (el doctor vuelve a ofrecerse en esa franja).
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/PersonalEventId" }
+      responses:
+        "204": { description: "Eliminado." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /api/doctor/schedule-change-requests:
     get:
       operationId: doctorListScheduleChanges
@@ -1233,6 +1355,25 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/RuleError" }
+  /api/doctor/schedule-change-requests/{requestId}:
+    delete:
+      operationId: doctorDeleteScheduleChange
+      tags: [doctor]
+      summary: Elimino una solicitud mia de cambio de horario que sigue pendiente.
+      description: |
+        Solo mientras esta `pending`. Una ya aprobada o rechazada es historial y ya no se puede eliminar (409
+        `transicion_invalida`). Una solicitud de otro doctor o inexistente es 404 (nunca se distingue). Libera uno de los
+        3 lugares de solicitudes pendientes. Queda en la bitacora (`schedule_change.delete`).
+      x-roles: [doctor]
+      security: [{ session: [], csrf: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/RequestId" }
+      responses:
+        "204": { description: "Eliminada." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/doctor/push-subscriptions:
     post:
       operationId: doctorSubscribePush
@@ -1327,6 +1468,11 @@ components:
       in: path
       required: true
       schema: { type: string }
+    PersonalEventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string }
     EventId:
       name: eventId
       in: path
@@ -1350,7 +1496,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
     Conflict:
-      description: El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`) o no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`).
+      description: El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`), no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`) o un evento personal cae sobre una cita agendada (`evento_con_cita`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -1384,7 +1530,8 @@ components:
         su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
         `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
         (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
-        `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada).
+        `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada) y
+        `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya).
         Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
       enum:
         - horario_ocupado
@@ -1408,6 +1555,7 @@ components:
         - error_interno
         - doctor_con_citas
         - doctor_con_usuario
+        - evento_con_cita
     ErrorBody:
       type: object
       required: [error]
@@ -1693,6 +1841,46 @@ components:
         startUtc: { type: string, format: date-time }
         endUtc: { type: string, format: date-time }
         reason: { type: string, maxLength: 200 }
+    PersonalEvent:
+      type: object
+      description: |
+        Evento personal de un doctor (privado: solo lo devuelve la API del propio doctor). Mientras dura, el doctor no
+        recibe citas; el consultorio queda libre para los demas doctores. NO es una cita de la clinica.
+      required: [id, title, notes, startUtc, endUtc]
+      properties:
+        id: { type: string }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        notes: { type: [string, "null"], maxLength: 1000 }
+        startUtc: { type: string, format: date-time }
+        endUtc: { type: string, format: date-time }
+    PersonalEventInput:
+      type: object
+      required: [title, startUtc, endUtc]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        notes: { type: [string, "null"], maxLength: 1000 }
+        startUtc: { type: string, format: date-time }
+        endUtc:
+          type: string
+          format: date-time
+          description: Exclusivo. Debe ser posterior al inicio y a lo sumo 24 horas despues.
+    PersonalEventPatch:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        notes: { type: [string, "null"], maxLength: 1000 }
+        startUtc: { type: string, format: date-time }
+        endUtc: { type: string, format: date-time }
+    BusyTime:
+      type: object
+      description: "Lo unico que el personal sabe de un evento personal de un doctor: que esta ocupado (sin texto)."
+      required: [id, doctorId, startUtc, endUtc]
+      properties:
+        id: { type: string }
+        doctorId: { type: string }
+        startUtc: { type: string, format: date-time }
+        endUtc: { type: string, format: date-time }
     AbsenceResult:
       type: object
       required: [absence, affectedAppointments]

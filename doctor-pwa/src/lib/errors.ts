@@ -7,6 +7,7 @@ const BY_CODE: Partial<Record<ClientErrorCode, string>> = {
   fuera_de_horario: "Ese horario queda fuera del horario de atención.",
   falta_nombre_completo: "Escribe el nombre y el apellido del paciente.",
   doctor_no_disponible: "El doctor no está disponible en ese horario.",
+  evento_con_cita: "Ya tienes una cita agendada en ese horario. Pide a recepción que la mueva y vuelve a intentarlo.",
   transicion_invalida: "Esa cita no puede pasar a ese estado.",
   rango_invalido: "El rango de fechas no es válido.",
   validacion: "Revisa los datos e inténtalo de nuevo.",

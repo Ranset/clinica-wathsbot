@@ -24,7 +24,7 @@ from .agenda.uow import Unit
 from .colors import HEX, is_readable_on_white
 from .db import is_unique_violation, to_db
 from .models import (ATTENTION_STATUSES, REQUEST_STATUSES, Appointment, AppointmentBlock, AttentionCase, Doctor,
-                     DoctorAbsence, PushSubscription, Room, ScheduleChangeRequest, User)
+                     DoctorAbsence, PersonalEvent, PushSubscription, Room, ScheduleChangeRequest, User)
 
 MAX_ALIASES, MAX_PENDING_REQUESTS, MAX_PUSH_PER_USER = 20, 3, 10
 
@@ -189,6 +189,7 @@ class Directory(Unit):
                                   "Hay una cuenta de usuario ligada a este doctor: elimínala o cámbiala primero en Usuarios.")
             audit(s, actor, "doctor.delete", "doctor", doc.id, {"name": doc.name, "specialty": doc.specialty})
             s.execute(delete(DoctorAbsence).where(DoctorAbsence.doctor_id == doc.id))
+            s.execute(delete(PersonalEvent).where(PersonalEvent.doctor_id == doc.id))
             s.execute(delete(ScheduleChangeRequest).where(ScheduleChangeRequest.doctor_id == doc.id))
             s.delete(doc)  # sus tramos de horario se borran en cascada
         self._write(work)
@@ -252,6 +253,20 @@ class Directory(Unit):
         if r.status != "pending":
             raise AgendaError(TRANSICION_INVALIDA, "la solicitud ya fue resuelta")
         return r
+
+    def delete_schedule_change(self, doctor_id, request_id, actor: Actor = SYSTEM) -> None:
+        """El doctor elimina una solicitud SUYA que sigue pendiente. Una ajena o inexistente es 404 (nunca se distingue); una ya
+        aprobada o rechazada es historial: 409. Si el personal la aprueba o rechaza al mismo tiempo, el bloqueo de fila decide
+        quien llega primero (la otra operacion ve la solicitud ya resuelta, o inexistente)."""
+        def work(repo, s):
+            r = s.get(ScheduleChangeRequest, int(request_id), with_for_update=True) if str(request_id).isdigit() else None
+            if r is None or r.doctor_id != doctor_id:
+                raise AgendaError(NO_ENCONTRADO)
+            if r.status != "pending":
+                raise AgendaError(TRANSICION_INVALIDA, "la solicitud ya fue resuelta por el personal: ya no se puede eliminar")
+            audit(s, actor, "schedule_change.delete", "doctor", r.doctor_id, {"requestId": r.id})
+            s.delete(r)
+        self._write(work)
 
     def approve_schedule_change(self, request_id, actor: Actor = SYSTEM) -> tuple[RequestView, list[Appointment]]:
         """Aplica el horario y marca la solicitud como aprobada en UNA transaccion (si el horario ya no es valido, la

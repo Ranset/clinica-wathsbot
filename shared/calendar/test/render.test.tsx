@@ -109,6 +109,188 @@ describe("Mes y Lista", () => {
   });
 });
 
+describe("Las ausencias se ven en la rejilla (franja rayada con el motivo)", () => {
+  const count = (html: string) => html.split("data-absence").length - 1;
+  const band = (html: string) => html.split("<div ").filter((d) => d.includes("data-absence"));
+  const HOUR = 48; // px por hora de la rejilla
+  const allDay = { startUtc: utc(DAY, "00:00"), endUtc: utc("2026-11-18", "00:00"), reason: "Congreso" };
+
+  it("una ausencia de todo el día llena la columna de ese día, con su motivo, y no se pinta en otros días", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} absences={[allDay]} />);
+    expect(count(html)).toBe(1);
+    const [b] = band(html);
+    expect(b).toContain('aria-label="Ausencia · Congreso"');
+    expect(b).toContain("cal-absence");
+    expect(b).toContain(`top:1px;height:${24 * HOUR - 1}px`);
+    expect(b).toContain("Ausencia · Congreso</span>");   // la etiqueta visible
+    // otro día: nada
+    expect(count(renderToStaticMarkup(<TimeGrid {...common} days={["2026-11-19"]} bookings={[]} absences={[allDay]} />))).toBe(0);
+  });
+
+  it("por horas: la franja va de su hora de inicio a la de fin, en la hora de la clínica", () => {
+    const a = { startUtc: utc(DAY, "10:00"), endUtc: utc(DAY, "12:00"), reason: null };
+    const [b] = band(renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} absences={[a]} />));
+    expect(b).toContain(`top:${10 * HOUR + 1}px;height:${2 * HOUR - 1}px`);
+    expect(b).toContain('aria-label="Ausencia"');
+  });
+
+  it("de varios días: una franja en cada columna que toca, en la semana", () => {
+    const week = datesOf(visibleRange("semana", DAY)); // lun 16 a dom 22
+    const a = { startUtc: utc("2026-11-18", "00:00"), endUtc: utc("2026-11-21", "00:00"), reason: "Vacaciones" }; // mié, jue y vie
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={week} bookings={[]} absences={[a]} />);
+    expect(count(html)).toBe(3);
+    for (const day of ["2026-11-18", "2026-11-19", "2026-11-20"]) {
+      expect(html.split(`data-day="${day}"`)[1]!.split("data-day=")[0], day).toContain("data-absence");
+    }
+    for (const day of ["2026-11-16", "2026-11-17", "2026-11-21", "2026-11-22"]) {
+      expect(html.split(`data-day="${day}"`)[1]!.split("data-day=")[0], day).not.toContain("data-absence");
+    }
+  });
+
+  it("una ausencia larga (semanas) se pinta en una semana que queda lejos de donde empezó", () => {
+    const larga = { startUtc: utc("2026-11-01", "00:00"), endUtc: utc("2026-12-31", "00:00"), reason: "Licencia" };
+    const week = datesOf(visibleRange("semana", "2026-12-09"));
+    expect(count(renderToStaticMarkup(<TimeGrid {...common} days={week} bookings={[]} absences={[larga]} />))).toBe(7);
+  });
+
+  it("con carriles: una ausencia con laneId solo va en ese carril; sin laneId va en todos", () => {
+    const delPerez = { ...allDay, laneId: "perez", reason: "Solo Pérez" };
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={lanes} absences={[delPerez]} />);
+    const col = (id: string) => html.split(`data-lane="${id}"`)[1]!.split("data-lane=")[0]!;
+    expect(col("perez")).toContain("Solo Pérez");
+    expect(col("cervantes")).not.toContain("data-absence");
+    expect(col("geydi")).not.toContain("data-absence");
+    expect(count(html)).toBe(1);
+
+    const detodos = { startUtc: allDay.startUtc, endUtc: allDay.endUtc, reason: "Cierre" }; // sin laneId
+    const all = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={lanes} absences={[detodos]} />);
+    expect(count(all)).toBe(3);
+  });
+
+  it("sin ausencias no hay franjas; la cita dentro de una ausencia se sigue viendo (queda por encima)", () => {
+    const cita = mk("1", "11:00", "1", "1");
+    expect(count(renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} />))).toBe(0);
+    expect(count(renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} absences={[]} />))).toBe(0);
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} absences={[allDay]} />);
+    expect(html).toContain("Paciente 1,");
+    expect(html.indexOf("data-absence")).toBeLessThan(html.indexOf("Paciente 1,"));   // la franja va antes: la cita queda encima
+    expect(html).toMatch(/z-\[5\]/);                                                     // y por debajo de las citas (z-10)
+  });
+
+  it("no tapa los clics: tocar un hueco dentro de la ausencia sigue siendo tocar el hueco; y una ausencia muy corta no lleva texto pero si nombre accesible", () => {
+    const corta = { startUtc: utc(DAY, "10:00"), endUtc: utc(DAY, "10:30"), reason: "Trámite" };
+    const [b] = band(renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} absences={[corta]} />));
+    expect(b).toContain("pointer-events-none");
+    expect(b).toContain('aria-label="Ausencia · Trámite"');
+    expect(b).not.toContain("truncate");                                                 // 30 min = 23 px: no cabe la etiqueta
+  });
+});
+
+describe("«No disponible»: el doctor ocupado por un evento personal (lo que ve el personal)", () => {
+  const busyCount = (html: string) => html.split("data-busy").length - 1;
+  const band = (html: string) => html.split("<div ").filter((d) => d.includes("data-busy"));
+  const HOUR = 48;
+  const busy = { startUtc: utc(DAY, "10:00"), endUtc: utc(DAY, "11:30"), kind: "busy" as const };
+
+  it("franja gris «No disponible», sin motivo, en la hora de la clinica; no cuenta como ausencia", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} absences={[busy]} />);
+    expect(busyCount(html)).toBe(1);
+    expect(html.split("data-absence").length - 1).toBe(0);                     // no se confunde con una ausencia
+    const [b] = band(html);
+    expect(b).toContain("cal-busy");
+    expect(b).not.toContain("cal-absence");
+    expect(b).toContain('aria-label="No disponible"');
+    expect(b).toContain(`top:${10 * HOUR + 1}px;height:${1.5 * HOUR - 1}px`);
+    expect(b).toContain("No disponible</span>");
+  });
+
+  it("jamas muestra un motivo: aunque llegue uno (el evento es privado del doctor)", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} absences={[{ ...busy, reason: "Cirugía de la Sra. Quintana" }]} />);
+    expect(html).not.toContain("Quintana");
+    expect(html).not.toContain("Cirug");
+    expect(html).toContain("No disponible");
+  });
+
+  it("con carriles va solo en el carril de su doctor, y convive con una ausencia en la misma rejilla", () => {
+    const ausencia = { startUtc: utc(DAY, "14:00"), endUtc: utc(DAY, "15:00"), reason: "Trámite", laneId: "cervantes" };
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={lanes} absences={[{ ...busy, laneId: "perez" }, ausencia]} />);
+    const col = (id: string) => html.split(`data-lane="${id}"`)[1]!.split("data-lane=")[0]!;
+    expect(busyCount(col("perez"))).toBe(1);
+    expect(busyCount(col("cervantes"))).toBe(0);
+    expect(col("cervantes")).toContain("data-absence");
+    expect(col("cervantes")).toContain("Ausencia · Trámite");
+  });
+});
+
+describe("Eventos personales del doctor en su agenda (con su texto)", () => {
+  const HOUR = 48;
+  const ev = (id: string, from: string, to: string, over: object = {}) => ({ id, title: "Evento " + id, startUtc: utc(DAY, from), endUtc: utc(DAY, to), ...over });
+  const evs = (html: string) => html.split("<button").filter((d) => d.includes("data-personal-event"));
+
+  it("un bloque con su titulo y horario, distinto de una cita (no es una cita de la clinica)", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} personalEvents={[ev("7", "13:00", "14:00", { title: "Comida con residentes" })]} />);
+    const [b] = evs(html);
+    expect(b).toContain('data-personal-event="7"');
+    expect(b).toContain("cal-personal");
+    expect(b).toContain("Comida con residentes");
+    expect(b).toContain('aria-label="Evento personal: Comida con residentes, 1:00 PM a 2:00 PM"');   // 12 h con espacio duro
+    expect(b).toContain(`top:${13 * HOUR + 1}px;height:${HOUR - 2}px`);
+    expect(b).not.toContain("background-color:#");                      // sin el color de ningun doctor
+  });
+
+  it("se ve junto a las citas: la columna se reparte si se encimaran, y las citas siguen ahi", () => {
+    const cita = mk("1", "13:00", "1", "1");
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} personalEvents={[ev("7", "13:00", "14:00")]} />);
+    expect(html).toContain("Paciente 1,");
+    const [b] = evs(html);
+    expect(b).toContain("width:calc(50% - 4px)");                        // dos en la misma franja: mitad y mitad
+    // sin encimarse, cada uno usa todo el ancho
+    const solo = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} personalEvents={[ev("7", "15:00", "16:00")]} />);
+    expect(evs(solo)[0]).toContain("width:calc(100% - 4px)");
+  });
+
+  it("dos eventos encimados se reparten el ancho", () => {
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} personalEvents={[ev("1", "10:00", "11:00"), ev("2", "10:30", "11:30")]} />);
+    expect(evs(html)).toHaveLength(2);
+    expect(evs(html).every((b) => b.includes("width:calc(50% - 4px)"))).toBe(true);
+  });
+
+  it("uno que cruza la medianoche se recorta en cada dia (zona de la clinica) y en la semana aparece en dos columnas", () => {
+    const noche = ev("9", "22:00", "23:59", { endUtc: utc("2026-11-18", "02:00") });
+    const week = datesOf(visibleRange("semana", DAY));
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={week} bookings={[]} personalEvents={[noche]} />);
+    expect(evs(html)).toHaveLength(2);
+    expect(html.split(`data-day="${DAY}"`)[1]!.split("data-day=")[0]).toContain('data-personal-event="9"');
+    expect(html.split('data-day="2026-11-18"')[1]!.split("data-day=")[0]).toContain('data-personal-event="9"');
+    expect(html.split('data-day="2026-11-19"')[1]!.split("data-day=")[0]).not.toContain("data-personal-event");
+  });
+
+  it("no se pinta en otro dia", () => {
+    const e = [ev("7", "13:00", "14:00")];
+    expect(evs(renderToStaticMarkup(<TimeGrid {...common} days={["2026-11-19"]} bookings={[]} personalEvents={e} />))).toHaveLength(0);
+  });
+
+  it("con carriles (la vista «Hoy» de la PWA tiene uno): en el carril de su laneId, o en todos si no trae", () => {
+    const col = (html: string, id: string) => html.split(`data-lane="${id}"`)[1]!.split("data-lane=")[0]!;
+    const propio = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={lanes} personalEvents={[ev("7", "13:00", "14:00", { laneId: "perez" })]} />);
+    expect(evs(col(propio, "perez"))).toHaveLength(1);
+    expect(evs(col(propio, "cervantes"))).toHaveLength(0);
+    expect(evs(col(propio, "geydi"))).toHaveLength(0);
+    const detodos = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={[lanes[0]!]} personalEvents={[ev("8", "13:00", "14:00")]} />);
+    expect(evs(detodos)).toHaveLength(1);                                                       // un solo carril: ahi sale
+    const varios = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} lanes={lanes} personalEvents={[ev("9", "13:00", "14:00")]} />);
+    expect(evs(varios)).toHaveLength(3);                                                        // sin laneId: en todos
+  });
+
+  it("el evento seleccionado se resalta por SU id (no por el de una cita con el mismo id)", () => {
+    const cita = mk("7", "09:00", "1", "1");                              // la cita tiene el id "7" igual que el evento
+    const html = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[cita]} selectedId="7" personalEvents={[ev("7", "13:00", "14:00")]} />);
+    expect(evs(html)[0]).not.toContain("ring-offset-1");                  // (el resaltado lleva ring-offset-1; el foco, solo focus-visible:ring-*)
+    const sel = renderToStaticMarkup(<TimeGrid {...common} days={[DAY]} bookings={[]} selectedEventId="7" personalEvents={[ev("7", "13:00", "14:00")]} />);
+    expect(evs(sel)[0]).toContain("ring-offset-1");
+  });
+});
+
 describe("Cada doctor se ve con su color", () => {
   const AZUL = "#1d4ed8"; // doctor "1"
   const NARANJA = "#c2410c"; // doctor "2"

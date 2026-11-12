@@ -101,6 +101,66 @@ describe("Hoy", () => {
     await mountApp({ server });
     expect(await screen.findByText(/Ausencia registrada: mar 10 nov \(todo el día\) — Congreso/)).toBeInTheDocument();
   });
+
+  describe("mis ausencias se ven en la rejilla", () => {
+    const bands = () => Array.from(document.querySelectorAll<HTMLElement>("[data-absence]"));
+    const mia = (id: string, startUtc: string, endUtc: string, reason: string | null) => ({ id, doctorId: "d1", startUtc, endUtc, reason });
+
+    it("una ausencia de todo el día pinta una franja rayada en la columna del día, con su motivo", async () => {
+      const server = makeServer();
+      server.mock.db.absences.push(mia("a-dia", "2026-11-10T05:00:00.000Z", "2026-11-11T05:00:00.000Z", "Congreso"));
+      await mountApp({ server });
+      await screen.findByText(/Ausencia registrada: mar 10 nov/);       // el aviso de arriba sigue
+      await waitFor(() => expect(bands()).toHaveLength(1));
+      expect(bands()[0]).toHaveAttribute("aria-label", "Ausencia · Congreso");
+      expect(bands()[0]).toHaveClass("cal-absence");
+      expect(bands()[0]).toHaveStyle({ top: "1px", height: `${24 * 48 - 1}px` });
+      expect(bands()[0]!.closest("[data-lane]")).toHaveAttribute("data-lane", "d1");   // en MI carril
+    });
+
+    it("por horas: la franja va de la hora de inicio a la de fin (hora de Cancún) y las citas siguen visibles encima", async () => {
+      const server = makeServer();
+      // 10:00 a 12:00 de Cancún del martes 10 = 15:00 a 17:00 UTC
+      server.mock.db.absences.push(mia("a-horas", "2026-11-10T15:00:00.000Z", "2026-11-10T17:00:00.000Z", null));
+      const t = await mountApp({ server });
+      await waitFor(() => expect(bands()).toHaveLength(1));
+      expect(bands()[0]).toHaveAttribute("aria-label", "Ausencia");
+      expect(bands()[0]).toHaveStyle({ top: `${10 * 48 + 1}px`, height: `${2 * 48 - 1}px` });
+      expect(await bookingButton(pickBooking(t.mock, "2026-11-10"))).toBeInTheDocument();
+    });
+
+    it("en Semana: una franja en cada día que cubre la ausencia, y ninguna en los demás", async () => {
+      const server = makeServer();
+      // de miércoles 11 a viernes 13 completos (3 días)
+      server.mock.db.absences.push(mia("a-sem", "2026-11-11T05:00:00.000Z", "2026-11-14T05:00:00.000Z", "Vacaciones"));
+      await mountApp({ hash: "#/semana", server });
+      await waitFor(() => expect(bands()).toHaveLength(3));
+      const days = bands().map((b) => b.closest("[data-day]")!.getAttribute("data-day"));
+      expect(days).toEqual(["2026-11-11", "2026-11-12", "2026-11-13"]);
+    });
+
+    it("una ausencia larga que empezó semanas antes se ve en la semana que estoy mirando", async () => {
+      const server = makeServer();
+      server.mock.db.absences.push(mia("a-larga", "2026-10-01T05:00:00.000Z", "2026-12-20T05:00:00.000Z", "Licencia"));
+      await mountApp({ hash: "#/semana", server });
+      await waitFor(() => expect(bands()).toHaveLength(7));
+    });
+
+    it("sin ausencias no hay franjas; las de otro doctor no llegan; y al registrar una nueva se pinta al actualizar", async () => {
+      const server = makeServer();
+      server.mock.db.absences.push({ id: "a-ajena", doctorId: "d5", startUtc: "2026-11-10T05:00:00.000Z", endUtc: "2026-11-11T05:00:00.000Z", reason: "De otro doctor" });
+      await mountApp({ server });
+      await screen.findByText("Dr. Cervantes Peláez");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(bands()).toHaveLength(0);
+      expect(screen.queryByText(/Ausencia registrada/)).toBeNull();
+
+      server.mock.db.absences.push(mia("a-nueva", "2026-11-10T05:00:00.000Z", "2026-11-11T05:00:00.000Z", "Trámite"));
+      window.dispatchEvent(new Event("focus"));
+      await waitFor(() => expect(bands()).toHaveLength(1), { timeout: 3000 });
+      expect(bands()[0]).toHaveAttribute("aria-label", "Ausencia · Trámite");
+    });
+  });
 });
 
 describe("Semana", () => {

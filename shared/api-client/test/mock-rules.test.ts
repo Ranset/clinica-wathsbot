@@ -41,6 +41,7 @@ beforeEach(async () => {
   mock = createMockApi({ now: () => NOW });
   mock.db.bookings.length = 0;
   mock.db.absences.length = 0;
+  mock.db.personalEvents.length = 0;
   const cf = contractFetch(mock.fetch);
   violations = cf.violations;
   api = createApiClient({ fetch: cf.fetch });
@@ -401,6 +402,39 @@ describe("permisos y sesion", () => {
     expect(await api.clinicHours.get()).toEqual(next);                         // el doctor puede leerlo, no cambiarlo
   });
 
+  it("el doctor elimina sus solicitudes de cambio de horario PENDIENTES: una resuelta (409), ajena o inexistente (404) y los demas roles (403) no", async () => {
+    const hours = { mon: [{ start: "10:00", end: "14:00" }] };
+    const pedir = (note: string) => api.doctorSelf.scheduleChanges.create({ weeklyHours: hours, effectiveFrom: "2026-12-01", note });
+    await api.auth.logout();
+    await login("doctor");
+    const [a, b, c] = [await pedir("a"), await pedir("b"), await pedir("c")];
+    expect((await api.doctorSelf.scheduleChanges.list()).map((r) => r.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    expect(await api.doctorSelf.scheduleChanges.remove(a.id)).toBeUndefined();
+    expect((await api.doctorSelf.scheduleChanges.list()).map((r) => r.id)).not.toContain(a.id);
+    expect(await code(api.doctorSelf.scheduleChanges.remove(a.id))).toBe("404 no_encontrado");           // ya no existe
+    expect(await code(api.doctorSelf.scheduleChanges.remove("no-existe"))).toBe("404 no_encontrado");
+
+    // el personal resuelve b: queda como historial y ya no se elimina
+    await api.auth.logout();
+    await login("staff");
+    expect((await api.scheduleChanges.approve(b.id)).status).toBe("approved");
+    expect(await code(api.doctorSelf.scheduleChanges.remove(b.id))).toBe("403 sin_permiso");             // el personal no usa esta ruta
+    await api.auth.logout();
+    await login("doctor");
+    expect(await code(api.doctorSelf.scheduleChanges.remove(b.id))).toBe("409 transicion_invalida");
+    expect((await api.doctorSelf.scheduleChanges.list()).map((r) => r.id)).toContain(b.id);
+
+    // la de OTRO doctor: 404 (como inexistente) y no se toca
+    const otra = mock.db.requests.find((r) => r.doctorId !== "d1" && r.status === "pending")!;
+    expect(await code(api.doctorSelf.scheduleChanges.remove(otra.id))).toBe("404 no_encontrado");
+    expect(mock.db.requests.some((r) => r.id === otra.id)).toBe(true);
+    // el administrador tampoco
+    await api.auth.logout();
+    await login("admin");
+    expect(await code(api.doctorSelf.scheduleChanges.remove(c.id))).toBe("403 sin_permiso");
+    expect(mock.db.requests.some((r) => r.id === c.id)).toBe(true);
+  });
+
   it("el doctor solo ve lo suyo, sin telefono, y no entra a la agenda del personal", async () => {
     await login("staff");
     const mine = await book({ phone: "529980001234", patientName: "Paciente De Cervantes" });
@@ -524,6 +558,137 @@ describe("bot y casos de atencion", () => {
     const after = await api.attention.list("open");
     expect(after.length).toBe(before + 1);
     expect(after[0]).toMatchObject({ kind: "absence_affects_appointments" });
+  });
+});
+
+describe("eventos personales del doctor", () => {
+  const TITULO = "Cirugía de la Sra. Margarita Quintana";
+  const NOTAS = "hipertensión, llevar estudios";
+  const week = { from: at("2026-11-09", "00:00"), to: at("2026-11-16", "00:00") };
+  const ev = (over: Partial<Parameters<ApiClient["doctorSelf"]["personalEvents"]["create"]>[0]> = {}) => ({
+    title: "Dentista", startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00"), ...over,
+  });
+  /** Entra como el doctor (d1). */
+  const asDoctor = async () => {
+    await api.auth.logout();
+    await login("doctor");
+  };
+
+  it("el doctor crea, lista, edita (parche) y borra sus eventos", async () => {
+    await asDoctor();
+    const made = await api.doctorSelf.personalEvents.create(ev({ notes: "llevar radiografía" }));
+    expect(made).toMatchObject({ title: "Dentista", notes: "llevar radiografía", startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") });
+    expect(made).not.toHaveProperty("doctorId");
+    expect(await api.doctorSelf.personalEvents.list(week)).toEqual([made]);
+    expect(await api.doctorSelf.personalEvents.list({ from: at("2026-11-13", "00:00"), to: at("2026-11-14", "00:00") })).toEqual([]);
+
+    const t = await api.doctorSelf.personalEvents.update(made.id, { title: "  Dentista   (cambio) " });
+    expect(t).toMatchObject({ title: "Dentista (cambio)", notes: "llevar radiografía", startUtc: made.startUtc }); // lo demas no se toco
+    expect((await api.doctorSelf.personalEvents.update(made.id, { notes: null })).notes).toBeNull();
+    const moved = await api.doctorSelf.personalEvents.update(made.id, { startUtc: at("2026-11-12", "14:00"), endUtc: at("2026-11-12", "15:30") });
+    expect(moved).toMatchObject({ startUtc: at("2026-11-12", "14:00"), endUtc: at("2026-11-12", "15:30"), title: "Dentista (cambio)" });
+
+    await api.doctorSelf.personalEvents.remove(made.id);
+    expect(await api.doctorSelf.personalEvents.list(week)).toEqual([]);
+    expect(await code(api.doctorSelf.personalEvents.remove(made.id))).toBe("404 no_encontrado");
+  });
+
+  it("el evento bloquea al doctor (no el consultorio), sin decir por que, y al borrarlo vuelve a ofrecerse", async () => {
+    await asDoctor();
+    const made = await api.doctorSelf.personalEvents.create(ev({ title: TITULO, notes: NOTAS })); // jueves 10:00 a 11:00
+    await api.auth.logout();
+    await login("staff");
+    const err = await book({ scheduledAtUtc: at("2026-11-12", "10:30") }).then(() => null, (e: ApiError) => e);
+    expect(err).toMatchObject({ status: 422, code: "doctor_no_disponible" });
+    expect(`${err!.message} ${JSON.stringify(err!.body ?? {})}`).not.toMatch(/Quintana|Cirug|evento|personal/i);
+    expect(await code(book({ scheduledAtUtc: at("2026-11-12", "10:00") }))).toBe("422 doctor_no_disponible");
+    expect((await book({ scheduledAtUtc: at("2026-11-12", "11:00") })).status).toBe("agendada");       // al terminar el evento, si
+    // el evento NO ocupa consultorio: otros dos doctores usan los DOS a esa misma hora
+    expect((await book({ doctorId: D.bordas, scheduledAtUtc: at("2026-11-12", "10:00") })).room).not.toBeNull();
+    expect((await book({ doctorId: D.torrealba, scheduledAtUtc: at("2026-11-12", "10:00") })).room).not.toBeNull();
+    await asDoctor();
+    await api.doctorSelf.personalEvents.remove(made.id);
+    await api.auth.logout();
+    await login("staff");
+    expect((await book({ scheduledAtUtc: at("2026-11-12", "10:30") })).status).toBe("agendada");
+  });
+
+  it("el personal solo ve «ocupado» (doctor y horas): nunca el titulo ni las notas, por ninguna ruta", async () => {
+    await asDoctor();
+    await api.doctorSelf.personalEvents.create(ev({ title: TITULO, notes: NOTAS }));
+    await api.auth.logout();
+    await login("staff");
+    const busy = await api.busyTimes.list(week);
+    expect(busy).toEqual([{ id: expect.any(String), doctorId: "d1", startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") }]);
+    for (const text of [JSON.stringify(busy), JSON.stringify(await api.appointments.list(week)), JSON.stringify(await api.absences.list(week)),
+                        JSON.stringify(await api.doctors.list()), JSON.stringify(await api.attention.list("open"))]) {
+      expect(text).not.toMatch(/Quintana|Cirug|hipertensi/i);
+    }
+    expect(await api.busyTimes.list({ from: at("2026-11-12", "11:00"), to: at("2026-11-13", "00:00") })).toEqual([]); // [from, to)
+  });
+
+  it("no cae sobre una cita agendada: 409 evento_con_cita, tambien al mover un evento", async () => {
+    await book({ scheduledAtUtc: at("2026-11-12", "11:00") }); // cita 11:00 a 11:30 del doctor 1
+    const cancelled = await book({ scheduledAtUtc: at("2026-11-12", "12:00") });
+    await api.appointments.update(cancelled.id, { status: "cancelada" });
+    await book({ doctorId: D.bordas, scheduledAtUtc: at("2026-11-12", "10:00") }); // la de OTRO doctor no estorba
+    await asDoctor();
+    expect(await code(api.doctorSelf.personalEvents.create(ev({ startUtc: at("2026-11-12", "10:30"), endUtc: at("2026-11-12", "11:30") })))).toBe("409 evento_con_cita");
+    expect(await api.doctorSelf.personalEvents.list(week)).toEqual([]);                                  // no se creo nada
+    const before = await api.doctorSelf.personalEvents.create(ev({ startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") })); // pegado antes: cabe
+    await api.doctorSelf.personalEvents.create(ev({ startUtc: at("2026-11-12", "11:30"), endUtc: at("2026-11-12", "12:30") }));              // pegado despues (y sobre la cancelada): cabe
+    await api.doctorSelf.personalEvents.create(ev({ startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "10:30") }));              // y se pueden encimar entre si
+    expect(await code(api.doctorSelf.personalEvents.update(before.id, { endUtc: at("2026-11-12", "11:30") }))).toBe("409 evento_con_cita");
+    expect((await api.doctorSelf.personalEvents.list(week)).find((x) => x.id === before.id)!.endUtc).toBe(at("2026-11-12", "11:00")); // intacto
+    expect((await api.doctorSelf.personalEvents.update(before.id, { title: "Solo el texto" })).title).toBe("Solo el texto");      // el texto no se compara con las citas
+  });
+
+  it("valida titulo, notas, horario, 24 h y fechas absurdas (422 validacion)", async () => {
+    await asDoctor();
+    const post = (body: object) => lax.doctorSelf.personalEvents.create(body as never);
+    const base = { startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") };
+    for (const body of [
+      {}, { ...base }, { ...base, title: "" }, { ...base, title: "   " }, { ...base, title: 5 }, { ...base, title: "x".repeat(121) },
+      { ...base, title: "x", notes: "y".repeat(1001) }, { ...base, title: "x", notes: 5 },
+      { title: "x", startUtc: "no-es-fecha", endUtc: "y" },
+      { title: "x", startUtc: at("2026-11-12", "11:00"), endUtc: at("2026-11-12", "10:00") },
+      { title: "x", startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-13", "10:30") },       // mas de 24 h
+      { title: "x", startUtc: at("2028-11-12", "10:00"), endUtc: at("2028-11-12", "11:00") },       // dos anios adelante
+    ]) {
+      expect(await code(post(body)), JSON.stringify(body)).toBe("422 validacion");
+    }
+    expect((await post({ title: "x".repeat(120), notes: "y".repeat(1000), ...base })).title).toHaveLength(120);
+    expect((await post({ title: "Todo el dia", startUtc: at("2026-11-13", "00:00"), endUtc: at("2026-11-14", "00:00") })).title).toBe("Todo el dia"); // 24 h justas
+    const made = (await api.doctorSelf.personalEvents.list(week))[0]!;
+    expect(await code(lax.doctorSelf.personalEvents.update(made.id, {}))).toBe("422 validacion");
+    expect(await code(lax.doctorSelf.personalEvents.update(made.id, { title: "" }))).toBe("422 validacion");
+    expect(await code(lax.doctorSelf.personalEvents.list({ from: at("2026-11-01", "00:00"), to: at("2027-03-01", "00:00") }))).toBe("422 rango_invalido");
+  });
+
+  it("un doctor no ve ni toca los eventos de otro (404, no 403)", async () => {
+    mock.db.personalEvents.push({ id: "pe-ajeno", doctorId: D.bordas, title: TITULO, notes: NOTAS, startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") });
+    await asDoctor();
+    expect(await api.doctorSelf.personalEvents.list(week)).toEqual([]);
+    expect(await code(api.doctorSelf.personalEvents.update("pe-ajeno", { title: "mio" }))).toBe("404 no_encontrado");
+    expect(await code(api.doctorSelf.personalEvents.remove("pe-ajeno"))).toBe("404 no_encontrado");
+    expect(await code(api.doctorSelf.personalEvents.remove("nadie"))).toBe("404 no_encontrado");
+    expect(mock.db.personalEvents.map((x) => x.title)).toEqual([TITULO]);                                // sigue ahi, intacto
+  });
+
+  it("cada rol usa lo suyo: el personal no usa la API del doctor y el doctor no ve los «ocupado» de todos", async () => {
+    expect(await code(lax.doctorSelf.personalEvents.list(week))).toBe("403 sin_permiso");
+    expect(await code(lax.doctorSelf.personalEvents.create(ev()))).toBe("403 sin_permiso");
+    await asDoctor();
+    expect(await code(lax.busyTimes.list(week))).toBe("403 sin_permiso");
+  });
+
+  it("al eliminar un doctor se van sus eventos", async () => {
+    await api.auth.logout();
+    await login("admin");
+    const doc = await api.doctors.create({ name: "Dr. Por Error", specialty: "Cardiología" });
+    mock.db.personalEvents.push({ id: "pe-x", doctorId: doc.id, title: "Algo", notes: null, startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") });
+    await api.doctors.remove(doc.id);
+    expect(mock.db.personalEvents).toEqual([]);
   });
 });
 

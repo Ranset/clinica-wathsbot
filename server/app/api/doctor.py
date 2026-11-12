@@ -9,10 +9,10 @@ from datetime import timedelta
 
 from flask import Blueprint, current_app, g, jsonify
 
-from ..agenda import Actor, iso
+from ..agenda import UNSET, Actor, iso
 from .inputs import bad, body, bookings_response, day, instant, opt_str, query_range
 from .security import require
-from .serializers import absence_json, doctor_json, request_json
+from .serializers import absence_json, doctor_json, personal_event_json, request_json
 
 bp = Blueprint("doctor", __name__, url_prefix="/api/doctor")
 
@@ -72,6 +72,45 @@ def delete_absence(absence_id):
     return "", 204
 
 
+@bp.get("/personal-events")
+@require("doctor")
+def list_personal_events():
+    start, end = query_range()
+    return jsonify(items=[personal_event_json(e) for e in _x("availability").list_personal_events(_did(), start, end)])
+
+
+@bp.post("/personal-events")
+@require("doctor")
+def create_personal_event():
+    """Evento personal: el doctor no se ofrece en esa franja, pero el consultorio queda libre. Sobre una cita = 409."""
+    b = body()
+    ev = _x("availability").add_personal_event(
+        _did(), opt_str(b, "title"), opt_str(b, "notes"), instant(b.get("startUtc"), "startUtc"),
+        instant(b.get("endUtc"), "endUtc"), _actor())
+    return jsonify(personal_event_json(ev)), 201
+
+
+@bp.patch("/personal-events/<event_id>")
+@require("doctor")
+def update_personal_event(event_id):
+    b = body()
+    if not any(k in b for k in ("title", "notes", "startUtc", "endUtc")):
+        raise bad("no hay nada que cambiar")
+    ev = _x("availability").update_personal_event(
+        _did(), event_id,
+        title=opt_str(b, "title") if "title" in b else UNSET, notes=opt_str(b, "notes") if "notes" in b else UNSET,
+        start=instant(b["startUtc"], "startUtc") if "startUtc" in b else None,
+        end=instant(b["endUtc"], "endUtc") if "endUtc" in b else None, actor=_actor())
+    return jsonify(personal_event_json(ev))
+
+
+@bp.delete("/personal-events/<event_id>")
+@require("doctor")
+def delete_personal_event(event_id):
+    _x("availability").delete_personal_event(_did(), event_id, _actor())     # ajeno o inexistente: 404
+    return "", 204
+
+
 @bp.get("/schedule-change-requests")
 @require("doctor")
 def list_schedule_changes():
@@ -88,6 +127,14 @@ def create_schedule_change():
     r = _x("directory").create_schedule_change(_did(), weekly, day(b.get("effectiveFrom"), "effectiveFrom"),
                                                opt_str(b, "note"), _actor())
     return jsonify(request_json(r)), 201
+
+
+@bp.delete("/schedule-change-requests/<request_id>")
+@require("doctor")
+def delete_schedule_change(request_id):
+    """Solo una solicitud PROPIA y pendiente (ajena o inexistente: 404; ya resuelta: 409)."""
+    _x("directory").delete_schedule_change(_did(), request_id, _actor())
+    return "", 204
 
 
 @bp.post("/push-subscriptions")

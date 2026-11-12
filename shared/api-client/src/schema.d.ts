@@ -527,6 +527,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/busy-times": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Franjas en que cada doctor esta ocupado por un evento PERSONAL (para sombrear el calendario).
+         * @description Solo `id`, `doctorId` y el horario: el titulo y las notas del evento son PRIVADOS del doctor y nunca salen por esta
+         *     ruta (ni por ninguna del personal, del administrador o del bot). El calendario las pinta como «No disponible», sin
+         *     motivo. En esas franjas el doctor no se ofrece y no se le puede agendar (`doctor_no_disponible`), pero el
+         *     consultorio queda libre para los demas doctores.
+         */
+        get: operations["listBusyTimes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedule-change-requests": {
         parameters: {
             query?: never;
@@ -747,6 +770,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/doctor/personal-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mis eventos personales en un rango.
+         * @description Con titulo y notas: solo los ve su dueno. Un evento personal NO es una cita de la clinica: el doctor no recibe
+         *     citas en esa franja, pero el consultorio queda libre para los demas doctores.
+         */
+        get: operations["doctorListPersonalEvents"];
+        put?: never;
+        /**
+         * Creo un evento personal; bloquea mi agenda en esa franja.
+         * @description Surte efecto de inmediato: el bot y el personal ya no pueden agendarme ahi (`doctor_no_disponible`). Si en esa
+         *     franja ya tengo una cita agendada se rechaza con 409 `evento_con_cita` (hay que mover la cita primero). Dura como
+         *     maximo 24 horas (para varios dias se marca una ausencia). En la bitacora quedan solo ids y horas, nunca el texto.
+         */
+        post: operations["doctorCreatePersonalEvent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/doctor/personal-events/{eventId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Quito un evento personal mio (el doctor vuelve a ofrecerse en esa franja). */
+        delete: operations["doctorDeletePersonalEvent"];
+        options?: never;
+        head?: never;
+        /**
+         * Cambio el texto y/o el horario de un evento mio.
+         * @description Parche: solo cambia lo que se manda (`notes: null` borra las notas). Si cambia el horario se vuelve a comprobar
+         *     contra las citas (409 `evento_con_cita`). Un evento de otro doctor o inexistente es 404.
+         */
+        patch: operations["doctorUpdatePersonalEvent"];
+        trace?: never;
+    };
     "/api/doctor/schedule-change-requests": {
         parameters: {
             query?: never;
@@ -760,6 +832,28 @@ export interface paths {
         /** Pido un cambio permanente de horario (lo aprueba el personal). */
         post: operations["doctorCreateScheduleChange"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/doctor/schedule-change-requests/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Elimino una solicitud mia de cambio de horario que sigue pendiente.
+         * @description Solo mientras esta `pending`. Una ya aprobada o rechazada es historial y ya no se puede eliminar (409
+         *     `transicion_invalida`). Una solicitud de otro doctor o inexistente es 404 (nunca se distingue). Libera uno de los
+         *     3 lugares de solicitudes pendientes. Queda en la bitacora (`schedule_change.delete`).
+         */
+        delete: operations["doctorDeleteScheduleChange"];
         options?: never;
         head?: never;
         patch?: never;
@@ -794,11 +888,12 @@ export interface components {
          *     su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
          *     `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
          *     (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
-         *     `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada).
+         *     `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada) y
+         *     `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya).
          *     Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
          * @enum {string}
          */
-        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno" | "doctor_con_citas" | "doctor_con_usuario";
+        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno" | "doctor_con_citas" | "doctor_con_usuario" | "evento_con_cita";
         /** @description Puede traer campos extra segun el error (`especialidades`, `horarios`, `maximo_agendable`, `nota`). */
         ErrorBody: {
             error: components["schemas"]["ErrorCode"];
@@ -1049,6 +1144,47 @@ export interface components {
             endUtc: string;
             reason?: string;
         };
+        /**
+         * @description Evento personal de un doctor (privado: solo lo devuelve la API del propio doctor). Mientras dura, el doctor no
+         *     recibe citas; el consultorio queda libre para los demas doctores. NO es una cita de la clinica.
+         */
+        PersonalEvent: {
+            id: string;
+            title: string;
+            notes: string | null;
+            /** Format: date-time */
+            startUtc: string;
+            /** Format: date-time */
+            endUtc: string;
+        };
+        PersonalEventInput: {
+            title: string;
+            notes?: string | null;
+            /** Format: date-time */
+            startUtc: string;
+            /**
+             * Format: date-time
+             * @description Exclusivo. Debe ser posterior al inicio y a lo sumo 24 horas despues.
+             */
+            endUtc: string;
+        };
+        PersonalEventPatch: {
+            title?: string;
+            notes?: string | null;
+            /** Format: date-time */
+            startUtc?: string;
+            /** Format: date-time */
+            endUtc?: string;
+        };
+        /** @description Lo unico que el personal sabe de un evento personal de un doctor: que esta ocupado (sin texto). */
+        BusyTime: {
+            id: string;
+            doctorId: string;
+            /** Format: date-time */
+            startUtc: string;
+            /** Format: date-time */
+            endUtc: string;
+        };
         AbsenceResult: {
             absence: components["schemas"]["Absence"];
             affectedAppointments: components["schemas"]["Booking"][];
@@ -1151,7 +1287,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`) o no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`). */
+        /** @description El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`), no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`) o un evento personal cae sobre una cita agendada (`evento_con_cita`). */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1204,6 +1340,7 @@ export interface components {
         DoctorId: string;
         AbsenceId: string;
         RequestId: string;
+        PersonalEventId: string;
         /** @description Id interno del evento en la cola (no el id de Zernio). */
         EventId: string;
     };
@@ -2197,6 +2334,34 @@ export interface operations {
             422: components["responses"]["RuleError"];
         };
     };
+    listBusyTimes: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eventos que se solapan con `[from, to)`; mismo limite de rango que `/api/appointments`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["BusyTime"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
+        };
+    };
     listScheduleChangeRequests: {
         parameters: {
             query?: {
@@ -2604,6 +2769,116 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    doctorListPersonalEvents: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eventos que se solapan con `[from, to)` (mismo limite de rango que las citas), ordenados por inicio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["PersonalEvent"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
+        };
+    };
+    doctorCreatePersonalEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalEventInput"];
+            };
+        };
+        responses: {
+            /** @description Creado. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalEvent"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["RuleError"];
+        };
+    };
+    doctorDeletePersonalEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eventId: components["parameters"]["PersonalEventId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eliminado. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    doctorUpdatePersonalEvent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                eventId: components["parameters"]["PersonalEventId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PersonalEventPatch"];
+            };
+        };
+        responses: {
+            /** @description Actualizado. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalEvent"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["RuleError"];
+        };
+    };
     doctorListScheduleChanges: {
         parameters: {
             query?: never;
@@ -2658,6 +2933,30 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["RuleError"];
+        };
+    };
+    doctorDeleteScheduleChange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eliminada. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     doctorSubscribePush: {

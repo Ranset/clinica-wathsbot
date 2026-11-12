@@ -4,7 +4,7 @@ Compatibilidad: el servidor corre en **Python 3.10** (PythonAnywhere) con SQLAlc
 `ExceptionGroup`, `tomllib`, ni `datetime.fromisoformat` con 'Z' (usar `agenda.parse_dt`), ni APIs solo de SQLAlchemy 2.1.
 
 Estado: **F2, F3 y F4 hechas** — modelo de datos, migraciones, motor de agenda, seed, cola de eventos de Zernio, las rutas del bot y
-la API de personas. Rutas HTTP: las 52 operaciones de `../docs/openapi.yaml` (el contrato; se cambia ANTES que el codigo): `/api/health`,
+la API de personas. Rutas HTTP: las 58 operaciones de `../docs/openapi.yaml` (el contrato; se cambia ANTES que el codigo): `/api/health`,
 `/api/bot/*` (token de servicio), `POST /webhooks/zernio` (firma HMAC) y la API de personas (sesion por cookie, roles y CSRF):
 `/api/auth/*`, `/api/me`, `/api/appointments`, `/api/doctors`, `/api/users`, `/api/doctor/*`, etc. Una prueba compara las rutas
 reales con el contrato en los dos sentidos (ni una sin documentar, ni una sin implementar).
@@ -89,6 +89,12 @@ responde 503, reintentable) y los ajustes de la cola `EVENT_MAX_ATTEMPTS` (5) y 
   una ausencia ajena es 404 (no 403); sus citas salen SIN telefono (`patient.id` es el id de la cita). Una ausencia suya con citas
   agendadas deja un caso de atencion para el personal SIN nombres ni telefonos. Cambios de usuarios, doctores, horarios, ausencias y
   del bot quedan en `audit_log` sin contrasenas, correos ni nombres de pacientes.
+- **Eventos personales del doctor** (`/api/doctor/personal-events`, tabla `doctor_personal_events`, migracion 0005): el doctor anota lo suyo en su
+  PWA. Mientras dura uno el doctor no se ofrece ni se le agenda (bot, personal, reprogramar: `doctor_no_disponible`, sin decir por que) pero el
+  consultorio queda libre para los demas. **El texto (titulo, notas) es privado**: solo lo devuelve la API del propio doctor; el personal recibe
+  `GET /api/busy-times` = `{id, doctorId, startUtc, endUtc}` (`Availability.busy_between` ni carga el texto) y la bitacora guarda solo ids y
+  horas. Maximo 24 h; no se acepta sobre una cita agendada del doctor (409 `evento_con_cita`; el alta y la reserva hacen cola con
+  `Repo.lock_rooms`). `Repo.personal_events` entrega solo las franjas al motor.
 - **Reglas de usuarios**: un administrador no se desactiva ni cambia su propio rol, y nunca queda el sistema sin administrador activo;
   el primero se crea con `flask --app wsgi create-user`.
 - **Tablas que NO estan aun**: ninguna del contrato. `push_subscriptions` guarda las suscripciones; el ENVIO de notificaciones llega
@@ -108,6 +114,8 @@ python scripts/pa_run_tests.py [args de pytest]               # contra un MySQL 
   (`conftest.py` se niega si el nombre no contiene "test"; `scripts/pa_run_tests.py`, si no termina en `_test`).
 - `TEST_MYSQL_MAX_CONN=N`: el usuario MySQL solo admite N conexiones simultaneas (PythonAnywhere gratis: 3). Reduce el pool de las
   pruebas y los procesos de la prueba multiproceso (minimo 3); `pa_run_tests.py` lo detecta solo con `@@max_user_connections`.
+- `test_personal_events.py`: eventos personales (bloqueo solo del doctor, consultorio libre, choque con citas, validaciones, 404 ajeno, **privacidad**
+  con texto «centinela» en todas las rutas del personal y del bot, bitacora sin texto, migracion 0005 en `test_schema.py`).
 - `test_agenda_port.py`: las 23 de `bot/test_scheduler.py` portadas. `test_agenda_rules.py`: horario propio, ausencias, estados,
   atomicidad, antelacion con reloj congelado, bloqueos, privacidad por telefono, UTC. `test_concurrency.py`: 20 hilos y 6 procesos a la misma
   hora -> exactamente 2 reservas, `retries == 0`, e invariantes de la BD (`helpers.check_integrity`). `test_schema.py`: migracion en

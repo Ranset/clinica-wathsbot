@@ -11,8 +11,12 @@ import type {
   BookingPatch,
   BookingStatus,
   BotSettings,
+  BusyTime,
   Doctor,
   DoctorInput,
+  PersonalEvent,
+  PersonalEventInput,
+  PersonalEventPatch,
   RequestStatus,
   Room,
   ScheduleChangeApplied,
@@ -219,6 +223,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
       list: (range: { from: string; to: string }, o?: RequestOptions) => items<Absence>("listAbsences", { query: range, ...o }),
     },
 
+    /**
+     * Franjas en que cada doctor esta ocupado por un evento PERSONAL, en `[from, to)`. Solo horario y doctor: el titulo y las
+     * notas son privados del doctor y no llegan al personal. El calendario las pinta como «No disponible».
+     */
+    busyTimes: {
+      list: (range: { from: string; to: string }, o?: RequestOptions) => items<BusyTime>("listBusyTimes", { query: range, ...o }),
+    },
+
     clinicHours: {
       get: (o?: RequestOptions) => json<WeeklyHours>("getClinicHours", o),
       set: (hours: WeeklyHours, o?: RequestOptions) => json<WeeklyHours>("setClinicHours", { body: hours, ...o }),
@@ -288,10 +300,30 @@ export function createApiClient(options: ApiClientOptions = {}) {
           await send("doctorDeleteAbsence", { path: { absenceId }, ...o });
         },
       },
+      /**
+       * Eventos personales (privados). Mientras dura uno el doctor no recibe citas, pero el consultorio queda libre para los demas
+       * doctores. Crear/mover sobre una cita agendada = 409 `evento_con_cita`; mas de 24 h = 422 (eso es una ausencia).
+       */
+      personalEvents: {
+        list: (range: { from: string; to: string }, o?: RequestOptions) =>
+          items<PersonalEvent>("doctorListPersonalEvents", { query: range, ...o }),
+        create: (input: PersonalEventInput, o?: RequestOptions) =>
+          json<PersonalEvent>("doctorCreatePersonalEvent", { body: input, ...o }),
+        /** Parche: solo cambia lo que se manda (`notes: null` borra las notas). */
+        update: (eventId: string, patch: PersonalEventPatch, o?: RequestOptions) =>
+          json<PersonalEvent>("doctorUpdatePersonalEvent", { path: { eventId }, body: patch, ...o }),
+        remove: async (eventId: string, o?: RequestOptions): Promise<void> => {
+          await send("doctorDeletePersonalEvent", { path: { eventId }, ...o });
+        },
+      },
       scheduleChanges: {
         list: (o?: RequestOptions) => items<ScheduleChangeRequest>("doctorListScheduleChanges", o),
         create: (body: { weeklyHours: WeeklyHours; effectiveFrom: string; note?: string }, o?: RequestOptions) =>
           json<ScheduleChangeRequest>("doctorCreateScheduleChange", { body, ...o }),
+        /** Elimina una solicitud MIA que sigue pendiente (409 `transicion_invalida` si el personal ya la resolvio; 404 si no es mia). */
+        remove: async (requestId: string, o?: RequestOptions): Promise<void> => {
+          await send("doctorDeleteScheduleChange", { path: { requestId }, ...o });
+        },
       },
       push: {
         subscribe: async (sub: { endpoint: string; keys: { p256dh: string; auth: string } }, o?: RequestOptions): Promise<void> => {

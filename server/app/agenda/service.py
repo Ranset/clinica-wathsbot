@@ -65,10 +65,11 @@ class _Ctx:
         self.sched = repo.doctor_schedule(doc, self.clinic)
         lo_u, hi_u = to_db(lo), to_db(hi)
         self.busy = repo.busy(lo_u, hi_u)
-        self.absences = repo.absences(doc.id, lo_u, hi_u)
+        # ausencias Y eventos personales del doctor: para el motor son lo mismo (el doctor no se ofrece en esa franja)
+        self.absences = repo.absences(doc.id, lo_u, hi_u) + repo.personal_events(doc.id, lo_u, hi_u)
 
     def attends(self, start: datetime) -> bool:
-        """El doctor trabaja en ese hueco (horario propio) y no esta ausente."""
+        """El doctor trabaja en ese hueco (horario propio) y no esta ausente ni tiene un evento personal."""
         if not self.sched.has_slot(start):
             return False
         a, b = to_db(start), to_db(start + self.rules.slot)
@@ -470,8 +471,12 @@ class Agenda(Unit):
             raise AgendaError(DOCTOR_NO_DISPONIBLE, "el doctor esta inactivo")
         if not all(repo.doctor_schedule(doc, clinic).has_slot(x) for x in slots):
             raise AgendaError(DOCTOR_NO_DISPONIBLE, "fuera del horario del doctor")
-        if repo.absences(doc.id, to_db(slots[0]), to_db(slots[-1] + r.slot)):
+        lo, hi = to_db(slots[0]), to_db(slots[-1] + r.slot)
+        if repo.absences(doc.id, lo, hi):
             raise AgendaError(DOCTOR_NO_DISPONIBLE, "el doctor esta ausente")
+        if repo.personal_events(doc.id, lo, hi):
+            # a proposito sin decir por que: el evento es privado del doctor (tambien para el personal)
+            raise AgendaError(DOCTOR_NO_DISPONIBLE, "el doctor no esta disponible en ese horario")
         return slots
 
     def _check_block(self, start: datetime, minutes: int, now: datetime) -> list[datetime]:
