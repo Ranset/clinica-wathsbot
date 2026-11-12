@@ -11,7 +11,8 @@ import {
 } from "../lib/calendar";
 import type { Lane, WeeklyHours } from "../types";
 import { cn } from "../lib/utils";
-import { bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
+import { timeLabel } from "../lib/time-format";
+import { bookingStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
 
 /**
  * La rejilla de horas de las vistas Dia y Semana (adaptada de Vocero CRM, MIT):
@@ -38,7 +39,7 @@ type Col = {
   day: string;
   laneId?: string;
   weeklyHours: WeeklyHours;
-  head: { top: string; main: string; sub?: string; today: boolean };
+  head: { top: string; main: string; sub?: string; today: boolean; color?: string };
 };
 
 export function TimeGrid({
@@ -91,7 +92,7 @@ export function TimeGrid({
         day,
         laneId: l.id,
         weeklyHours: l.weeklyHours ?? weeklyHours,
-        head: { top: "", main: l.label, sub: l.sublabel, today: false },
+        head: { top: "", main: l.label, sub: l.sublabel, today: false, color: l.color },
       }));
     }
     return days.map((day) => {
@@ -157,6 +158,9 @@ export function TimeGrid({
           laneMode ? (
             <div
               key={c.key}
+              data-lane-head={c.laneId}
+              // la franja del color del doctor: de un vistazo se ve de quien es cada columna
+              style={c.head.color ? { borderTopWidth: 4, borderTopStyle: "solid", borderTopColor: c.head.color } : undefined}
               className="sticky top-0 z-30 flex flex-col items-center justify-center gap-0.5 border-b border-l bg-card px-2 py-2 text-center"
             >
               <span className="max-w-full truncate text-[13px] font-semibold text-foreground">{c.head.main}</span>
@@ -188,7 +192,7 @@ export function TimeGrid({
         <div className="sticky left-0 z-20 border-r bg-card" style={{ height: DAY_PX }}>
           {Array.from({ length: 23 }, (_, i) => i + 1).map((h) => (
             <span key={h} className="absolute right-1.5 -translate-y-1/2 font-mono text-[10.5px] text-text-3" style={{ top: h * HOUR_PX }}>
-              {hhmm(h * 60)}
+              {timeLabel(h * 60, { compact: true })}
             </span>
           ))}
         </div>
@@ -291,9 +295,11 @@ function EventBlock({
   const top = (startMin / 60) * HOUR_PX;
   const height = Math.max(MIN_EVENT_PX, ((endMin - startMin) / 60) * HOUR_PX - 2);
   const title = bookingTitle(b);
-  const start = hhmm(startMin);
-  const end = hhmm(endMin);
-  const range = `${placed.continuesBefore ? "…" : start} – ${placed.continuesAfter ? "…" : end}`;
+  const start = timeLabel(startMin);
+  const end = timeLabel(endMin);
+  // Con citas solapadas la columna se parte y no cabe "11:00 AM – 12:00 PM": cortado ("11:00 A…") se confunde AM con PM.
+  // Ahí solo se pone la hora de inicio; el tramo completo sigue en el nombre accesible y en el detalle.
+  const range = cols > 1 ? start : `${placed.continuesBefore ? "…" : start} – ${placed.continuesAfter ? "…" : end}`;
   // Una cita corta cabe en una linea: "Nombre, 10:00", como en Google.
   const compact = height < 36;
   const showTime = !compact || cols === 1;
@@ -320,6 +326,7 @@ function EventBlock({
         left: `calc(${(col / cols) * 100}% + 2px)`,
         width: `calc(${100 / cols}% - 4px)`,
         paddingTop: compact ? Math.max(1, (height - 14) / 2) : undefined,
+        ...bookingStyle(b), // el color del doctor
       }}
     >
       <span className="flex min-w-0 max-w-full items-center gap-1 font-semibold">

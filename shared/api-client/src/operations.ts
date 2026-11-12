@@ -26,6 +26,7 @@ export const OPERATIONS = {
   listDoctors: ["get", "/api/doctors"],
   createDoctor: ["post", "/api/doctors"],
   updateDoctor: ["patch", "/api/doctors/{doctorId}"],
+  deleteDoctor: ["delete", "/api/doctors/{doctorId}"],
   setDoctorWeeklyHours: ["put", "/api/doctors/{doctorId}/weekly-hours"],
   listDoctorAbsences: ["get", "/api/doctors/{doctorId}/absences"],
   createDoctorAbsence: ["post", "/api/doctors/{doctorId}/absences"],

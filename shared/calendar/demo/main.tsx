@@ -4,10 +4,12 @@ import "../src/styles.css";
 import {
   AgendaList,
   CalendarToolbar,
+  DoctorLegend,
   MonthGrid,
   TimeGrid,
   addDaysISO,
   calendarVisible,
+  doctorColor,
   monthWeeks,
   rangeLabel,
   shiftRange,
@@ -91,7 +93,7 @@ function App() {
     view === "dia"
       ? byRoom
         ? ROOMS.map((r) => ({ id: r.id, label: r.name }))
-        : DOCTORS.map((d) => ({ id: d.id, label: d.name, sublabel: d.specialty, weeklyHours: d.hours ?? CLINIC }))
+        : DOCTORS.map((d) => ({ id: d.id, label: d.name, sublabel: d.specialty, weeklyHours: d.hours ?? CLINIC, color: doctorColor(d.id) ?? undefined }))
       : undefined;
 
   return (
@@ -114,6 +116,7 @@ function App() {
           {msg && <span className="ml-auto">{msg}</span>}
         </div>
       )}
+      {!(view === "dia" && !byRoom) && <DoctorLegend doctors={DOCTORS} className="px-4 pt-2 sm:px-6" />}
       <main className="flex min-h-0 flex-1 flex-col p-4 sm:px-6">
         {(view === "dia" || view === "semana") && (
           <TimeGrid

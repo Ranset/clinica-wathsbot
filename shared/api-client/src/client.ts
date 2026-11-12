@@ -229,6 +229,10 @@ export function createApiClient(options: ApiClientOptions = {}) {
       create: (input: DoctorInput, o?: RequestOptions) => json<Doctor>("createDoctor", { body: input, ...o }),
       update: (id: string, input: DoctorInput, o?: RequestOptions) =>
         json<Doctor>("updateDoctor", { path: { doctorId: id }, body: input, ...o }),
+      /** Elimina DEFINITIVAMENTE un doctor (solo administrador). 409 `doctor_con_citas` / `doctor_con_usuario` si tiene historial o cuenta. */
+      remove: async (id: string, o?: RequestOptions): Promise<void> => {
+        await send("deleteDoctor", { path: { doctorId: id }, ...o });
+      },
       /** `null` = volver al horario de la clinica. */
       setWeeklyHours: (id: string, weeklyHours: WeeklyHours | null, o?: RequestOptions) =>
         json<WeeklyHoursResult>("setDoctorWeeklyHours", { path: { doctorId: id }, body: { weeklyHours }, ...o }),

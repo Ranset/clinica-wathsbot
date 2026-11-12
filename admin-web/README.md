@@ -47,13 +47,18 @@ __clinicaMock.reset()                       // datos de ejemplo de nuevo
 
 - **Calendario** (`#/calendario`): `TimeGrid`, `MonthGrid` y `AgendaList` de `@clinica/calendar`. Día por carriles
   (un carril por doctor, con su horario sombreado, o por consultorio; los bloqueos tienen su propia columna).
-  Clic en un hueco → *Nueva cita*; clic en una cita → detalle (realizada / no asistió / mover / cancelar / notas).
+  Cada doctor tiene su **color** (en las citas, los encabezados de columna y los puntos de mes y lista); la leyenda de colores arriba del calendario, que además
+  filtra por doctor al hacer clic, está apagada (ver *Funciones apagadas*). El color se elige en la pestaña «Datos» del doctor (paleta, «Otro color» o «Automático»,
+  que usa un color de la paleta según su número); no se aceptan colores tan claros que el texto blanco de las citas no se lea.
+  Clic en un hueco → *Nueva cita*; clic en una cita → detalle (mover / cancelar / notas; «realizada» / «no asistió» están apagadas, ver *Funciones apagadas*).
   Los filtros viven en la dirección (`?vista=semana&dia=2026-11-12&doctor=d1`). Se actualiza solo cada 5 s con
   `If-None-Match` (un 304 no toca el estado) y `coalesce` junta las ráfagas de avisos en una consulta.
 - **Doctores** (`#/doctores`): horario semanal propio o de la clínica, ausencias, solicitudes de cambio de horario
-  de los doctores; solo el administrador da de alta doctores y cambia el horario de la clínica.
+  de los doctores. El administrador y el personal de recepción dan de alta, editan y dan de baja doctores y cambian el
+  horario de la clínica (pestaña «Datos» de cada doctor). Solo el administrador puede además *eliminar* un doctor dado de alta por error
+  (si nunca tuvo citas ni cuenta de usuario; en cualquier otro caso se da de baja).
 - **Atención** (`#/atencion`): casos que el bot no pudo resolver (`/api/attention`).
-- **Usuarios** (`#/usuarios`): solo `admin`.
+- **Usuarios** (`#/usuarios`): solo `admin` (junto con eliminar doctores, es lo que el personal de recepción no hace).
 - **Botón del bot** en el encabezado: siempre visible, muestra si está activo y quién lo cambió; apagarlo pide confirmación.
 
 Un usuario con rol `doctor` no usa esta web (usa la PWA del doctor).
@@ -65,3 +70,14 @@ Un usuario con rol `doctor` no usa esta web (usa la PWA del doctor).
 - El rango que se pide al calendario es `[from, to)` en UTC: desde las 00:00 de Cancún del primer día visible hasta las
   00:00 del día siguiente al último (92 días exactos caben en el tope de la API).
 - Permisos en la interfaz (`src/permissions.ts`) solo esconden lo que el servidor rechazaría con 403; el servidor manda.
+
+## Funciones apagadas
+
+Hay funciones que existen en el código pero están **apagadas** por decisión de la clínica. Los interruptores están en `src/features.ts`:
+
+| Interruptor | Qué hace al encenderlo |
+|---|---|
+| `doctorLegend` | Muestra arriba del calendario la leyenda de colores de los doctores; al hacer clic en uno filtra por ese doctor. |
+| `attendanceStatus` | En el detalle de una cita, ofrece «Marcar como realizada» / «No asistió» y «Corregir». |
+
+Para volver a usar una: cambia su valor a `true` y recompila (`npm run build`; con `npm run dev` se ve al guardar). El servidor y la API no cambian: solo es la interfaz.

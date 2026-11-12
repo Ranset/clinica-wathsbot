@@ -391,7 +391,7 @@ export interface paths {
         };
         /** Horario general de la clinica (L-V 9-18, sab 9-13). */
         get: operations["getClinicHours"];
-        /** Cambia el horario general. */
+        /** Cambia el horario general (administrador y personal de la clinica). */
         put: operations["setClinicHours"];
         post?: never;
         delete?: never;
@@ -413,7 +413,7 @@ export interface paths {
          */
         get: operations["listDoctors"];
         put?: never;
-        /** Da de alta un doctor. */
+        /** Da de alta un doctor (administrador y personal de la clinica). */
         post: operations["createDoctor"];
         delete?: never;
         options?: never;
@@ -433,10 +433,17 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Elimina definitivamente un doctor que nunca tuvo citas (solo administrador).
+         * @description Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y no hay una
+         *     cuenta de usuario ligada a el (`doctor_con_usuario`); ambos son 409. Sus horarios, ausencias y solicitudes de
+         *     cambio de horario se eliminan con el. Para quitarlo de la agenda sin perder historial se usa `PATCH`
+         *     con `active: false` (administrador y personal).
+         */
+        delete: operations["deleteDoctor"];
         options?: never;
         head?: never;
-        /** Edita nombre, especialidad, alias o desactiva al doctor (no se borra). */
+        /** Edita nombre, especialidad, alias o desactiva al doctor (no se borra). Administrador y personal de la clinica. */
         patch: operations["updateDoctor"];
         trace?: never;
     };
@@ -786,11 +793,12 @@ export interface components {
          *     `especialidad_no_encontrada`, `cita_no_encontrada`. Nuevos: `doctor_no_disponible` (ausencia o fuera de
          *     su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
          *     `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
-         *     (el servidor no tiene un secreto o token configurado), `error_interno` (500).
+         *     (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
+         *     `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada).
          *     Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
          * @enum {string}
          */
-        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno";
+        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno" | "doctor_con_citas" | "doctor_con_usuario";
         /** @description Puede traer campos extra segun el error (`especialidades`, `horarios`, `maximo_agendable`, `nota`). */
         ErrorBody: {
             error: components["schemas"]["ErrorCode"];
@@ -930,6 +938,8 @@ export interface components {
                 id: string;
                 name: string;
                 specialty: string;
+                /** @description Color elegido para el doctor en el calendario (`Doctor.color`). `null` o ausente = automatico: la paleta segun el id (`doctorColor` de `@clinica/calendar`). El servidor siempre lo manda. */
+                color?: string | null;
             } | null;
             room: {
                 id: string;
@@ -1006,6 +1016,8 @@ export interface components {
             /** @description Sinonimos para que el bot reconozca la especialidad ("proctologo", "usg"). */
             aliases: string[];
             active: boolean;
+            /** @description Color elegido para verlo en el calendario, `#rrggbb` en minusculas. `null` = automatico (la paleta segun su id, que calcula el cliente). */
+            color: string | null;
             weeklyHours: components["schemas"]["WeeklyHours"];
             /** @description true si `weeklyHours` es el horario general de la clinica. */
             usesClinicHours: boolean;
@@ -1015,6 +1027,11 @@ export interface components {
             specialty?: string;
             aliases?: string[];
             active?: boolean;
+            /**
+             * @description `#rrggbb` o `null` (volver al color automatico). Debe leerse con texto blanco encima (contraste WCAG AA >= 4.5:1,
+             *     p. ej. `#1d4ed8` si, `#ffff00` no): si es demasiado claro, 422 `validacion`. Se guarda en minusculas.
+             */
+            color?: string | null;
         };
         Absence: {
             id: string;
@@ -1134,7 +1151,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description El hueco ya no esta libre (`horario_ocupado`) u otro conflicto. */
+        /** @description El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`) o no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`). */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1976,6 +1993,30 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["RuleError"];
+        };
+    };
+    deleteDoctor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doctorId: components["parameters"]["DoctorId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eliminado. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     updateDoctor: {

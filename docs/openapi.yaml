@@ -640,8 +640,8 @@ paths:
     put:
       operationId: setClinicHours
       tags: [admin]
-      summary: Cambia el horario general.
-      x-roles: [admin]
+      summary: Cambia el horario general (administrador y personal de la clinica).
+      x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       requestBody:
         required: true
@@ -680,8 +680,8 @@ paths:
     post:
       operationId: createDoctor
       tags: [admin]
-      summary: Da de alta un doctor.
-      x-roles: [admin]
+      summary: Da de alta un doctor (administrador y personal de la clinica).
+      x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       requestBody:
         required: true
@@ -703,8 +703,8 @@ paths:
     patch:
       operationId: updateDoctor
       tags: [admin]
-      summary: Edita nombre, especialidad, alias o desactiva al doctor (no se borra).
-      x-roles: [admin]
+      summary: Edita nombre, especialidad, alias o desactiva al doctor (no se borra). Administrador y personal de la clinica.
+      x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       requestBody:
         required: true
@@ -721,6 +721,23 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/RuleError" }
+    delete:
+      operationId: deleteDoctor
+      tags: [admin]
+      summary: Elimina definitivamente un doctor que nunca tuvo citas (solo administrador).
+      description: |
+        Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y no hay una
+        cuenta de usuario ligada a el (`doctor_con_usuario`); ambos son 409. Sus horarios, ausencias y solicitudes de
+        cambio de horario se eliminan con el. Para quitarlo de la agenda sin perder historial se usa `PATCH`
+        con `active: false` (administrador y personal).
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      responses:
+        "204": { description: "Eliminado." }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
   /api/doctors/{doctorId}/weekly-hours:
     parameters:
       - { $ref: "#/components/parameters/DoctorId" }
@@ -1333,7 +1350,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
     Conflict:
-      description: El hueco ya no esta libre (`horario_ocupado`) u otro conflicto.
+      description: El hueco ya no esta libre (`horario_ocupado`), la transicion no es valida (`transicion_invalida`) o no se puede eliminar un doctor (`doctor_con_citas`, `doctor_con_usuario`).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -1366,7 +1383,8 @@ components:
         `especialidad_no_encontrada`, `cita_no_encontrada`. Nuevos: `doctor_no_disponible` (ausencia o fuera de
         su horario), `transicion_invalida`, `rango_invalido`, `validacion`, `no_autenticado`, `sin_permiso`,
         `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
-        (el servidor no tiene un secreto o token configurado), `error_interno` (500).
+        (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
+        `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada).
         Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
       enum:
         - horario_ocupado
@@ -1388,6 +1406,8 @@ components:
         - firma_invalida
         - no_configurado
         - error_interno
+        - doctor_con_citas
+        - doctor_con_usuario
     ErrorBody:
       type: object
       required: [error]
@@ -1552,6 +1572,10 @@ components:
             id: { type: string }
             name: { type: string }
             specialty: { type: string }
+            color:
+              type: [string, "null"]
+              pattern: "^#[0-9a-f]{6}$"
+              description: "Color elegido para el doctor en el calendario (`Doctor.color`). `null` o ausente = automatico: la paleta segun el id (`doctorColor` de `@clinica/calendar`). El servidor siempre lo manda."
         room:
           type: [object, "null"]
           required: [id, name]
@@ -1622,7 +1646,7 @@ components:
         sun: { type: array, items: { $ref: "#/components/schemas/Interval" } }
     Doctor:
       type: object
-      required: [id, name, specialty, aliases, active, weeklyHours, usesClinicHours]
+      required: [id, name, specialty, aliases, active, weeklyHours, usesClinicHours, color]
       properties:
         id: { type: string }
         name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
@@ -1632,6 +1656,10 @@ components:
           items: { type: string }
           description: Sinonimos para que el bot reconozca la especialidad ("proctologo", "usg").
         active: { type: boolean }
+        color:
+          type: [string, "null"]
+          pattern: "^#[0-9a-f]{6}$"
+          description: "Color elegido para verlo en el calendario, `#rrggbb` en minusculas. `null` = automatico (la paleta segun su id, que calcula el cliente)."
         weeklyHours: { $ref: "#/components/schemas/WeeklyHours" }
         usesClinicHours: { type: boolean, description: "true si `weeklyHours` es el horario general de la clinica." }
     DoctorInput:
@@ -1643,6 +1671,12 @@ components:
           type: array
           items: { type: string }
         active: { type: boolean }
+        color:
+          type: [string, "null"]
+          pattern: "^#[0-9a-fA-F]{6}$"
+          description: |
+            `#rrggbb` o `null` (volver al color automatico). Debe leerse con texto blanco encima (contraste WCAG AA >= 4.5:1,
+            p. ej. `#1d4ed8` si, `#ffff00` no): si es demasiado claro, 422 `validacion`. Se guarda en minusculas.
     Absence:
       type: object
       required: [id, doctorId, startUtc, endUtc, reason]

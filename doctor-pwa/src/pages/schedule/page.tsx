@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { CalendarClock, Clock } from "lucide-react";
-import { Button, WEEKDAYS, addDaysISO, isIsoDate, todayInTz, type WeeklyHours } from "@clinica/calendar";
+import { Button, WEEKDAYS, addDaysISO, hhmmLabel, isIsoDate, todayInTz, type WeeklyHours } from "@clinica/calendar";
 import type { ScheduleChangeRequest } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { SyncStatus } from "../../layout/status";
@@ -31,7 +31,7 @@ function CurrentHours({ hours }: { hours: WeeklyHours }) {
         return (
           <li key={d} className="flex items-baseline justify-between gap-3 px-3 py-2 text-sm">
             <span className="font-semibold">{DAY_NAME[d]}</span>
-            <span className={ivs.length ? "tabular-nums" : "text-text-3"}>{ivs.length ? ivs.map((i) => `${i.start} – ${i.end}`).join(", ") : "No atiendo"}</span>
+            <span className={ivs.length ? "tabular-nums" : "text-text-3"}>{ivs.length ? ivs.map((i) => `${hhmmLabel(i.start)} – ${hhmmLabel(i.end)}`).join(", ") : "No atiendo"}</span>
           </li>
         );
       })}

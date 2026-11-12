@@ -15,9 +15,9 @@ describe("mi horario semanal", () => {
     await mountApp({ hash: "#/horario" });
     const list = await screen.findByRole("list", { name: "Mi horario semanal" });
     const row = (day: string) => within(list).getByText(day).closest("li")!;
-    expect(row("Lunes")).toHaveTextContent("09:00 – 18:00");
-    expect(row("Viernes")).toHaveTextContent("09:00 – 18:00");
-    expect(row("Sábado")).toHaveTextContent("09:00 – 13:00");
+    expect(row("Lunes")).toHaveTextContent("9:00 AM – 6:00 PM");
+    expect(row("Viernes")).toHaveTextContent("9:00 AM – 6:00 PM");
+    expect(row("Sábado")).toHaveTextContent("9:00 AM – 1:00 PM");
     expect(row("Domingo")).toHaveTextContent("No atiendo");
     expect(screen.getByText(/Usas el horario general de la clínica\./)).toBeInTheDocument();
   });
@@ -28,7 +28,7 @@ describe("mi horario semanal", () => {
     await mountApp({ hash: "#/horario", server });
     const list = await screen.findByRole("list", { name: "Mi horario semanal" });
     expect(screen.getByText(/Tienes un horario propio\./)).toBeInTheDocument();
-    expect(within(list).getByText("Martes").closest("li")).toHaveTextContent("10:00 – 14:00");
+    expect(within(list).getByText("Martes").closest("li")).toHaveTextContent("10:00 AM – 2:00 PM");
     expect(within(list).getByText("Lunes").closest("li")).toHaveTextContent("No atiendo");
   });
 });
@@ -55,7 +55,7 @@ describe("solicitar un cambio permanente de horario", () => {
     expect(stored).toHaveLength(1);
     expect(stored[0]!.status).toBe("pending");
     const item = (await screen.findByText("Pendiente")).closest("li")!;
-    expect(item).toHaveTextContent("Lun 09:00–17:00");
+    expect(item).toHaveTextContent("Lun 9:00 AM–5:00 PM");
     expect(item).toHaveTextContent("Inicio pedido: mié 11 nov");
     expect(item).toHaveTextContent("Nota: Salgo antes los lunes");
     expect(screen.getByText("Solicitud enviada: el personal la revisará.")).toBeInTheDocument();
@@ -95,7 +95,7 @@ describe("solicitar un cambio permanente de horario", () => {
     expect(await within(dlg).findByText("Ese es el horario que ya tienes: haz algún cambio.")).toBeInTheDocument();
 
     await t.user.selectOptions(within(dlg).getByLabelText("Lunes: hasta"), "19:00");
-    expect(await within(dlg).findByText(/Fuera del horario de la clínica \(09:00–18:00\)/)).toBeInTheDocument();
+    expect(await within(dlg).findByText(/Fuera del horario de la clínica \(9:00 AM–6:00 PM\)/)).toBeInTheDocument();
     await t.user.click(within(dlg).getByRole("button", { name: "Enviar solicitud" }));
     expect(await within(dlg).findByText("Revisa los horarios marcados en rojo.")).toBeInTheDocument();
 

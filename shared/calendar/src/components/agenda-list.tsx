@@ -1,10 +1,11 @@
 
 import { useMemo } from "react";
 import { Bot, CalendarDays } from "lucide-react";
-import { bookingSegments, hhmm, longDayLabel, spanLabel, type DateRange } from "../lib/calendar";
+import { bookingSegments, longDayLabel, spanLabel, type DateRange } from "../lib/calendar";
+import { timeRangeLabel } from "../lib/time-format";
 import { cn } from "../lib/utils";
 import { EmptyState } from "./ui";
-import { STATUS_LABEL, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
+import { STATUS_LABEL, bookingDotStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
 
 /**
  * 215 — La Lista: las citas del rango, agrupadas por día, como la «Agenda» de
@@ -76,10 +77,10 @@ export function AgendaList({
                     b.id === selectedId && "bg-row-hover"
                   )}
                 >
-                  <span className="w-[6.5rem] shrink-0 font-mono text-[12px] text-text-2">
-                    {hhmm(startMin)} – {hhmm(endMin)}
+                  <span className="w-[9.5rem] shrink-0 whitespace-nowrap font-mono text-[12px] text-text-2">
+                    {timeRangeLabel(startMin, endMin)}
                   </span>
-                  <span aria-hidden className={cn("h-2.5 w-2.5 shrink-0 rounded-full", bookingTone(b).dot)} />
+                  <span aria-hidden className={cn("h-2.5 w-2.5 shrink-0 rounded-full", bookingTone(b).dot)} style={bookingDotStyle(b)} />
                   <span className="min-w-0 flex-1">
                     <span
                       className={cn(

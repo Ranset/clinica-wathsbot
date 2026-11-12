@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { CalendarOff, Trash2 } from "lucide-react";
-import { Button, addDaysISO, isIsoDate, todayInTz, wallClock } from "@clinica/calendar";
+import { Button, addDaysISO, hhmmLabel, isIsoDate, todayInTz, wallClock } from "@clinica/calendar";
 import type { Absence } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { SyncStatus } from "../../layout/status";
@@ -169,14 +169,14 @@ export function AbsencesPage() {
             <Field label="Hora de inicio">
               <Select value={fromTime} onChange={(e) => setFromTime(e.target.value)}>
                 {TIMES.map((t) => (
-                  <option key={t}>{t}</option>
+                  <option key={t} value={t}>{hhmmLabel(t)}</option>
                 ))}
               </Select>
             </Field>
             <Field label="Hora final">
               <Select value={toTime} onChange={(e) => setToTime(e.target.value)}>
                 {TIMES.map((t) => (
-                  <option key={t}>{t}</option>
+                  <option key={t} value={t}>{hhmmLabel(t)}</option>
                 ))}
               </Select>
             </Field>

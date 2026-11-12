@@ -1,15 +1,16 @@
 import { useState, type FormEvent } from "react";
-import { Button, cn, type WeeklyHours } from "@clinica/calendar";
+import { Button, cn, colorOf, doctorColor, type WeeklyHours } from "@clinica/calendar";
 import type { Booking, Doctor } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { useAuth } from "../../auth";
 import { messageFor } from "../../lib/errors";
 import { compactHours, summarizeHours, validateHours } from "../../lib/hours";
 import { useToast } from "../../toast";
-import { BusyButton, Checkbox, Field, FormError, Notice, TextInput } from "../../ui/controls";
+import { BusyButton, Checkbox, Field, FormError, Notice, TextInput, dangerButton } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
 import { AbsencesTab } from "./absences-tab";
 import { AffectedList } from "./affected-list";
+import { ColorField } from "./color-field";
 import { HoursEditor } from "./hours-editor";
 
 type Tab = "horario" | "ausencias" | "datos";
@@ -85,13 +86,16 @@ function splitAliases(text: string): string[] {
   return text.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 }
 
-/** Nombre, especialidad, sinónimos (para que el bot reconozca la especialidad) y baja. Solo administrador. */
+/** Nombre, especialidad, sinónimos (para que el bot reconozca la especialidad) y baja. Administrador y personal de recepción. */
 export function DoctorDataForm({
   doctor,
+  others = [],
   onSaved,
   onCancel,
 }: {
   doctor: Doctor | null;
+  /** Los demás doctores: para avisar si el color elegido ya lo usa alguno. */
+  others?: Doctor[];
   onSaved: (d: Doctor) => void;
   onCancel?: () => void;
 }) {
@@ -101,6 +105,10 @@ export function DoctorDataForm({
   const [specialty, setSpecialty] = useState(doctor?.specialty ?? "");
   const [aliases, setAliases] = useState(doctor?.aliases.join(", ") ?? "");
   const [active, setActive] = useState(doctor?.active ?? true);
+  const [color, setColor] = useState<string | null>(doctor?.color ?? null);
+  const autoColor = doctor ? doctorColor(doctor.id) : null;
+  const shownColor = color ?? autoColor;
+  const usedBy = shownColor ? (others.find((o) => o.id !== doctor?.id && colorOf(o) === shownColor)?.name ?? null) : null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,12 +119,14 @@ export function DoctorDataForm({
     setBusy(true);
     setError(null);
     try {
-      const input = { name: name.trim(), specialty: specialty.trim(), aliases: splitAliases(aliases), active };
+      const input = { name: name.trim(), specialty: specialty.trim(), aliases: splitAliases(aliases), active, color };
       const saved = doctor ? await api.doctors.update(doctor.id, input) : await api.doctors.create(input);
       toast.show(doctor ? "Datos del doctor guardados." : `${saved.name} se dio de alta.`);
       onSaved(saved);
     } catch (err) {
       setError(messageFor(err));
+    } finally {
+      // al editar el diálogo sigue abierto: el botón vuelve a quedar libre para otro cambio
       setBusy(false);
     }
   };
@@ -132,6 +142,7 @@ export function DoctorDataForm({
       <Field label="Sinónimos" hint="Separados por comas. Así el bot entiende «proctólogo», «usg»… además del nombre de la especialidad.">
         <TextInput value={aliases} onChange={(e) => setAliases(e.target.value)} />
       </Field>
+      <ColorField value={color} onChange={setColor} autoColor={autoColor} usedBy={usedBy} />
       <Checkbox label="Activo" hint="Si se desmarca, el doctor deja de ofrecerse. Sus citas anteriores se conservan." checked={active} onChange={(e) => setActive(e.target.checked)} />
       <FormError>{error}</FormError>
       <div className="flex gap-2">
@@ -148,14 +159,73 @@ export function DoctorDataForm({
   );
 }
 
+/**
+ * Eliminar un doctor DE VERDAD. Solo el administrador, y el servidor solo lo permite si nunca tuvo citas ni cuenta de
+ * usuario (409 con el motivo); lo normal es darlo de baja con «Activo». Pide confirmación porque no se puede deshacer.
+ */
+function DeleteDoctor({ doctor, onDeleted }: { doctor: Doctor; onDeleted: () => void }) {
+  const api = useApi();
+  const toast = useToast();
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.doctors.remove(doctor.id);
+      toast.show(`${doctor.name} se eliminó.`);
+      onDeleted();
+    } catch (e) {
+      setError(messageFor(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-labelledby="delete-doctor-h" className="rounded-lg border border-danger-soft p-4">
+      <h3 id="delete-doctor-h" className="text-sm font-bold text-danger-text">
+        Eliminar doctor
+      </h3>
+      <p className="mt-1 text-sm text-text-2">
+        Solo sirve si se dio de alta por error: se borra para siempre, con su horario y sus ausencias. Si ya tuvo citas o tiene una cuenta de usuario no se
+        puede; en ese caso desmarca «Activo» arriba para darlo de baja.
+      </p>
+      {!asking ? (
+        <Button variant="outline" className="mt-3" onClick={() => setAsking(true)}>
+          Eliminar doctor…
+        </Button>
+      ) : (
+        <div role="group" aria-label="Confirmar eliminación" className="mt-3 flex flex-col gap-3">
+          <p className="text-sm font-semibold">¿Eliminar definitivamente a {doctor.name}? No se puede deshacer.</p>
+          <FormError>{error}</FormError>
+          <div className="flex gap-2">
+            <BusyButton busy={busy} className={dangerButton} onClick={() => void remove()}>
+              Sí, eliminar
+            </BusyButton>
+            <Button variant="outline" disabled={busy} onClick={() => { setAsking(false); setError(null); }}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function DoctorDialog({
   doctor,
+  doctors = [],
   clinicHours,
   now,
   onClose,
   onChanged,
 }: {
   doctor: Doctor;
+  /** Todos los doctores (para avisar si el color elegido ya lo usa otro). */
+  doctors?: Doctor[];
   clinicHours: WeeklyHours;
   now: Date;
   onClose: () => void;
@@ -192,7 +262,12 @@ export function DoctorDialog({
       <div role="tabpanel">
         {tab === "horario" && <ScheduleTab key={doctor.id} doctor={doctor} clinicHours={clinicHours} onSaved={onChanged} />}
         {tab === "ausencias" && <AbsencesTab doctor={doctor} now={now} />}
-        {tab === "datos" && <DoctorDataForm doctor={doctor} onSaved={onChanged} />}
+        {tab === "datos" && (
+          <div className="flex flex-col gap-6">
+            <DoctorDataForm doctor={doctor} others={doctors} onSaved={onChanged} />
+            {permissions.deleteDoctors && <DeleteDoctor doctor={doctor} onDeleted={() => { onChanged(); onClose(); }} />}
+          </div>
+        )}
       </div>
     </Modal>
   );

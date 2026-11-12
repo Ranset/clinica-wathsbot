@@ -4,7 +4,7 @@ import { buildRoutes } from "./handlers";
 import { HttpError, forbidden, invalid, matchRoute, unauthorized, type Result, type Route } from "./http";
 import { TZ, nextFreeSlot } from "./rules";
 import { createSeededDb } from "./seed";
-import { nextId, type DB, type StoredUser } from "./state";
+import { doctorRef, nextId, type DB, type StoredUser } from "./state";
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -176,7 +176,7 @@ export function createMockApi(options: MockApiOptions = {}) {
     const booking: Booking = {
       id, kind: "session", status: "agendada", source: "ai", scheduledAtUtc: startUtc, durationMinutes: 30,
       patient: { id: phone, name: opts.patientName ?? "Paciente WhatsApp Demo", phone },
-      doctor: { id: doctor.id, name: doctor.name, specialty: doctor.specialty },
+      doctor: doctorRef(doctor),
       room: { ...room }, notes: null,
     };
     db.bookings.push(booking);

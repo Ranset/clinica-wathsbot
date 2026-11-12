@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+import { ON_DOCTOR_COLOR, colorOf } from "../lib/doctor-color";
 import type { Booking, BookingStatus } from "../types";
 
 export type { Booking };
@@ -29,6 +31,24 @@ export function bookingSubtitle(b: Booking, parts: { doctor?: boolean; room?: bo
   if (parts.doctor && b.doctor) out.push(b.doctor.name);
   if (parts.room && b.room) out.push(b.room.name);
   return out.join(" · ");
+}
+
+/**
+ * El color del DOCTOR sobre la cita, para saber de un vistazo de quien es. Va como estilo en linea (encima de las clases
+ * de `bookingTone`): una cita "agendada" se rellena con el color del doctor; las demas conservan el aspecto de su estado
+ * (realizada, no asistio, cancelada) con una franja a la izquierda del color del doctor. Un bloqueo no tiene doctor: sin color.
+ */
+export function bookingStyle(b: Booking): CSSProperties | undefined {
+  const color = b.kind === "block" ? null : colorOf(b.doctor);
+  if (!color) return undefined;
+  if (b.status === "agendada") return { backgroundColor: color, borderColor: color, color: ON_DOCTOR_COLOR };
+  return { borderLeftColor: color, borderLeftWidth: 4, borderLeftStyle: "solid" };
+}
+
+/** El puntito de la cita (mes, lista, detalle): del color del doctor; sin doctor conserva el del estado (`bookingTone`). */
+export function bookingDotStyle(b: Booking): CSSProperties | undefined {
+  const color = b.kind === "block" ? null : colorOf(b.doctor);
+  return color ? { backgroundColor: color } : undefined;
 }
 
 /** Color por estado, solo con tokens del tema (ver styles.css). */

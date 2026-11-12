@@ -24,6 +24,7 @@ Paciente ──WhatsApp──> Zernio ──webhook──> BOT (Hostinger, serve
 | Horarios libres, citas, consultorios, ausencias | Base de datos (motor de agenda) | El bot solo **pide**; el servidor valida y reserva de forma atómica |
 | Estilo, ubicación, reglas de seguridad, precios | `bot/system_prompt.md` | Editar el archivo y reiniciar el bot |
 | El modelo | CLI `claude` del propio bot (`WATHSBOT_LLM=cli`, el defecto) | **No se usa `ANTHROPIC_API_KEY`** |
+| Formato de hora | Al paciente, **12 h con AM/PM** ("10:00 AM", "4:30 PM"), igual que la web y la PWA; la API y las acciones del bot siguen en 24 h | Regla 7 de `agenda_prompt()` en `server.py` (y `clinic_info.to_12h()` corrige si se escapa una hora de 24 h) |
 
 El paciente se identifica por el teléfono de WhatsApp que entrega Zernio, nunca por lo que escriba: un paciente solo ve, cambia o cancela **sus** citas.
 

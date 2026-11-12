@@ -1,4 +1,4 @@
-import { WEEKDAYS, type Interval, type WeekdayKey, type WeeklyHours } from "@clinica/calendar";
+import { WEEKDAYS, hhmmLabel, type Interval, type WeekdayKey, type WeeklyHours } from "@clinica/calendar";
 
 export const DAY_NAME: Record<WeekdayKey, string> = {
   mon: "Lunes",
@@ -21,15 +21,19 @@ const DAY_SHORT: Record<WeekdayKey, string> = {
 
 const sorted = (ivs: Interval[]) => [...ivs].sort((a, b) => a.start.localeCompare(b.start));
 const key = (ivs: Interval[]) => sorted(ivs).map((i) => `${i.start}–${i.end}`).join(", ");
+/** Los tramos para LEER, en 12 h: "9:00 AM–6:00 PM, ...". Los datos siguen en "HH:MM" de 24 h. */
+const spans = (ivs: Interval[]) => sorted(ivs).map((i) => `${hhmmLabel(i.start)}–${hhmmLabel(i.end)}`).join(", ");
 const toMin = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
 
-/** "Lun–Vie 09:00–18:00 · Sáb 09:00–13:00": los días con el mismo horario se juntan. */
+/** "Lun–Vie 9:00 AM–6:00 PM · Sáb 9:00 AM–1:00 PM": los días con el mismo horario se juntan. */
 export function summarizeHours(hours: WeeklyHours): string {
   const groups = new Map<string, WeekdayKey[]>();
+  const shown = new Map<string, string>(); // clave (24 h) -> texto (12 h)
   for (const d of WEEKDAYS) {
     const ivs = hours[d];
     if (!ivs?.length) continue;
     const k = key(ivs);
+    shown.set(k, spans(ivs));
     groups.set(k, [...(groups.get(k) ?? []), d]);
   }
   if (groups.size === 0) return "Sin atención";
@@ -44,7 +48,7 @@ export function summarizeHours(hours: WeeklyHours): string {
         parts.push(j - i >= 2 ? `${DAY_SHORT[days[i]!]}–${DAY_SHORT[days[j]!]}` : days.slice(i, j + 1).map((d) => DAY_SHORT[d]).join(", "));
         i = j + 1;
       }
-      return `${parts.join(", ")} ${k}`;
+      return `${parts.join(", ")} ${shown.get(k)}`;
     })
     .join(" · ");
 }
@@ -68,7 +72,7 @@ export function validateHours(hours: WeeklyHours, limit?: WeeklyHours): Partial<
     if (!errors[d] && limit && ivs.length) {
       const inside = (iv: Interval) => (limit[d] ?? []).some((l) => toMin(iv.start) >= toMin(l.start) && toMin(iv.end) <= toMin(l.end));
       if (!ivs.every(inside)) {
-        const lim = (limit[d] ?? []).map((l) => `${l.start}–${l.end}`).join(", ");
+        const lim = spans(limit[d] ?? []);
         errors[d] = lim ? `Fuera del horario de la clínica (${lim}).` : "La clínica no atiende ese día.";
       }
     }

@@ -8,6 +8,9 @@ import { rangeToUtc, timeOptions, utcOf } from "../src/lib/range";
 import { NAV, canOpen, permissionsFor } from "../src/permissions";
 import { hrefFor, parseHash } from "../src/router";
 
+/** La hora se muestra con un espacio duro entre el número y AM/PM (para que no se parta en dos renglones). */
+const nb = (s: string) => s.replace(/ (AM|PM)/g, " $1");
+
 const CLINIC = {
   mon: [{ start: "09:00", end: "18:00" }], tue: [{ start: "09:00", end: "18:00" }], wed: [{ start: "09:00", end: "18:00" }],
   thu: [{ start: "09:00", end: "18:00" }], fri: [{ start: "09:00", end: "18:00" }], sat: [{ start: "09:00", end: "13:00" }],
@@ -46,10 +49,10 @@ describe("rangeToUtc: los dias visibles como instantes UTC (Cancun = UTC-5)", ()
 
 describe("horarios semanales", () => {
   it("summarizeHours junta dias iguales y distingue corridas de dias sueltos", () => {
-    expect(summarizeHours(CLINIC)).toBe("Lun–Vie 09:00–18:00 · Sáb 09:00–13:00");
-    expect(summarizeHours({ tue: [{ start: "10:00", end: "14:00" }], thu: [{ start: "10:00", end: "14:00" }] })).toBe("Mar, Jue 10:00–14:00");
-    expect(summarizeHours({ mon: [{ start: "10:00", end: "16:00" }], wed: [{ start: "10:00", end: "16:00" }], fri: [{ start: "10:00", end: "16:00" }] })).toBe("Lun, Mié, Vie 10:00–16:00");
-    expect(summarizeHours({ mon: [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }] })).toBe("Lun 09:00–12:00, 14:00–18:00");
+    expect(summarizeHours(CLINIC)).toBe(nb("Lun–Vie 9:00 AM–6:00 PM · Sáb 9:00 AM–1:00 PM"));
+    expect(summarizeHours({ tue: [{ start: "10:00", end: "14:00" }], thu: [{ start: "10:00", end: "14:00" }] })).toBe(nb("Mar, Jue 10:00 AM–2:00 PM"));
+    expect(summarizeHours({ mon: [{ start: "10:00", end: "16:00" }], wed: [{ start: "10:00", end: "16:00" }], fri: [{ start: "10:00", end: "16:00" }] })).toBe(nb("Lun, Mié, Vie 10:00 AM–4:00 PM"));
+    expect(summarizeHours({ mon: [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }] })).toBe(nb("Lun 9:00 AM–12:00 PM, 2:00 PM–6:00 PM"));
     expect(summarizeHours({})).toBe("Sin atención");
   });
 
@@ -58,7 +61,7 @@ describe("horarios semanales", () => {
     expect(validateHours({ mon: [{ start: "12:00", end: "10:00" }] }).mon).toMatch(/después de la inicial/);
     expect(validateHours({ mon: [{ start: "09:00", end: "12:00" }, { start: "11:00", end: "13:00" }] }).mon).toMatch(/solapar/);
     expect(validateHours({ mon: [{ start: "", end: "12:00" }] }).mon).toMatch(/Completa/);
-    expect(validateHours({ mon: [{ start: "08:00", end: "12:00" }] }, CLINIC).mon).toMatch(/Fuera del horario de la clínica \(09:00–18:00\)/);
+    expect(validateHours({ mon: [{ start: "08:00", end: "12:00" }] }, CLINIC).mon).toMatch(/Fuera del horario de la clínica \(9:00\sAM–6:00\sPM\)/);
     expect(validateHours({ sun: [{ start: "10:00", end: "12:00" }] }, CLINIC).sun).toMatch(/no atiende ese día/);
     expect(validateHours({ sat: [{ start: "09:00", end: "13:00" }] }, CLINIC)).toEqual({});
   });
@@ -80,8 +83,10 @@ describe("textos", () => {
   });
 
   it("formatos de fecha en la hora de Cancun", () => {
-    expect(fmtDateTime("2026-11-12T16:00:00.000Z")).toBe("jue 12 nov · 11:00");
-    expect(fmtSpan("2026-11-12T16:00:00.000Z", 30)).toBe("11:00 – 11:30");
+    expect(fmtDateTime("2026-11-12T16:00:00.000Z")).toBe(nb("jue 12 nov · 11:00 AM"));
+    expect(fmtDateTime("2026-11-12T19:30:00.000Z")).toBe(nb("jue 12 nov · 2:30 PM"));
+    expect(fmtSpan("2026-11-12T16:00:00.000Z", 30)).toBe(nb("11:00 AM – 11:30 AM"));
+    expect(fmtSpan("2026-11-12T16:45:00.000Z", 30)).toBe(nb("11:45 AM – 12:15 PM"));
     expect(fmtPhone("529980001234")).toBe("+52 998 000 1234");
     expect(fmtPhone("14155550123")).toBe("+14155550123");
   });
@@ -96,8 +101,8 @@ describe("textos", () => {
 
 describe("permisos y rutas", () => {
   it("cada rol ve lo suyo", () => {
-    expect(permissionsFor("admin")).toMatchObject({ manageUsers: true, manageDoctors: true, editClinicHours: true, manageAppointments: true, toggleBot: true });
-    expect(permissionsFor("staff")).toMatchObject({ manageUsers: false, manageDoctors: false, editClinicHours: false, manageAppointments: true, manageDoctorSchedules: true, toggleBot: true, handleAttention: true });
+    expect(permissionsFor("admin")).toMatchObject({ manageUsers: true, manageDoctors: true, deleteDoctors: true, editClinicHours: true, manageAppointments: true, toggleBot: true });
+    expect(permissionsFor("staff")).toMatchObject({ manageUsers: false, manageDoctors: true, deleteDoctors: false, editClinicHours: true, manageAppointments: true, manageDoctorSchedules: true, toggleBot: true, handleAttention: true });
     expect(permissionsFor("doctor").useAdminWeb).toBe(false);
     expect(permissionsFor(null).useAdminWeb).toBe(false);
   });

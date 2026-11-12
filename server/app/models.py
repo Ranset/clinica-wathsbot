@@ -49,6 +49,9 @@ class Doctor(Base):
     #: sinonimos ("proctologo", "usg"); con `specialty` forman los nombres que `find_doctor` reconoce.
     aliases: Mapped[list] = mapped_column(JSON, default=list)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Color elegido para verlo en el calendario, `#rrggbb` en minusculas. NULL = automatico (la paleta segun su id, que
+    #: calcula el cliente). Solo se guardan colores con texto blanco legible (ver `app/colors.py`).
+    color: Mapped[str | None] = mapped_column(String(7), nullable=True)
     #: True = usa el horario de la clinica (ignora `doctor_hours`). False = `doctor_hours` es su horario
     #: (puede estar vacio: no atiende ningun dia).
     uses_clinic_hours: Mapped[bool] = mapped_column(Boolean, default=True)

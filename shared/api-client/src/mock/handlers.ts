@@ -1,5 +1,6 @@
 import { addDaysISO, todayInTz } from "@clinica/calendar/src/lib/slots";
 import { wallClock } from "@clinica/calendar/src/lib/calendar";
+import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
 import type { Absence, AttentionItem, Booking, BookingStatus, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
 import {
   HttpError,
@@ -21,7 +22,7 @@ import {
   type Route,
 } from "./http";
 import { HORIZON_DAYS, TZ, hoursInside, outsideHours, parseWeeklyHours, placeInSchedule } from "./rules";
-import { bookingFor, doctorView, fnv1a, nextId, publicUser, type DB, type StoredDoctor, type StoredUser } from "./state";
+import { bookingFor, doctorRef, doctorView, fnv1a, nextId, publicUser, type DB, type StoredDoctor, type StoredUser } from "./state";
 
 /** Maximo de rango que acepta `GET /api/appointments` (`MAX_RANGE_DAYS` de shared/calendar). */
 const MAX_RANGE_DAYS = 92;
@@ -45,6 +46,15 @@ const TRANSITIONS: Record<BookingStatus, BookingStatus[]> = {
 
 type C = Ctx<StoredUser>;
 type MockRoute = Route<StoredUser>;
+
+/** El color elegido de un doctor: `null` = automatico; si no, `#rrggbb` con texto blanco legible (igual que el servidor). */
+function parseColor(value: unknown): string | null {
+  if (value === null) return null;
+  if (!isHexColor(value)) throw invalid("color: usa el formato #rrggbb (por ejemplo #1d4ed8) o null para el automático.");
+  const hex = value.toLowerCase();
+  if (!isReadableOnWhite(hex)) throw invalid("color: es demasiado claro, el texto blanco de las citas no se leería; elige uno más oscuro.");
+  return hex;
+}
 
 export function buildRoutes(db: DB): MockRoute[] {
   const doctorById = (id: string): StoredDoctor => db.doctors.find((d) => d.id === id) ?? (() => { throw notFound("El doctor no existe."); })();
@@ -118,7 +128,7 @@ export function buildRoutes(db: DB): MockRoute[] {
     return {
       id, kind: "session", status: "agendada", source: "manual", scheduledAtUtc: startUtc, durationMinutes: duration,
       patient: phone ? { id: phone, name, phone } : { id, name },
-      doctor: { id: doctor.id, name: doctor.name, specialty: doctor.specialty },
+      doctor: doctorRef(doctor),
       room: db.rooms.find((r) => r.id === roomId)!, notes,
     };
   }
@@ -305,7 +315,7 @@ export function buildRoutes(db: DB): MockRoute[] {
 
     route<StoredUser>("getClinicHours", ALL, () => ok(structuredClone(db.clinicHours))),
 
-    route<StoredUser>("setClinicHours", ADMIN, (c) => {
+    route<StoredUser>("setClinicHours", STAFF, (c) => {
       const hours = parseWeeklyHours(c.body, "El horario de la clínica");
       const outside = db.doctors.find((d) => d.ownHours && !hoursInside(d.ownHours, hours));
       if (outside) throw rule("fuera_de_horario", `El horario de ${outside.name} quedaría fuera del de la clínica.`);
@@ -318,19 +328,20 @@ export function buildRoutes(db: DB): MockRoute[] {
       return ok({ items: list.map((d) => doctorView(db, d)) });
     }),
 
-    route<StoredUser>("createDoctor", ADMIN, (c) => {
+    route<StoredUser>("createDoctor", STAFF, (c) => {
       const b = asObject(c.body);
       const aliases = b.aliases === undefined ? [] : b.aliases;
       if (!Array.isArray(aliases) || aliases.some((a) => typeof a !== "string")) throw invalid(`"aliases" debe ser una lista de textos.`);
+      const color = b.color === undefined ? null : parseColor(b.color);
       const doc: StoredDoctor = {
         id: nextId(db, "d"), name: reqString(b, "name", 120), specialty: reqString(b, "specialty", 120),
-        aliases: (aliases as string[]).map((a) => a.trim()).filter(Boolean), active: optBool(b, "active") ?? true, ownHours: null,
+        aliases: (aliases as string[]).map((a) => a.trim()).filter(Boolean), active: optBool(b, "active") ?? true, ownHours: null, color,
       };
       db.doctors.push(doc);
       return ok(doctorView(db, doc), 201);
     }),
 
-    route<StoredUser>("updateDoctor", ADMIN, (c) => {
+    route<StoredUser>("updateDoctor", STAFF, (c) => {
       const doc = doctorById(c.params.doctorId!);
       const b = asObject(c.body);
       const name = optString(b, "name", 120);
@@ -340,13 +351,30 @@ export function buildRoutes(db: DB): MockRoute[] {
       if (b.aliases !== undefined && (!Array.isArray(b.aliases) || b.aliases.some((a) => typeof a !== "string"))) {
         throw invalid(`"aliases" debe ser una lista de textos.`);
       }
+      const color = "color" in b ? parseColor(b.color) : undefined; // null = volver al automatico; se valida antes de tocar nada
       if (name !== undefined) doc.name = name;
       if (specialty !== undefined) doc.specialty = specialty;
       if (active !== undefined) doc.active = active;
+      if (color !== undefined) doc.color = color;
       if (b.aliases !== undefined) doc.aliases = (b.aliases as string[]).map((a) => a.trim()).filter(Boolean);
       // Las citas ya agendadas llevan una copia del nombre: se mantiene al dia.
-      for (const x of db.bookings) if (x.doctor?.id === doc.id) x.doctor = { id: doc.id, name: doc.name, specialty: doc.specialty };
+      for (const x of db.bookings) if (x.doctor?.id === doc.id) x.doctor = doctorRef(doc);
       return ok(doctorView(db, doc));
+    }),
+
+    // Eliminar de verdad: solo el administrador y solo si nunca tuvo citas ni cuenta ligada (si no, se da de baja).
+    route<StoredUser>("deleteDoctor", ADMIN, (c) => {
+      const doc = doctorById(c.params.doctorId!);
+      if (db.bookings.some((x) => x.doctor?.id === doc.id)) {
+        throw new HttpError(409, "doctor_con_citas", "Este doctor tiene citas en el historial: no se puede eliminar. Dalo de baja para que deje de ofrecerse.");
+      }
+      if (db.users.some((u) => u.doctorId === doc.id)) {
+        throw new HttpError(409, "doctor_con_usuario", "Hay una cuenta de usuario ligada a este doctor: elimínala o cámbiala primero en Usuarios.");
+      }
+      db.doctors.splice(db.doctors.indexOf(doc), 1);
+      db.absences = db.absences.filter((a) => a.doctorId !== doc.id);
+      db.requests = db.requests.filter((r) => r.doctorId !== doc.id);
+      return noContent();
     }),
 
     route<StoredUser>("setDoctorWeeklyHours", STAFF, (c) => {

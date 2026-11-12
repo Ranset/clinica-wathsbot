@@ -45,6 +45,36 @@ def test_migracion_corre_en_limpio_y_coincide_con_los_modelos(tmp_path):
     assert diff_with_models(url) == []
 
 
+def test_migracion_0004_agrega_el_color_del_doctor_sin_tocar_los_datos_y_se_deshace(tmp_path):
+    """Una base que ya tenia doctores (en 0003) sube a 0004 con `color` NULL (automatico) y todo lo demas intacto."""
+    from sqlalchemy import text
+    url = "sqlite:///" + (tmp_path / "vieja.db").as_posix()
+    upgrade(url, "0003")
+    engine = create_engine(url)
+    assert "color" not in {c["name"] for c in inspect(engine).get_columns("doctors")}
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO doctors (name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                       "VALUES ('Dr. Existente', 'Proctologia', '[\"colon\"]', 1, 1, '2026-11-10 10:00:00')"))
+    engine.dispose()
+
+    upgrade(url)
+    engine = create_engine(url)
+    cols = {c["name"]: c for c in inspect(engine).get_columns("doctors")}
+    assert "color" in cols and cols["color"]["nullable"] is True
+    with engine.connect() as c:
+        row = c.execute(text("SELECT name, specialty, active, color FROM doctors")).one()
+    engine.dispose()
+    assert tuple(row) == ("Dr. Existente", "Proctologia", 1, None)
+    assert diff_with_models(url) == []
+
+    downgrade(url, "0003")                  # volver atras quita la columna y conserva al doctor
+    engine = create_engine(url)
+    assert "color" not in {c["name"] for c in inspect(engine).get_columns("doctors")}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+
+
 @pytest.mark.mysql
 def test_migracion_en_mysql_coincide_con_los_modelos(mysql_url):
     assert diff_with_models(mysql_url) == []

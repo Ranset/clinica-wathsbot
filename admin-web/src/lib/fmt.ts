@@ -1,10 +1,10 @@
-import { dayHeading, hhmm, wallClock } from "@clinica/calendar";
+import { dayHeading, timeLabel, timeRangeLabel, wallClock } from "@clinica/calendar";
 import type { Role } from "@clinica/api-client";
 
 export const TZ = "America/Cancun";
 
-/** "11:00" (hora de Cancún). */
-export const fmtTime = (utc: string): string => hhmm(wallClock(utc, TZ).minutes);
+/** "11:00 AM" (hora de Cancún, formato de 12 h). */
+export const fmtTime = (utc: string): string => timeLabel(wallClock(utc, TZ).minutes);
 
 /** "jue 12 nov" para una fecha AAAA-MM-DD. */
 export function fmtDay(day: string): string {
@@ -12,16 +12,16 @@ export function fmtDay(day: string): string {
   return `${h.weekday} ${h.day} ${h.month}`;
 }
 
-/** "jue 12 nov · 11:00" para un instante UTC. */
+/** "jue 12 nov · 11:00 AM" para un instante UTC. */
 export function fmtDateTime(utc: string): string {
   const w = wallClock(utc, TZ);
-  return `${fmtDay(w.day)} · ${hhmm(w.minutes)}`;
+  return `${fmtDay(w.day)} · ${timeLabel(w.minutes)}`;
 }
 
-/** "11:00 – 11:30". */
+/** "11:00 AM – 11:30 AM". */
 export function fmtSpan(utc: string, minutes: number): string {
   const w = wallClock(utc, TZ);
-  return `${hhmm(w.minutes)} – ${hhmm(w.minutes + minutes)}`;
+  return timeRangeLabel(w.minutes, w.minutes + minutes);
 }
 
 /** "hace 4 s" / "hace 2 min". */

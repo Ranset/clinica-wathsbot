@@ -392,14 +392,14 @@ def agenda_prompt(S=None):
     return f"""
 
 ## AGENDA AUTOMATICA (esta seccion tiene prioridad sobre "Ayudar a agendar")
-Ahora puedes agendar, consultar, reprogramar y cancelar citas TU MISMO usando acciones. Hoy es {dias[n.weekday()]} {n.date().isoformat()}, hora local {n.strftime('%H:%M')} (zona {S.CFG['timezone']}). Citas de {S.CFG['slot_minutes']} minutos.
+Ahora puedes agendar, consultar, reprogramar y cancelar citas TU MISMO usando acciones. Hoy es {dias[n.weekday()]} {n.date().isoformat()}, hora local {clinic_info.time12(n.hour, n.minute)} (zona {S.CFG['timezone']}). Citas de {S.CFG['slot_minutes']} minutos.
 Doctores:
 {docs}
 
 FORMATO DE SALIDA (obligatorio): responde SIEMPRE un unico objeto JSON y nada mas:
 {{"reply": "texto para el paciente o null", "action": null o {{"name": ...}}}}
 Acciones (una por turno):
-- {{"name":"horarios","especialidad":"...","desde":"AAAA-MM-DD","hora_min":13,"hora_max":18,"dias":7}}  -> consulta huecos libres reales. desde, hora_min, hora_max (hora local, 24h) y dias son opcionales. Por defecto devuelve pocos horarios, solo los primeros de cada dia: NO es la lista completa.
+- {{"name":"horarios","especialidad":"...","desde":"AAAA-MM-DD","hora_min":13,"hora_max":18,"dias":7}}  -> consulta huecos libres reales. desde, hora_min, hora_max (numeros de hora local en 24 h: 13 = 1:00 PM) y dias son opcionales. Por defecto devuelve pocos horarios, solo los primeros de cada dia: NO es la lista completa.
 - {{"name":"agendar","especialidad":"...","nombre":"Nombre Apellido","inicio":"AAAA-MM-DDTHH:MM"}}
 - {{"name":"cercanos","especialidad":"...","fecha_hora":"AAAA-MM-DDTHH:MM"}}  -> cuando el paciente pide un dia y hora concretos: devuelve "exacto" (true si ese horario esta libre) y los 3 huecos libres mas cercanos
 - {{"name":"mis_citas"}}
@@ -415,10 +415,10 @@ REGLAS DE AGENDA (obligatorias):
 1b. Si el paciente pide una preferencia (tarde, despues del mediodia, manana temprano, otro dia, un dia concreto, una hora concreta), VUELVE A CONSULTAR "horarios" con hora_min/hora_max/desde que correspondan. NUNCA digas que no hay disponibilidad sin haberlo consultado con ese criterio: la lista anterior es solo una muestra parcial. "Mediodia/tarde" = hora_min 12; "manana" (parte del dia) = hora_max 12. Si el resultado trae "nota" o horarios vacios, entonces si dilo y ofrece ampliar (otros dias).
 2. Solo ejecuta "agendar" cuando tengas: especialidad, nombre completo y un horario que el paciente eligio de forma explicita. Si falta algo, pregunta. Si ofreciste varios horarios y el paciente responde solo "si", "ese", "confirmo" o "el primero que dijiste" sin que quede claro cual, NO agendes: pregunta cual de los horarios ofrecidos prefiere (repitelos). Nunca elijas tu por el paciente.
 3. Para cancelar o reprogramar, usa primero "mis_citas" y confirma con el paciente cual cita es. Solo existen las citas del propio paciente; nunca hables de citas de otras personas.
-4. Tras agendar, confirma doctor, especialidad, dia, hora y consultorio EXACTAMENTE como los devuelve el RESULTADO. Si el RESULTADO es un error, explica sin tecnicismos y ofrece otro horario (consulta "horarios" de nuevo).
+4. Tras agendar, confirma doctor, especialidad, dia, hora (en 12 h con AM/PM, regla 7) y consultorio EXACTAMENTE como los devuelve el RESULTADO. Si el RESULTADO es un error, explica sin tecnicismos y ofrece otro horario (consulta "horarios" de nuevo).
 5. No guardes ni pidas sintomas o motivos medicos; solo nombre, especialidad y horario.
 6. Si la especialidad no esta en la lista, di que no la ofrecemos por este medio y que el equipo confirmara. Si la agenda falla, di que el equipo se pondra en contacto.
-7. Escribe fechas en espanol natural (ej. "martes 11 de noviembre a las 10:00"), nunca en formato ISO.
+7. HORAS EN 12 H: todo lo que le escribas al paciente (dias y horas) va en espanol natural y con hora de 12 h con AM/PM, ej. "martes 11 de noviembre a las 10:00 AM", "jueves 13 a las 4:30 PM" (12:00 PM es el mediodia). NUNCA uses formato ISO ni de 24 h con el paciente (nada de "16:30" ni "16:30 hrs"). Solo las acciones usan 24 h (inicio, fecha_hora, hora_min, hora_max): conviertes tu; si el RESULTADO trae 13:30, se lo dices como 1:30 PM. Si el paciente da una hora sin AM/PM ("a las 4", "a las 10"), deducela por el horario de atencion (la clinica no atiende de madrugada ni de noche: "a las 4" es 4:00 PM y "a las 10" es 10:00 AM); si aun asi es ambigua, preguntale si AM o PM. Al confirmar un horario, repite siempre la hora con AM/PM.
 8. TRASPASO A UNA PERSONA: si el paciente pide hablar con una persona, o no puedes ayudarlo (queja, algo fuera de alcance, un precio que no tienes) y vas a decir que el equipo lo contactara, PRIMERO usa la accion "pasar_a_persona". Solo di que avisaste al equipo si el RESULTADO es ok. Si es un error, dile que no pudiste registrar su solicitud y que vuelva a escribir en unos minutos. NUNCA prometas "voy a avisar" sin haber usado esa accion. En "detalle" no pongas sintomas ni datos medicos.
 9. NUNCA afirmes que el paciente tiene una cita (ni su fecha, hora o doctor) sin haber usado "mis_citas" en ESTE turno. Lo dicho antes en el chat puede estar desactualizado: la unica fuente de verdad es el RESULTADO de "mis_citas".
 """
@@ -479,10 +479,11 @@ def run_agent(sys_prompt, msgs, phone, max_steps=4, ctx=None):
         data = parse_model_json(raw)
         if data is None:
             # el modelo respondio texto plano: es seguro enviarlo solo si no parece JSON
-            return raw if not raw.lstrip().startswith(("{", "[")) else FALLBACK
+            return clinic_info.to_12h(raw) if not raw.lstrip().startswith(("{", "[")) else FALLBACK
         act = data.get("action")
         if not act:
-            return (data.get("reply") or "").strip() or FALLBACK
+            # lo que lee el paciente va en 12 h con AM/PM: si al modelo se le escapo una hora de 24 h, se corrige
+            return clinic_info.to_12h((data.get("reply") or "").strip()) or FALLBACK
         try:
             res = run_action(act, phone)
         except Exception as e:

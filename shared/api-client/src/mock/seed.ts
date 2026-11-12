@@ -2,7 +2,7 @@ import { addDaysISO, todayInTz, zonedWallClockToUtc } from "@clinica/calendar/sr
 import { weekdayIndex } from "@clinica/calendar/src/lib/calendar";
 import type { Booking, WeeklyHours } from "../types";
 import { TZ, placeInSchedule } from "./rules";
-import { nextId, type DB, type StoredDoctor } from "./state";
+import { doctorRef, nextId, type DB, type StoredDoctor } from "./state";
 
 /**
  * Cuentas de la API simulada. Son datos de ejemplo para desarrollar; no existen
@@ -111,7 +111,7 @@ export function createSeededDb(now: Date): DB {
       scheduledAtUtc: startUtc,
       durationMinutes: p.duration,
       patient: { id: phone, name, phone },
-      doctor: { id: doctor.id, name: doctor.name, specialty: doctor.specialty },
+      doctor: doctorRef(doctor),
       room: db.rooms.find((r) => r.id === roomId)!,
       notes: null,
     });

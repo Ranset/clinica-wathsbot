@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.agenda import AgendaError
 from app.models import AuditLog
-from helpers import BOT_HEADERS, PASSWORD, Session, assert_schema
+from helpers import BOT_HEADERS, PASSWORD, Session, assert_schema, next_weekday
 
 
 # ------------------------------------------------------------------ usuarios
@@ -131,9 +131,24 @@ def test_los_cambios_de_usuarios_quedan_en_la_bitacora_sin_secretos(login, users
 
 
 # ------------------------------------------------------------------ horario de la clinica y doctores
-def test_solo_el_administrador_cambia_el_horario_de_la_clinica(login):
+def test_el_administrador_y_el_personal_cambian_el_horario_de_la_clinica_pero_un_doctor_no(login, users, client, db):
     nuevo = {"mon": [{"start": "09:00", "end": "14:00"}, {"start": "16:00", "end": "19:00"}], "sat": [{"start": "09:00", "end": "13:00"}]}
-    assert login("staff").put("/api/clinic-hours", nuevo).status_code == 403
+    otro = {"mon": [{"start": "10:00", "end": "15:00"}], "sat": [{"start": "09:00", "end": "12:00"}]}
+    # un doctor, o quien no inicio sesion, no puede (y el horario no cambia)
+    antes = login("admin").get("/api/clinic-hours").get_json()
+    assert login("doctor").put("/api/clinic-hours", nuevo).status_code == 403
+    assert login("doctor2").put("/api/clinic-hours", nuevo).status_code == 403
+    assert client.put("/api/clinic-hours", json=nuevo).status_code == 401
+    assert login("admin").get("/api/clinic-hours").get_json() == antes
+    # recepcion SI puede, y el cambio llega a todos: web, doctores y bot
+    staff = login("staff")
+    r = staff.put("/api/clinic-hours", otro)
+    assert r.status_code == 200 and r.get_json() == otro and staff.get("/api/clinic-hours").get_json() == otro
+    assert login("doctor").get("/api/clinic-hours").get_json() == otro
+    assert client.get("/api/bot/config", headers=BOT_HEADERS).get_json()["clinicHours"] == otro
+    with db() as s:   # y queda en la bitacora a nombre de quien lo hizo
+        log = [x for x in s.scalars(select(AuditLog)) if x.action == "clinic_hours.set"][-1]
+        assert log.actor_kind == "user" and log.actor_user_id == users["staff"][2].id
     admin = login("admin")
     r = admin.put("/api/clinic-hours", nuevo)
     assert r.status_code == 200 and r.get_json() == nuevo and admin.get("/api/clinic-hours").get_json() == nuevo
@@ -163,6 +178,181 @@ def test_alta_y_edicion_de_doctores_llegan_al_bot(login, client):
     assert "Cardiologia" not in [d["specialty"] for d in cfg["doctors"]]                       # un doctor inactivo deja de ofrecerse
     assert client.get("/api/bot/availability", query_string={"especialidad": "cardiologia"}, headers=BOT_HEADERS).status_code == 422
     assert len(admin.get("/api/doctors").get_json()["items"]) == 8                              # el personal si lo sigue viendo
+
+
+def test_el_personal_da_de_alta_edita_y_da_de_baja_doctores_pero_un_doctor_no(login, users, client, db):
+    nuevo = {"name": "Dr. Alta Recepcion", "specialty": "Pediatria", "aliases": ["pediatra"]}
+    # un doctor, o quien no inicio sesion, no puede (y no se crea nada)
+    assert login("doctor").post("/api/doctors", nuevo).status_code == 403
+    assert login("doctor2").patch("/api/doctors/1", {"specialty": "Otra"}).status_code == 403
+    assert client.post("/api/doctors", json=nuevo).status_code == 401
+    assert "Pediatria" not in [d["specialty"] for d in login("admin").get("/api/doctors").get_json()["items"]]
+    # recepcion SI: alta, edicion y baja, y el bot lo ve
+    staff = login("staff")
+    r = staff.post("/api/doctors", nuevo)
+    j = r.get_json()
+    assert r.status_code == 201 and j["name"] == "Dr. Alta Recepcion" and j["active"] is True
+    assert_schema("Doctor", j)
+    cfg = lambda: client.get("/api/bot/config", headers=BOT_HEADERS).get_json()["doctors"]
+    assert "Pediatria" in [d["specialty"] for d in cfg()]
+    r = staff.patch(f"/api/doctors/{j['id']}", {"specialty": "Pediatria general", "aliases": ["pediatra", "ninos"]})
+    assert r.status_code == 200 and r.get_json()["specialty"] == "Pediatria general" and r.get_json()["aliases"] == ["pediatra", "ninos"]
+    assert "Pediatria general" in [d["specialty"] for d in cfg()]
+    assert staff.patch(f"/api/doctors/{j['id']}", {"active": False}).get_json()["active"] is False
+    assert "Pediatria general" not in [d["specialty"] for d in cfg()]                          # de baja: el bot ya no lo ofrece
+    assert staff.patch("/api/doctors/1", {"name": "Dr. Pérez Lago"}).status_code == 422         # las reglas de validacion son las mismas
+    assert staff.post("/api/doctors", {"name": "Dr. Cervantes Peláez", "specialty": "Repetido"}).status_code == 422
+    # queda en la bitacora a nombre de recepcion
+    with db() as s:
+        logs = [a for a in s.scalars(select(AuditLog)) if a.action in ("doctor.create", "doctor.update")]
+    assert {a.action for a in logs} == {"doctor.create", "doctor.update"}
+    assert all(a.actor_kind == "user" and a.actor_user_id == users["staff"][2].id for a in logs)
+
+
+# ------------------------------------------------------------------ color del doctor (se elige en la web)
+def test_el_color_del_doctor_se_elige_se_quita_y_llega_a_las_citas(login, users, db, agenda):
+    from datetime import timedelta
+    admin, staff = login("admin"), login("staff")
+    # los doctores del seed no traen color elegido: automatico (null)
+    assert {d["color"] for d in admin.get("/api/doctors").get_json()["items"]} == {None}
+
+    # alta con color: se guarda en minusculas
+    j = admin.post("/api/doctors", {"name": "Dr. Con Color", "specialty": "Urologia", "color": "#1D4ED8"}).get_json()
+    assert j["color"] == "#1d4ed8"
+    assert_schema("Doctor", j)
+    did = j["id"]
+
+    # recepcion tambien lo cambia; lo demas del doctor queda como estaba
+    r = staff.patch(f"/api/doctors/{did}", {"color": "#be185d"})
+    assert r.status_code == 200 and r.get_json()["color"] == "#be185d" and r.get_json()["name"] == "Dr. Con Color"
+    assert staff.patch(f"/api/doctors/{did}", {"specialty": "Urologia general"}).get_json()["color"] == "#be185d"   # no se pierde
+    assert [d["color"] for d in admin.get("/api/doctors").get_json()["items"] if d["id"] == did] == ["#be185d"]
+
+    # las citas de ese doctor llevan su color (el calendario lo pinta); las de otro doctor, null
+    t = next_weekday(agenda, 2, 10)
+    cita = admin.post("/api/appointments", {"patientName": "Ana Lopez", "phone": "5219981110001", "doctorId": did, "scheduledAtUtc": _utc(t)})
+    assert cita.status_code == 201 and cita.get_json()["doctor"]["color"] == "#be185d"
+    assert_schema("Booking", cita.get_json())
+    otra = admin.post("/api/appointments", {"patientName": "Beto Ruiz", "doctorId": "2", "scheduledAtUtc": _utc(t + timedelta(hours=1))}).get_json()
+    assert otra["doctor"]["color"] is None
+    q = {"from": _utc(t - timedelta(hours=1)), "to": _utc(t + timedelta(hours=4))}
+    assert {b["id"]: b["doctor"]["color"] for b in admin.get("/api/appointments", query_string=q).get_json()["items"]} == \
+        {cita.get_json()["id"]: "#be185d", otra["id"]: None}
+    # cambiar el color cambia el ETag: el calendario que refresca con If-None-Match se entera
+    etag = admin.get("/api/appointments", query_string=q).headers["ETag"]
+    assert staff.patch(f"/api/doctors/{did}", {"color": "#7e22ce"}).status_code == 200
+    r = admin.get("/api/appointments", query_string=q)
+    assert r.headers["ETag"] != etag and [b["doctor"]["color"] for b in r.get_json()["items"] if b["id"] == cita.get_json()["id"]] == ["#7e22ce"]
+
+    # quitarlo (null) vuelve al automatico
+    assert admin.patch(f"/api/doctors/{did}", {"color": None}).get_json()["color"] is None
+    # queda en la bitacora que se toco el color
+    with db() as s:
+        cambios = [a.data["changed"] for a in s.scalars(select(AuditLog)) if a.action == "doctor.update" and a.entity_id == did]
+    assert ["color"] in cambios
+
+
+def test_el_doctor_ve_el_color_de_sus_propias_citas(login, agenda):
+    from datetime import timedelta
+    admin = login("admin")
+    assert admin.patch("/api/doctors/1", {"color": "#c2410c"}).status_code == 200
+    t = next_weekday(agenda, 2, 10)
+    admin.post("/api/appointments", {"patientName": "Ana Lopez", "doctorId": "1", "scheduledAtUtc": _utc(t)})
+    doctor = login("doctor")                                                  # el usuario ligado al doctor 1
+    items = doctor.get("/api/doctor/appointments", query_string={"from": _utc(t - timedelta(hours=1)),
+                                                                  "to": _utc(t + timedelta(hours=3))}).get_json()["items"]
+    assert [b["doctor"]["color"] for b in items] == ["#c2410c"]
+    assert doctor.get("/api/doctors").get_json()["items"][0]["color"] == "#c2410c"
+
+
+@pytest.mark.parametrize("color", ["azul", "#fff", "1d4ed8", "#12345g", "#1d4ed8ff", 123, True, [], {}, ""])
+def test_un_color_con_mal_formato_es_422(login, color):
+    admin = login("admin")
+    for r in (admin.post("/api/doctors", {"name": "Dr. Mal Color", "specialty": "X", "color": color}),
+              admin.patch("/api/doctors/1", {"color": color})):
+        assert r.status_code == 422 and r.get_json()["error"] == "validacion" and "color" in r.get_json()["detail"], color
+    assert admin.get("/api/doctors").get_json()["items"][0]["color"] is None
+
+
+@pytest.mark.parametrize("color", ["#ffffff", "#ffff00", "#cccccc", "#a3e635", "#777777"])
+def test_un_color_demasiado_claro_para_texto_blanco_es_422_y_no_se_guarda(login, color):
+    admin = login("admin")
+    r = admin.patch("/api/doctors/1", {"color": color})
+    assert r.status_code == 422 and r.get_json()["error"] == "validacion" and "demasiado claro" in r.get_json()["detail"]
+    assert admin.post("/api/doctors", {"name": "Dr. Muy Claro", "specialty": "X", "color": color}).status_code == 422
+    assert admin.get("/api/doctors").get_json()["items"][0]["color"] is None
+    assert "Dr. Muy Claro" not in [d["name"] for d in admin.get("/api/doctors").get_json()["items"]]
+    assert admin.patch("/api/doctors/1", {"color": "#767676"}).status_code == 200            # justo el limite AA: pasa
+
+
+def test_el_color_no_cambia_lo_que_ve_el_bot(login, client):
+    admin = login("admin")
+    antes = client.get("/api/bot/config", headers=BOT_HEADERS).get_json()
+    admin.patch("/api/doctors/1", {"color": "#1d4ed8"})
+    assert client.get("/api/bot/config", headers=BOT_HEADERS).get_json() == antes
+
+
+# ------------------------------------------------------------------ eliminar un doctor (solo el administrador, sin historial)
+def _utc(dt):
+    from app.db import iso_utc, to_db
+    return iso_utc(to_db(dt))
+
+
+def test_el_administrador_elimina_un_doctor_sin_historial_y_deja_rastro(login, users, client, db, agenda):
+    from datetime import timedelta
+    from app.models import Doctor, DoctorAbsence, DoctorHours
+    admin = login("admin")
+    j = admin.post("/api/doctors", {"name": "Dr. Por Error", "specialty": "Cardiologia", "aliases": ["corazon"]}).get_json()
+    did = j["id"]
+    t = next_weekday(agenda, 2, 10)
+    assert admin.put(f"/api/doctors/{did}/weekly-hours", {"weeklyHours": {"tue": [{"start": "10:00", "end": "12:00"}]}}).status_code == 200
+    assert admin.post(f"/api/doctors/{did}/absences", {"startUtc": _utc(t), "endUtc": _utc(t + timedelta(hours=2))}).status_code == 201
+    antes = len(admin.get("/api/doctors").get_json()["items"])
+
+    r = admin.delete(f"/api/doctors/{did}")
+    assert r.status_code == 204 and r.data == b""
+    assert len(admin.get("/api/doctors").get_json()["items"]) == antes - 1
+    assert did not in [d["id"] for d in admin.get("/api/doctors").get_json()["items"]]
+    assert "Cardiologia" not in [d["specialty"] for d in client.get("/api/bot/config", headers=BOT_HEADERS).get_json()["doctors"]]
+    assert admin.patch(f"/api/doctors/{did}", {"active": True}).status_code == 404            # ya no existe
+    assert admin.delete(f"/api/doctors/{did}").status_code == 404                              # ni se borra dos veces
+    with db() as s:    # sus tramos y ausencias se fueron con el, y queda en la bitacora quien y que se elimino
+        assert s.get(Doctor, int(did)) is None
+        assert s.scalars(select(DoctorHours).where(DoctorHours.doctor_id == int(did))).all() == []
+        assert s.scalars(select(DoctorAbsence).where(DoctorAbsence.doctor_id == int(did))).all() == []
+        log = [x for x in s.scalars(select(AuditLog)) if x.action == "doctor.delete"][-1]
+        assert log.actor_kind == "user" and log.actor_user_id == users["admin"][2].id
+        assert log.entity_id == did and log.data == {"name": "Dr. Por Error", "specialty": "Cardiologia"}
+
+
+def test_no_se_elimina_un_doctor_con_citas_ni_con_cuenta_ligada(login, agenda):
+    admin = login("admin")
+    # el doctor 1 tiene una cuenta de usuario (dr.cervantes): primero la cuenta
+    r = admin.delete("/api/doctors/1")
+    assert r.status_code == 409 and r.get_json()["error"] == "doctor_con_usuario" and "Usuarios" in r.get_json()["detail"]
+    # un doctor sin cuenta pero con una cita (aunque luego se cancele) tampoco: se conserva el historial
+    did = admin.post("/api/doctors", {"name": "Dr. Con Historial", "specialty": "Urologia"}).get_json()["id"]
+    t = next_weekday(agenda, 2, 11)
+    cita = admin.post("/api/appointments", {"patientName": "Ana Lopez", "phone": "5219981110001", "doctorId": did, "scheduledAtUtc": _utc(t)})
+    assert cita.status_code == 201, cita.get_json()
+    r = admin.delete(f"/api/doctors/{did}")
+    assert r.status_code == 409 and r.get_json()["error"] == "doctor_con_citas"
+    assert admin.patch(f"/api/appointments/{cita.get_json()['id']}", {"status": "cancelada"}).status_code == 200
+    assert admin.delete(f"/api/doctors/{did}").get_json()["error"] == "doctor_con_citas"       # cancelada sigue siendo historial
+    # nada se perdio: el doctor y su cita siguen ahi, y la baja (PATCH) si es posible
+    assert did in [d["id"] for d in admin.get("/api/doctors").get_json()["items"]]
+    assert admin.patch(f"/api/doctors/{did}", {"active": False}).get_json()["active"] is False
+
+
+def test_solo_el_administrador_elimina_doctores(login, client):
+    did = login("admin").post("/api/doctors", {"name": "Dr. Solo Admin", "specialty": "Oncologia"}).get_json()["id"]
+    for who in ("staff", "doctor", "doctor2"):
+        assert login(who).delete(f"/api/doctors/{did}").status_code == 403, who
+    assert client.delete(f"/api/doctors/{did}").status_code == 401
+    assert did in [d["id"] for d in login("admin").get("/api/doctors").get_json()["items"]]    # sigue ahi
+    for raro in ("999", "abc", "0", "-1"):
+        assert login("admin").delete(f"/api/doctors/{raro}").status_code == 404, raro
+    assert login("admin").delete(f"/api/doctors/{did}").status_code == 204
 
 
 @pytest.mark.parametrize("body", [{}, {"name": "Solo Nombre"}, {"specialty": "Sin nombre"}, {"name": "", "specialty": "x"},

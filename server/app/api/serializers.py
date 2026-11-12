@@ -22,7 +22,8 @@ def booking_json(a: Appointment, role: str) -> dict:
     return {
         "id": str(a.id), "kind": a.kind, "status": a.status, "source": a.source,
         "scheduledAtUtc": iso_utc(a.start_utc), "durationMinutes": a.duration_minutes, "patient": patient,
-        "doctor": {"id": str(a.doctor.id), "name": a.doctor.name, "specialty": a.doctor.specialty} if a.doctor else None,
+        "doctor": {"id": str(a.doctor.id), "name": a.doctor.name, "specialty": a.doctor.specialty, "color": a.doctor.color}
+        if a.doctor else None,
         "room": {"id": str(a.room.id), "name": a.room.name} if a.room else None,
         "notes": a.notes,
     }
@@ -30,7 +31,7 @@ def booking_json(a: Appointment, role: str) -> dict:
 
 def doctor_json(d: DoctorView) -> dict:
     return {"id": str(d.id), "name": d.name, "specialty": d.specialty, "aliases": d.aliases, "active": d.active,
-            "weeklyHours": d.weekly, "usesClinicHours": d.uses_clinic_hours}
+            "weeklyHours": d.weekly, "usesClinicHours": d.uses_clinic_hours, "color": d.color}
 
 
 def room_json(r: Room) -> dict:

@@ -28,7 +28,7 @@ describe("la app abre sin conexión (solo lectura con lo último guardado)", () 
     expect(screen.getByText("Dr. Cervantes Peláez")).toBeInTheDocument(); // el perfil guardado
     expect(await screen.findByTestId("offline-pill")).toHaveTextContent("Sin conexión");
     expect(screen.getByText(/Sin conexión\. Ves lo último que se guardó en este dispositivo/)).toBeInTheDocument();
-    expect(screen.getByTestId("sync-status")).toHaveTextContent("Última sincronización: hoy 10:00");
+    expect(screen.getByTestId("sync-status")).toHaveTextContent("Última sincronización: hoy 10:00 AM");
 
     // ausencias: se leen, no se escribe
     window.location.hash = "#/ausencias";

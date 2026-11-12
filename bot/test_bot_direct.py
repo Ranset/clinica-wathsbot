@@ -38,14 +38,15 @@ PHONE = "529988908000"
 # ------------------------------------------------------------------ clinic_info
 @test
 def resumen_de_horario():
-    assert clinic_info.summarize_hours(WEEK) == "lunes a viernes 9:00 a 18:00 hrs, sabados 9:00 a 13:00 hrs"
-    assert clinic_info.summarize_hours({"mon": H1, "wed": H1, "fri": H1}) == "lunes, miercoles y viernes 9:00 a 18:00 hrs"
-    assert clinic_info.summarize_hours({"mon": H1, "tue": H1}) == "lunes y martes 9:00 a 18:00 hrs"
+    # los datos de la API vienen en 24 h; al paciente se le dicen en 12 h con AM/PM
+    assert clinic_info.summarize_hours(WEEK) == "lunes a viernes 9:00 AM a 6:00 PM, sabados 9:00 AM a 1:00 PM"
+    assert clinic_info.summarize_hours({"mon": H1, "wed": H1, "fri": H1}) == "lunes, miercoles y viernes 9:00 AM a 6:00 PM"
+    assert clinic_info.summarize_hours({"mon": H1, "tue": H1}) == "lunes y martes 9:00 AM a 6:00 PM"
     assert clinic_info.summarize_hours({"sat": [{"start": "09:00", "end": "12:00"}, {"start": "15:00", "end": "18:30"}]}) \
-        == "sabados 9:00 a 12:00 y 15:00 a 18:30 hrs"
+        == "sabados 9:00 AM a 12:00 PM y 3:00 PM a 6:30 PM"
     # dias salteados con las mismas horas se juntan; el orden sigue al primer dia de cada grupo
     assert clinic_info.summarize_hours({"mon": H2, "tue": H1, "wed": H1, "thu": H2}) == \
-        "lunes y jueves 9:00 a 13:00 hrs, martes y miercoles 9:00 a 18:00 hrs"
+        "lunes y jueves 9:00 AM a 1:00 PM, martes y miercoles 9:00 AM a 6:00 PM"
     assert clinic_info.summarize_hours({}) == "" and clinic_info.summarize_hours(None) == ""
     assert clinic_info.summarize_hours({"mon": []}) == ""
 
@@ -53,10 +54,10 @@ def resumen_de_horario():
 @test
 def compose_system_pone_los_datos_vigentes_y_conserva_el_resto():
     out = clinic_info.compose_system(server.SYSTEM, CONFIG)
-    assert "- Horario: lunes a viernes 9:00 a 18:00 hrs, sabados 9:00 a 13:00 hrs." in out
+    assert "- Horario: lunes a viernes 9:00 AM a 6:00 PM, sabados 9:00 AM a 1:00 PM." in out
     assert "proctologia (Dr. Cervantes Pelaez), anestesiologia (Dra. Geydi)" in out
     assert "Dr. Molina" not in out and "reumatologia" not in out, "no deben quedar los doctores fijos del .md"
-    assert "Dra. Geydi: martes 10:00 a 12:00 hrs" in out, "el horario propio de un doctor debe aparecer"
+    assert "Dra. Geydi: martes 10:00 AM a 12:00 PM" in out, "el horario propio de un doctor debe aparecer"
     assert "ejemplo de prueba" not in out and "vigentes" in out
     # lo que no es dato de agenda se conserva
     assert "Av. Nichupte" in out and "$750" in out and "NO des diagnosticos" in out
@@ -67,13 +68,64 @@ def compose_system_pone_los_datos_vigentes_y_conserva_el_resto():
 def compose_system_con_un_servidor_viejo_o_sin_doctores():
     sin_horario = {k: v for k, v in CONFIG.items() if k != "clinicHours"}
     out = clinic_info.compose_system(server.SYSTEM, sin_horario)
-    assert "- Horario: lunes a viernes 9:00 a 18:00 hrs, sabados 9:00 a 13:00 hrs." in out  # el del .md, sin tocar
+    assert "- Horario: lunes a viernes 9:00 AM a 6:00 PM, sabados 9:00 AM a 1:00 PM." in out  # el del .md, sin tocar
     assert "proctologia (Dr. Cervantes Pelaez)" in out
     assert clinic_info.compose_system("hola", None) == "hola"
     vacio = clinic_info.compose_system(server.SYSTEM, dict(CONFIG, doctors=[], clinicHours={}))
     assert "no hay doctores disponibles" in vacio and "no disponible por ahora" in vacio
     # si el .md no trae las lineas, se agregan
     assert "- Horario: lunes a viernes" in clinic_info.compose_system("# Wathsbot\n", CONFIG)
+
+
+# ------------------------------------------------------------------ horas en 12 h (AM/PM) para el paciente
+@test
+def time12_pasa_de_24_h_a_12_h_con_meridiano():
+    t = clinic_info.time12
+    assert [t(0, 0), t(0, 30), t(9, 0), t(11, 59), t(12, 0), t(12, 30), t(13, 30), t(18, 0), t(23, 5)] == \
+        ["12:00 AM", "12:30 AM", "9:00 AM", "11:59 AM", "12:00 PM", "12:30 PM", "1:30 PM", "6:00 PM", "11:05 PM"]
+    assert t("09", "05") == "9:05 AM" and t(24, 0) == "12:00 AM"
+
+
+@test
+def to_12h_corrige_solo_las_horas_de_24_h_sin_ambiguedad():
+    f = clinic_info.to_12h
+    assert f("Tu cita es el jueves a las 16:30") == "Tu cita es el jueves a las 4:30 PM"
+    assert f("Te veo a las 09:00 y a las 00:30") == "Te veo a las 9:00 AM y a las 12:30 AM"
+    assert f("Atendemos de 9:00 a 18:00 hrs") == "Atendemos de 9:00 a 6:00 PM"
+    assert f("A las 10:00 hrs") == "A las 10:00 AM" and f("a las 12:00 hrs.") == "a las 12:00 PM"
+    assert f("a las 16:30 horas") == "a las 4:30 PM" and f("21:15hrs") == "9:15 PM"
+    assert f("1) 13:30  2) 15:00  3) 17:30") == "1) 1:30 PM  2) 3:00 PM  3) 5:30 PM"
+
+
+@test
+def to_12h_no_toca_lo_que_ya_esta_bien_ni_lo_ambiguo_ni_las_fechas_iso():
+    f = clinic_info.to_12h
+    for ok in ["a las 10:00 AM", "a las 4:30 PM", "a las 4:30 p. m.", "a las 4:30 pm", "16:30 PM",
+               "a las 10:00", "a las 9:30", "a las 12:00",               # sueltas: podrian ser ya de 12 h
+               "2026-11-12T16:30", "2026-11-12T16:30-05:00", "10:30:15", "x16:30", "$750", "tel 55:55", "", "hola"]:
+        assert f(ok) == ok, ok
+    assert f(None) is None
+
+
+@test
+def el_prompt_manda_hablar_en_12_h_y_conserva_24_h_en_las_acciones():
+    with entorno() as (a, c, enviados, prompts):
+        server.answer([{"role": "user", "content": "hola"}], PHONE)
+        p = prompts[0]
+        assert "HORAS EN 12 H" in p and "10:00 AM" in p and "4:30 PM" in p and "NUNCA uses formato ISO ni de 24 h" in p
+        assert "AAAA-MM-DDTHH:MM" in p and "hora_min" in p, "las acciones siguen en 24 h"
+        import re
+        assert re.search(r"hora local \d{1,2}:\d{2} (AM|PM) \(zona", p), "la hora actual del prompt va en 12 h"
+        assert not re.search(r"hora local (0\d|1[3-9]|2[0-3]):", p)
+
+
+@test
+def una_hora_de_24_h_que_se_le_escapa_al_modelo_sale_en_12_h_hacia_el_paciente():
+    with entorno() as (a, c, enviados, prompts):
+        server.llm = lambda system, msgs: json.dumps({"reply": "Listo, tu cita queda el jueves a las 16:30.", "action": None})
+        assert server.answer([{"role": "user", "content": "hola"}], PHONE) == "Listo, tu cita queda el jueves a las 4:30 PM."
+        server.llm = lambda system, msgs: "Atendemos de 09:00 a 18:00 hrs"   # texto plano
+        assert server.answer([{"role": "user", "content": "horario?"}], PHONE) == "Atendemos de 9:00 AM a 6:00 PM"
 
 
 # ------------------------------------------------------------------ nucleo con la API
@@ -119,7 +171,7 @@ def el_prompt_lleva_doctores_y_horarios_de_la_api_una_sola_consulta_por_mensaje(
         r = server.answer([{"role": "user", "content": "hola"}], PHONE)
         assert r == "Hola, soy el asistente de la clinica."
         p = prompts[0]
-        assert "lunes a viernes 9:00 a 18:00 hrs" in p and "Dra. Geydi" in p and "Dr. Molina" not in p
+        assert "lunes a viernes 9:00 AM a 6:00 PM" in p and "Dra. Geydi" in p and "Dr. Molina" not in p
         assert "Anestesiologia: Dra. Geydi" in p, "la seccion de agenda tambien sale de la API"
         assert len(llamadas(a, "GET", "/api/bot/config")) == 1, "una sola consulta de configuracion por mensaje"
 

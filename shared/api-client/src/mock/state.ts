@@ -21,6 +21,8 @@ export type StoredDoctor = {
   aliases: string[];
   active: boolean;
   ownHours: WeeklyHours | null;
+  /** Color elegido (`#rrggbb`); `null`/ausente = automatico. */
+  color?: string | null;
 };
 
 export type Session = { userId: string; csrfTokens: Set<string> };
@@ -55,7 +57,13 @@ export function doctorView(db: DB, d: StoredDoctor): Doctor {
     active: d.active,
     weeklyHours: structuredClone(d.ownHours ?? db.clinicHours),
     usesClinicHours: d.ownHours === null,
+    color: d.color ?? null,
   };
+}
+
+/** El doctor tal como va dentro de una cita (`Booking.doctor`). */
+export function doctorRef(d: StoredDoctor): NonNullable<Booking["doctor"]> {
+  return { id: d.id, name: d.name, specialty: d.specialty, color: d.color ?? null };
 }
 
 export function publicUser(u: StoredUser): User {

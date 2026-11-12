@@ -19,7 +19,8 @@ export type Booking = {
   scheduledAtUtc: string;
   durationMinutes: number;
   patient: { id: string; name: string; phone?: string } | null;
-  doctor: { id: string; name: string; specialty: string } | null;
+  /** `color`: el elegido para el doctor (`#rrggbb`); `null` o ausente = automatico (`doctorColor(id)`). */
+  doctor: { id: string; name: string; specialty: string; color?: string | null } | null;
   room: { id: string; name: string } | null;
   notes: string | null;
 };
@@ -29,6 +30,8 @@ export type Lane = {
   id: string;
   label: string;
   sublabel?: string;
+  /** Color del carril (`#rrggbb`): una franja sobre el encabezado. Los carriles de doctor usan `doctorColor(id)`. */
+  color?: string;
   /** Si existe, sombrea lo que esta fuera del horario de ESTE carril. */
   weeklyHours?: WeeklyHours;
 };

@@ -17,7 +17,7 @@ import { AffectedList } from "./affected-list";
 import { DoctorDataForm, DoctorDialog } from "./doctor-dialog";
 import { HoursEditor } from "./hours-editor";
 
-/** Horario general de la clínica. Todos lo ven; solo el administrador lo cambia. */
+/** Horario general de la clínica. Todos lo ven; lo cambian el administrador y el personal de recepción. */
 function ClinicHoursCard({ hours, onSaved }: { hours: WeeklyHours; onSaved: () => void }) {
   const api = useApi();
   const toast = useToast();
@@ -242,12 +242,13 @@ export function DoctorsPage() {
         ))}
       </ul>
 
-      {open && <DoctorDialog doctor={open} clinicHours={dir.clinicHours} now={now} onClose={() => setOpenId(null)} onChanged={() => void reload()} />}
+      {open && <DoctorDialog doctor={open} doctors={dir.doctors} clinicHours={dir.clinicHours} now={now} onClose={() => setOpenId(null)} onChanged={() => void reload()} />}
 
       {creating && (
         <Modal title="Nuevo doctor" onClose={() => setCreating(false)}>
           <DoctorDataForm
             doctor={null}
+            others={dir.doctors}
             onCancel={() => setCreating(false)}
             onSaved={(d) => {
               setCreating(false);

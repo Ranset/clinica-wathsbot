@@ -7,6 +7,9 @@ import { MAX_AGENDA_ENTRIES, PREFIX, clearStoredData, createSnapshotStore, readS
 import { detectPush, isIos, urlBase64ToUint8Array, type PushEnv } from "../src/pwa/push";
 import { parsePushPayload, safeUrl } from "../src/pwa/push-payload";
 
+/** La hora se muestra con un espacio duro entre el número y AM/PM (para que no se parta en dos renglones). */
+const nb = (s: string) => s.replace(/ (AM|PM)/g, " $1");
+
 /** Un `Storage` en memoria (lo que haga falta romper se rompe aquí sin tocar el de jsdom). */
 function memoryStorage(opts: { quota?: number; blocked?: boolean } = {}): Storage & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -47,11 +50,11 @@ describe("fechas y textos", () => {
 
   it("fmtSyncTime: «hoy», «ayer» o el día, siempre en hora de Cancún", () => {
     const now = new Date("2026-11-10T15:00:00Z"); // martes 10:00 en Cancún
-    expect(fmtSyncTime(new Date("2026-11-10T14:42:00Z"), now)).toBe("hoy 09:42");
-    expect(fmtSyncTime(new Date("2026-11-09T23:30:00Z"), now)).toBe("ayer 18:30");
-    expect(fmtSyncTime(new Date("2026-11-05T15:00:00Z"), now)).toBe("jue 5 nov 10:00");
+    expect(fmtSyncTime(new Date("2026-11-10T14:42:00Z"), now)).toBe(nb("hoy 9:42 AM"));
+    expect(fmtSyncTime(new Date("2026-11-09T23:30:00Z"), now)).toBe(nb("ayer 6:30 PM"));
+    expect(fmtSyncTime(new Date("2026-11-05T15:00:00Z"), now)).toBe(nb("jue 5 nov 10:00 AM"));
     // 04:00 UTC del 10 es todavía el 9 en Cancún
-    expect(fmtSyncTime(new Date("2026-11-10T04:00:00Z"), now)).toBe("ayer 23:00");
+    expect(fmtSyncTime(new Date("2026-11-10T04:00:00Z"), now)).toBe(nb("ayer 11:00 PM"));
   });
 });
 
@@ -60,7 +63,7 @@ describe("ausencias", () => {
     // 12 nov completo (00:00 a 00:00 de Cancún)
     expect(describeAbsence({ startUtc: "2026-11-12T05:00:00Z", endUtc: "2026-11-13T05:00:00Z" })).toBe("jue 12 nov (todo el día)");
     expect(describeAbsence({ startUtc: "2026-11-12T05:00:00Z", endUtc: "2026-11-14T05:00:00Z" })).toBe("jue 12 nov al vie 13 nov (todo el día)");
-    expect(describeAbsence({ startUtc: "2026-11-12T14:00:00Z", endUtc: "2026-11-12T17:00:00Z" })).toBe("jue 12 nov · 09:00 → jue 12 nov · 12:00");
+    expect(describeAbsence({ startUtc: "2026-11-12T14:00:00Z", endUtc: "2026-11-12T17:00:00Z" })).toBe(nb("jue 12 nov · 9:00 AM → jue 12 nov · 12:00 PM"));
   });
 
   it("overlapsRange: intervalos semiabiertos", () => {

@@ -1,5 +1,5 @@
 import { Plus, Trash2 } from "lucide-react";
-import { WEEKDAYS, cn, type Interval, type WeekdayKey, type WeeklyHours } from "@clinica/calendar";
+import { WEEKDAYS, cn, hhmmLabel, type Interval, type WeekdayKey, type WeeklyHours } from "@clinica/calendar";
 import { DAY_NAME, validateHours } from "../../lib/hours";
 import { timeOptions } from "../../lib/range";
 import { Select } from "../../ui/controls";
@@ -10,10 +10,10 @@ function TimeSelect({ value, label, onChange }: { value: string; label: string; 
   // Si el horario trae una hora que no es de media en media, se conserva como opción.
   const options = TIMES.includes(value) || !value ? TIMES : [...TIMES, value].sort();
   return (
-    <Select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="h-8 w-[5.5rem] px-2 text-[13px]">
+    <Select aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="h-8 w-[6.75rem] px-2 text-[13px]">
       {options.map((t) => (
         <option key={t} value={t}>
-          {t}
+          {hhmmLabel(t)}
         </option>
       ))}
     </Select>

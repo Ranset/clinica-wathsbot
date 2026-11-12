@@ -24,21 +24,28 @@ def _actor() -> Actor:
 
 # --------------------------------------------------------------------------- horario de la clinica y doctores
 @bp.put("/api/clinic-hours")
-@require("admin")
+@require(*STAFF)  # recepcion tambien cambia el horario de la clinica (decidido el 2026-11-11); el doctor no
 def set_clinic_hours():
     return jsonify(_x("availability").set_clinic_hours(body(), _actor()))
 
 
 @bp.post("/api/doctors")
-@require("admin")
+@require(*STAFF)  # recepcion tambien da de alta doctores (decidido el 2026-11-11)
 def create_doctor():
     return jsonify(doctor_json(_x("directory").create_doctor(body(), _actor()))), 201
 
 
 @bp.patch("/api/doctors/<doctor_id>")
-@require("admin")
+@require(*STAFF)  # ...y los edita o da de baja (active=false)
 def update_doctor(doctor_id):
     return jsonify(doctor_json(_x("directory").update_doctor(doctor_id, body(), _actor())))
+
+
+@bp.delete("/api/doctors/<doctor_id>")
+@require("admin")  # eliminar es irreversible: solo el administrador; recepcion da de baja (PATCH active=false)
+def delete_doctor(doctor_id):
+    _x("directory").delete_doctor(doctor_id, _actor())
+    return "", 204
 
 
 # --------------------------------------------------------------------------- interruptor del bot

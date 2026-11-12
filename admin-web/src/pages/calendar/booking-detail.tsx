@@ -1,8 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Bot, CalendarClock, Check, Copy, UserX, X } from "lucide-react";
-import { Button, bookingTitle, bookingTone, hhmm, isIsoDate, longDayLabel, statusLabel, wallClock, cn } from "@clinica/calendar";
+import { Button, bookingDotStyle, bookingTitle, bookingTone, hhmm, hhmmLabel, isIsoDate, longDayLabel, statusLabel, wallClock, cn } from "@clinica/calendar";
 import type { Booking, BookingPatch, BookingStatus, Room } from "@clinica/api-client";
 import { useApi } from "../../api-context";
+import { features } from "../../features";
 import { isConflict, messageFor } from "../../lib/errors";
 import { TZ, fmtPhone, fmtSpan } from "../../lib/fmt";
 import { timeOptions, utcOf } from "../../lib/range";
@@ -31,7 +32,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Detalle de una cita o bloqueo: cambiar estado, mover, cancelar y editar notas. */
+/** Detalle de una cita o bloqueo: mover, cancelar y editar notas (y, si se enciende `features.attendanceStatus`, marcar realizada / no asistió). */
 export function BookingDetail({
   booking: b,
   rooms,
@@ -115,7 +116,7 @@ export function BookingDetail({
         <dl className="divide-y">
           <Row label="Estado">
             <span className="inline-flex items-center gap-2">
-              <span aria-hidden className={cn("h-2.5 w-2.5 rounded-full", bookingTone(b).dot)} />
+              <span aria-hidden className={cn("h-2.5 w-2.5 rounded-full", bookingTone(b).dot)} style={bookingDotStyle(b)} />
               {statusLabel(b)}
             </span>
           </Row>
@@ -183,7 +184,9 @@ export function BookingDetail({
 
         {mode === "view" && active && (
           <section aria-label="Acciones" className="flex flex-col gap-2">
+            {/* «Marcar como realizada» / «No asistió»: APAGADO por ahora, ver `features.attendanceStatus`. */}
             {!isBlock &&
+              features.attendanceStatus &&
               CORRECTIONS.agendada.map((c) => (
                 <BusyButton key={c.status} busy={busy} variant="outline" className="justify-start" onClick={() => void patch({ status: c.status }, c.status === "realizada" ? "Cita marcada como realizada." : "Cita marcada como «No asistió».")}>
                   {c.icon}
@@ -201,7 +204,7 @@ export function BookingDetail({
           </section>
         )}
 
-        {mode === "view" && !isBlock && (b.status === "realizada" || b.status === "no_show") && (
+        {mode === "view" && !isBlock && features.attendanceStatus && (b.status === "realizada" || b.status === "no_show") && (
           <section aria-label="Corregir estado" className="flex flex-col gap-2">
             {CORRECTIONS[b.status].map((c) => (
               <BusyButton key={c.status} busy={busy} variant="outline" className="justify-start" onClick={() => void patch({ status: c.status }, "Estado corregido.")}>
@@ -223,7 +226,7 @@ export function BookingDetail({
                 <Select value={moveTime} onChange={(e) => setMoveTime(e.target.value)}>
                   {TIMES.map((t) => (
                     <option key={t} value={t}>
-                      {t}
+                      {hhmmLabel(t)}
                     </option>
                   ))}
                 </Select>

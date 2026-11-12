@@ -4,9 +4,11 @@ import {
   AgendaList,
   Button,
   CalendarToolbar,
+  DoctorLegend,
   MonthGrid,
   TimeGrid,
   calendarVisible,
+  colorOf,
   datesOf,
   isCalendarView,
   isIsoDate,
@@ -21,6 +23,7 @@ import {
   type Lane,
 } from "@clinica/calendar";
 import type { Booking } from "@clinica/api-client";
+import { features } from "../../features";
 import { useDirectory } from "../../lib/directory";
 import { TZ, ago } from "../../lib/fmt";
 import { rangeToUtc } from "../../lib/range";
@@ -78,7 +81,7 @@ export function CalendarPage() {
     if (laneBy === "consultorio") return dir.rooms.map((r) => ({ id: r.id, label: r.name, weeklyHours: dir.clinicHours }));
     const out: Lane[] = dir.doctors
       .filter((d) => (!doctorFilter || d.id === doctorFilter) && (d.active || visible.some((b) => b.doctor?.id === d.id)))
-      .map((d) => ({ id: d.id, label: d.name, sublabel: d.specialty, weeklyHours: d.weeklyHours }));
+      .map((d) => ({ id: d.id, label: d.name, sublabel: d.specialty, weeklyHours: d.weeklyHours, color: colorOf(d) ?? undefined }));
     // Los bloqueos de consultorio no tienen doctor: tienen su propia columna para que no se pierdan.
     if (!doctorFilter && visible.some((b) => !b.doctor)) {
       out.push({ id: BLOCKS_LANE, label: "Bloqueos", sublabel: "Consultorios", weeklyHours: dir.clinicHours });
@@ -159,6 +162,19 @@ export function CalendarPage() {
           <SyncStatus syncedAt={syncedAt} />
         </span>
       </div>
+
+      {/* La leyenda de colores (cada doctor tiene el suyo en todas las vistas); sirve también de filtro. En «Día» por doctor
+          los encabezados de las columnas ya llevan el color y el nombre. APAGADA por ahora: ver `features.doctorLegend`. */}
+      {features.doctorLegend && dir && !(view === "dia" && laneBy === "doctor") && (
+        <div className="overflow-x-auto border-b px-4 py-1.5 sm:px-6">
+          <DoctorLegend
+            doctors={dir.doctors.filter((d) => d.active || d.id === doctorFilter || visible.some((b) => b.doctor?.id === d.id))}
+            selectedId={doctorFilter || null}
+            onSelect={(id) => go({ doctor: id })}
+            className="sm:flex-wrap max-sm:flex-nowrap [&>li]:shrink-0"
+          />
+        </div>
+      )}
 
       {error && ready && (
         <div role="status" className="flex items-center gap-2 border-b border-danger-soft bg-danger-tint px-4 py-1.5 text-xs font-semibold text-danger-text sm:px-6">

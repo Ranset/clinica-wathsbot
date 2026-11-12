@@ -87,6 +87,10 @@ paso 7: vuelve el bot con Google Calendar. También sirve apagar el botón **Bot
 - Si el interruptor está apagado: **no contesta** y no llama al modelo.
 - Si la API no responde o el modelo falla: envía el mensaje de respaldo ("un miembro del equipo se pondrá en contacto") y registra el caso en
   *Atención* de la clínica (`POST /api/bot/handoffs`). Nunca ofrece horarios de memoria.
+- Le habla al paciente con las horas en **12 h con AM/PM** ("10:00 AM", "4:30 PM"). Si ves en el registro `ACTION` con horas de 24 h
+  (`2026-11-12T16:30`) es normal: son los datos que viajan a la API; solo lo que lee el paciente va en 12 h. Si en tu
+  `system_prompt.md` hay horarios escritos a mano en 24 h (fuera de las líneas `- Horario:` y `- Especialidades y doctores:`),
+  cámbialos a 12 h para que no se contradigan.
 - Si el paciente pide una persona, o manda fotos/audios/archivos (que el bot no puede ver), registra un caso en *Atención*
   (`ACTION pasar_a_persona`, `HANDOFF ... REGISTRADO` en `server.log`). Si Zernio rechaza la respuesta la reintenta con la misma
   `Idempotency-Key` y, si no puede, deja el caso en *Atención* y la línea `ENVIO FALLO` en `server.log`: avísale al usuario si la ves.

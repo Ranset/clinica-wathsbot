@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Button, isIsoDate, workingBands } from "@clinica/calendar";
+import { Button, hhmmLabel, isIsoDate, workingBands } from "@clinica/calendar";
 import { isApiError, type Booking, type Doctor, type Room } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { isConflict, messageFor } from "../../lib/errors";
@@ -178,7 +178,7 @@ export function BookingFormDialog({
             <Select value={time} onChange={(e) => setTime(e.target.value)}>
               {TIMES.map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {hhmmLabel(t)}
                 </option>
               ))}
             </Select>

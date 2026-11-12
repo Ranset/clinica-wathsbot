@@ -4,7 +4,7 @@ Compatibilidad: el servidor corre en **Python 3.10** (PythonAnywhere) con SQLAlc
 `ExceptionGroup`, `tomllib`, ni `datetime.fromisoformat` con 'Z' (usar `agenda.parse_dt`), ni APIs solo de SQLAlchemy 2.1.
 
 Estado: **F2, F3 y F4 hechas** — modelo de datos, migraciones, motor de agenda, seed, cola de eventos de Zernio, las rutas del bot y
-la API de personas. Rutas HTTP: las 51 operaciones de `../docs/openapi.yaml` (el contrato; se cambia ANTES que el codigo): `/api/health`,
+la API de personas. Rutas HTTP: las 52 operaciones de `../docs/openapi.yaml` (el contrato; se cambia ANTES que el codigo): `/api/health`,
 `/api/bot/*` (token de servicio), `POST /webhooks/zernio` (firma HMAC) y la API de personas (sesion por cookie, roles y CSRF):
 `/api/auth/*`, `/api/me`, `/api/appointments`, `/api/doctors`, `/api/users`, `/api/doctor/*`, etc. Una prueba compara las rutas
 reales con el contrato en los dos sentidos (ni una sin documentar, ni una sin implementar).

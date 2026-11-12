@@ -5,8 +5,9 @@ import type { Role } from "@clinica/api-client";
  * contrato): esto solo esconde lo que el servidor rechazaría con 403, para no
  * ofrecer botones que no sirven.
  *
- * - `admin` (técnico): todo, incluidos usuarios, alta de doctores y horario de la clínica.
- * - `staff` (personal): agenda, horarios y ausencias de los doctores, bot y casos.
+ * - `admin` (técnico): todo, incluida la administración de usuarios y eliminar doctores sin historial (lo único que no hace el personal).
+ * - `staff` (personal / recepción): agenda, horario de la clínica, doctores (alta, edición y baja), sus horarios y
+ *   ausencias, bot y casos.
  * - `doctor`: usa la PWA del doctor; en esta web no tiene pantallas.
  */
 export type Permissions = {
@@ -16,6 +17,8 @@ export type Permissions = {
   manageDoctorSchedules: boolean;
   /** Alta, edición y baja de doctores. */
   manageDoctors: boolean;
+  /** Eliminar DEFINITIVAMENTE un doctor (solo si nunca tuvo citas ni cuenta); el personal solo lo da de baja. */
+  deleteDoctors: boolean;
   editClinicHours: boolean;
   manageUsers: boolean;
   toggleBot: boolean;
@@ -29,8 +32,9 @@ export function permissionsFor(role: Role | null | undefined): Permissions {
     useAdminWeb: staff,
     manageAppointments: staff,
     manageDoctorSchedules: staff,
-    manageDoctors: admin,
-    editClinicHours: admin,
+    manageDoctors: staff,
+    deleteDoctors: admin,
+    editClinicHours: staff,
     manageUsers: admin,
     toggleBot: staff,
     handleAttention: staff,

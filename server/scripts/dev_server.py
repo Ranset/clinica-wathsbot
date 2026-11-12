@@ -47,6 +47,10 @@ def main() -> int:
         print(f"No existe {DEV_DB}.\nCreala primero (una sola vez):  cd server && .venv/Scripts/python scripts/dev_seed.py")
         return 1
     os.environ["DATABASE_URL"] = DEV_URL
+    # Al arrancar se aplican las migraciones pendientes de la base de DESARROLLO (idempotente; conserva sus datos): asi una
+    # columna nueva no obliga a borrarla con `dev_seed.py --reset`. Solo aqui, porque este script solo toca dev.db.
+    from app.migrate import upgrade
+    upgrade(DEV_URL)
     os.environ.setdefault("AUTH_COOKIE_SECURE", "0")
     custom_token = bool(os.environ.get("BOT_TOKEN")) and os.environ["BOT_TOKEN"] != DEV_BOT_TOKEN
     os.environ.setdefault("BOT_TOKEN", DEV_BOT_TOKEN)

@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { doctorColor } from "@clinica/calendar";
+import { features } from "../src/features";
 import { NOW, account, bookingButton, freezeClock, localDay, mountApp, pickBooking } from "./helpers";
 
 beforeEach(freezeClock);
+
+/** Las funciones apagadas por defecto (`src/features.ts`): cada prueba que enciende una la deja como estaba. */
+const FEATURE_DEFAULTS = { ...features };
+afterEach(() => {
+  Object.assign(features, FEATURE_DEFAULTS);
+});
 
 /** Cada prueba cierra comprobando que ninguna peticion/respuesta salio del contrato. */
 let violations: string[] = [];
@@ -16,7 +24,7 @@ const laneId = (name: RegExp) => ({ cervantes: "d1", perez: "d2", bordas: "d3", 
 
 async function ready() {
   // El calendario cargo: ya hay citas pintadas.
-  await screen.findAllByRole("button", { name: /\d{2}:\d{2} a \d{2}:\d{2}$/ });
+  await screen.findAllByRole("button", { name: /\d{1,2}:\d{2}\s[AP]M a \d{1,2}:\d{2}\s[AP]M$/ });
 }
 
 describe("sesion", () => {
@@ -82,18 +90,20 @@ describe("permisos en la interfaz", () => {
     expect(within(nav).getByRole("link", { name: "Usuarios" })).toBeInTheDocument();
   });
 
-  it("solo el administrador da de alta doctores y cambia el horario de la clinica", async () => {
+  it("el personal y el administrador dan de alta doctores y cambian el horario de la clinica; Usuarios es solo del administrador", async () => {
     const staff = await mountApp({ as: "staff", hash: "#/doctores" });
     violations = staff.violations;
     await screen.findByRole("heading", { name: "Doctores" });
-    expect(screen.queryByRole("button", { name: "Nuevo doctor" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cambiar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Nuevo doctor" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cambiar" })).toBeInTheDocument();   // horario de la clinica
+    expect(screen.queryByRole("link", { name: "Usuarios" })).not.toBeInTheDocument();
     staff.unmount();
 
     const admin = await mountApp({ as: "admin", hash: "#/doctores" });
     violations = [...violations, ...admin.violations];
     expect(await screen.findByRole("button", { name: "Nuevo doctor" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cambiar" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Usuarios" })).toBeInTheDocument();
   });
 });
 
@@ -128,6 +138,57 @@ describe("calendario", () => {
     await waitFor(() => expect(document.querySelectorAll("[data-lane]")).toHaveLength(1));
     expect(await bookingButton(cervantes)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: new RegExp(`^${other.patient!.name},`) })).not.toBeInTheDocument();
+  });
+
+  it("cada doctor tiene su color: citas y encabezados de columna; la leyenda de colores esta apagada por defecto", async () => {
+    const { user, mock, violations: v } = await mountApp({ hash: "#/calendario?dia=2026-11-11" });
+    violations = v;
+    const c1 = pickBooking(mock, "2026-11-11", { doctorId: "d1" });
+    const c4 = pickBooking(mock, "2026-11-11", { doctorId: "d4" });
+    await ready();
+
+    // dia por doctor: la cita se rellena con el color de su doctor y cada columna lleva su franja
+    expect(await bookingButton(c1)).toHaveStyle({ backgroundColor: doctorColor("d1")! });
+    expect(await bookingButton(c4)).toHaveStyle({ backgroundColor: doctorColor("d4")! });
+    expect(doctorColor("d1")).not.toBe(doctorColor("d4"));
+    for (const id of ["d1", "d2", "d3", "d4", "d5", "d6", "d7"]) {
+      expect(document.querySelector(`[data-lane-head="${id}"]`)).toHaveStyle({ borderTopColor: doctorColor(id)! });
+    }
+
+    // semana: los colores se ven igual, pero SIN leyenda (apagada: `features.doctorLegend`); el filtro de la barra sigue ahi
+    await user.click(screen.getByRole("button", { name: "Semana" }));
+    expect(await bookingButton(c4)).toHaveStyle({ backgroundColor: doctorColor("d4")! });
+    expect(screen.queryByRole("list", { name: "Colores por doctor" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Filtrar por doctor")).toBeInTheDocument();
+  });
+
+  it("la leyenda de colores (apagada por defecto) vuelve al encenderla con features.doctorLegend: lista a los doctores y filtra al hacer clic", async () => {
+    features.doctorLegend = true;
+    const { user, mock, violations: v } = await mountApp({ hash: "#/calendario?vista=semana&dia=2026-11-11" });
+    violations = v;
+    const c1 = pickBooking(mock, "2026-11-11", { doctorId: "d1" });
+    const c4 = pickBooking(mock, "2026-11-11", { doctorId: "d4" });
+    const legend = await screen.findByRole("list", { name: "Colores por doctor" });
+    expect(within(legend).getAllByRole("button")).toHaveLength(7);
+    const chip = within(legend).getByRole("button", { name: /Dr\. Gustavo Torrealba/ });
+    expect(chip.querySelector("span")).toHaveStyle({ backgroundColor: doctorColor("d4")! });
+    expect(await bookingButton(c4)).toHaveStyle({ backgroundColor: doctorColor("d4")! });
+
+    // en «Día» por doctor sobra (los encabezados ya llevan el color y el nombre)
+    await user.click(screen.getByRole("button", { name: "Día" }));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Colores por doctor" })).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Semana" }));
+    const again = await screen.findByRole("list", { name: "Colores por doctor" });
+
+    // un clic en un doctor de la leyenda filtra por el; otro clic vuelve a mostrar a todos
+    await user.click(within(again).getByRole("button", { name: /Dr\. Gustavo Torrealba/ }));
+    await waitFor(() => expect(window.location.hash).toContain("doctor=d4"));
+    expect(within(again).getByRole("button", { name: /Dr\. Gustavo Torrealba/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Filtrar por doctor")).toHaveValue("d4");
+    await waitFor(() => expect(screen.queryByRole("button", { name: new RegExp(`^${c1.patient!.name},`) })).not.toBeInTheDocument());
+    await user.click(within(again).getByRole("button", { name: /Dr\. Gustavo Torrealba/ }));
+    await waitFor(() => expect(window.location.hash).not.toContain("doctor="));
+    expect(await bookingButton(c1)).toBeInTheDocument();
   });
 
   it("los bloqueos de consultorio tienen su propia columna, para que no se pierdan", async () => {
@@ -269,7 +330,29 @@ describe("detalle de una cita", () => {
     expect(dialog).toHaveTextContent(b.source === "ai" ? "Agendó el bot de WhatsApp" : "Personal de la clínica");
   });
 
-  it("marca la cita como realizada y como no asistio, y permite corregir", async () => {
+  it("las opciones de marcar la cita como realizada o no asistio estan apagadas por defecto (features.attendanceStatus); lo demas sigue", async () => {
+    const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+    violations = m.violations;
+    const { b, dialog } = await openBooking(m);
+    expect(within(dialog).getByRole("button", { name: "Mover a otro horario" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Cancelar la cita" })).toBeInTheDocument();
+    for (const name of [/Marcar como realizada/, /No asistió/, /Corregir/]) expect(within(dialog).queryByRole("button", { name })).not.toBeInTheDocument();
+    expect(m.mock.db.bookings.find((x) => x.id === b.id)!.status).toBe("agendada");           // nada cambio
+  });
+
+  it("una cita que YA esta realizada o no asistio sigue mostrando su estado, pero no se ofrece cambiarlo (features.attendanceStatus apagado)", async () => {
+    const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+    violations = m.violations;
+    const hecha = pickBooking(m.mock, DAY, { doctorId: "d1" });
+    m.mock.db.bookings.find((x) => x.id === hecha.id)!.status = "realizada";
+    const { dialog } = await openBooking(m, { ...hecha, status: "realizada" });
+    expect(dialog).toHaveTextContent("Realizada");
+    expect(within(dialog).queryByRole("button", { name: /Corregir/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("region", { name: "Corregir estado" })).not.toBeInTheDocument();
+  });
+
+  it("encendiendo features.attendanceStatus vuelve a marcar la cita como realizada y como no asistio, y permite corregir", async () => {
+    features.attendanceStatus = true;
     const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
     violations = m.violations;
     const { b, dialog } = await openBooking(m);
@@ -426,7 +509,7 @@ describe("doctores", () => {
     violations = v;
     const section = (await screen.findByRole("heading", { name: /Solicitudes de cambio de horario \(1\)/ })).closest("section")!;
     expect(section).toHaveTextContent("Dra. Bordas Rodríguez");
-    expect(section).toHaveTextContent("Lun, Mié, Vie 10:00–16:00");
+    expect(section).toHaveTextContent("Lun, Mié, Vie 10:00 AM–4:00 PM");
     await user.click(within(section).getByRole("button", { name: "Aprobar" }));
     expect(await screen.findByText(/Solicitud aprobada/)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("heading", { name: /Solicitudes de cambio/ })).not.toBeInTheDocument());
@@ -434,7 +517,7 @@ describe("doctores", () => {
       mon: [{ start: "10:00", end: "16:00" }], wed: [{ start: "10:00", end: "16:00" }], fri: [{ start: "10:00", end: "16:00" }],
     });
     const card = screen.getByRole("button", { name: "Horario y ausencias de Dra. Bordas Rodríguez" }).closest("li")!;
-    await waitFor(() => expect(card).toHaveTextContent("Horario propio: Lun, Mié, Vie 10:00–16:00"));
+    await waitFor(() => expect(card).toHaveTextContent("Horario propio: Lun, Mié, Vie 10:00 AM–4:00 PM"));
   });
 
   it("al aprobar una solicitud avisa de las citas agendadas que quedaron fuera del nuevo horario", async () => {
@@ -452,6 +535,28 @@ describe("doctores", () => {
     expect(screen.getByText(/quedan afectadas|queda afectada/)).toBeInTheDocument();                       // el aviso sigue aunque la solicitud ya no
   });
 
+  it("recepcion (personal) cambia el horario de la clinica: lo guarda y se ve; un horario que deja a un doctor fuera se rechaza", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    const card = await screen.findByRole("region", { name: "Horario de la clínica" });
+    expect(card).toHaveTextContent("Lun–Vie 9:00 AM–6:00 PM · Sáb 9:00 AM–1:00 PM");
+    await user.click(within(card).getByRole("button", { name: "Cambiar" }));
+
+    await user.selectOptions(within(card).getByLabelText("Lunes: hasta"), "17:00");
+    await user.click(within(card).getByRole("button", { name: "Guardar" }));
+    expect(await screen.findByText("Horario de la clínica guardado.")).toBeInTheDocument();
+    expect(mock.db.clinicHours.mon).toEqual([{ start: "09:00", end: "17:00" }]);
+    await waitFor(() => expect(screen.getByRole("region", { name: "Horario de la clínica" })).toHaveTextContent("Lun 9:00 AM–5:00 PM"));
+
+    // el servidor manda: Dra. Perez (horario propio los martes 10-14) no puede quedar fuera del de la clinica
+    const again = screen.getByRole("region", { name: "Horario de la clínica" });
+    await user.click(within(again).getByRole("button", { name: "Cambiar" }));
+    await user.selectOptions(within(again).getByLabelText("Martes: hasta"), "12:00");
+    await user.click(within(again).getByRole("button", { name: "Guardar" }));
+    expect(await within(again).findByText(/quedaría fuera del de la clínica/)).toBeInTheDocument();
+    expect(mock.db.clinicHours.tue).toEqual([{ start: "09:00", end: "18:00" }]);                  // sin cambios
+  });
+
   it("horario propio de un doctor: valida contra el de la clinica y avisa de las citas que quedan fuera", async () => {
     const { user, mock, violations: v } = await mountApp({ hash: "#/doctores" });
     violations = v;
@@ -461,7 +566,7 @@ describe("doctores", () => {
     await user.click(within(dialog).getByRole("radio", { name: /Un horario propio/ }));
     // Sabado 09:00-13:00 de la clinica: pedir hasta las 15:00 queda fuera.
     await user.selectOptions(within(dialog).getByLabelText("Sábado: hasta"), "15:00");
-    expect(await within(dialog).findByText(/Fuera del horario de la clínica \(09:00–13:00\)/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(/Fuera del horario de la clínica \(9:00 AM–1:00 PM\)/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Guardar horario" })).toBeDisabled();
     await user.selectOptions(within(dialog).getByLabelText("Sábado: hasta"), "12:00");
 
@@ -496,6 +601,154 @@ describe("doctores", () => {
 
     await user.click(within(dialog).getByRole("button", { name: /Quitar la ausencia/ }));
     await waitFor(() => expect(mock.db.absences.some((a) => a.doctorId === "d4")).toBe(false));
+  });
+
+  it("se elige el color de un doctor (paleta, otro color, automático); se ve de inmediato en el calendario y se avisa si es muy claro o ya lo usa otro", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    const colorOfD1 = () => mock.db.doctors.find((d) => d.id === "d1")!.color ?? null;
+    await user.click(await screen.findByRole("button", { name: "Horario y ausencias de Dr. Cervantes Peláez" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dr. Cervantes Peláez" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    const form = within(dialog).getByRole("form", { name: "Datos del doctor" });
+    const group = within(form).getByRole("radiogroup", { name: "Color en el calendario" });
+    const save = () => user.click(within(form).getByRole("button", { name: "Guardar datos" }));
+
+    // sin color elegido: «Automático» está marcado y la vista previa lleva el color automático de ese doctor
+    expect(within(group).getByRole("radio", { name: "Automático" })).toBeChecked();
+    expect(within(form).getByTestId("color-preview")).toHaveStyle({ backgroundColor: doctorColor("d1")! });
+    expect(within(group).getAllByRole("radio")).toHaveLength(11);                      // automático + los 10 de la paleta
+
+    // la paleta: «rojo» no lo usa ningún doctor (los 7 primeros colores ya son de los 7 doctores); «naranja» es el automático del Dr. Pérez (d2): solo se avisa
+    await user.click(within(group).getByRole("radio", { name: "naranja" }));
+    expect(within(group).getByRole("radio", { name: "naranja" })).toBeChecked();
+    expect(within(form).getByTestId("color-preview")).toHaveStyle({ backgroundColor: "#c2410c" });
+    expect(within(form).getByText(/Ese color ya lo usa Dr\. Pérez Lago/)).toBeInTheDocument();
+    await user.click(within(group).getByRole("radio", { name: "rojo" }));
+    expect(within(form).queryByText(/ya lo usa/)).not.toBeInTheDocument();
+    await save();
+    await waitFor(() => expect(colorOfD1()).toBe("#b91c1c"));
+
+    // «Otro color»: uno legible se acepta (y ningún círculo de la paleta queda marcado); uno muy claro se rechaza y no cambia nada
+    const other = within(group).getByLabelText("Otro color");
+    fireEvent.change(other, { target: { value: "#ffff00" } });
+    expect(await within(form).findByText(/Ese color es muy claro/)).toBeInTheDocument();
+    expect(within(form).getByTestId("color-preview")).toHaveStyle({ backgroundColor: "#b91c1c" });      // seguía el anterior
+    fireEvent.change(other, { target: { value: "#047857" } });
+    expect(within(form).queryByText(/Ese color es muy claro/)).not.toBeInTheDocument();
+    expect(within(form).getByTestId("color-preview")).toHaveStyle({ backgroundColor: "#047857" });
+    expect(within(group).getAllByRole("radio").filter((r) => r.getAttribute("aria-checked") === "true")).toHaveLength(0);
+    await save();
+    await waitFor(() => expect(colorOfD1()).toBe("#047857"));
+    // y la cita ya agendada de ese doctor lleva el color nuevo (el servidor la copia)
+    expect(mock.db.bookings.filter((b) => b.doctor?.id === "d1").every((b) => b.doctor?.color === "#047857")).toBe(true);
+
+    // en el calendario el doctor se ve con ese color: la columna del día, la cita agendada y la leyenda en la semana
+    await user.click(within(dialog).getByRole("button", { name: /Cerrar|Close/i }));
+    await user.click(screen.getByRole("link", { name: "Calendario" }));
+    window.location.hash = "#/calendario?dia=2026-11-11";
+    await ready();
+    expect(document.querySelector('[data-lane-head="d1"]')).toHaveStyle({ borderTopColor: "#047857" });
+    const c1 = pickBooking(mock, "2026-11-11", { doctorId: "d1" });
+    expect(await bookingButton(c1)).toHaveStyle({ backgroundColor: "#047857" });
+    expect(document.querySelector('[data-lane-head="d2"]')).toHaveStyle({ borderTopColor: doctorColor("d2")! });   // los demás, igual
+  });
+
+  it("«Automático» devuelve el color de la paleta y un doctor nuevo puede nacer con color", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "admin", hash: "#/doctores" });
+    violations = v;
+    // alta con color elegido
+    await user.click(await screen.findByRole("button", { name: "Nuevo doctor" }));
+    const alta = await screen.findByRole("dialog", { name: "Nuevo doctor" });
+    await user.type(within(alta).getByLabelText("Nombre"), "Dra. Con Color");
+    await user.type(within(alta).getByLabelText("Especialidad"), "Pediatría");
+    await user.click(within(alta).getByRole("radio", { name: "morado" }));
+    await user.click(within(alta).getByRole("button", { name: "Dar de alta" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Con Color")?.color).toBe("#7e22ce"));
+
+    // se abre su ficha: el color elegido está marcado; «Automático» lo quita
+    const dialog = await screen.findByRole("dialog", { name: "Dra. Con Color" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    const form = within(dialog).getByRole("form", { name: "Datos del doctor" });
+    expect(within(form).getByRole("radio", { name: "morado" })).toBeChecked();
+    await user.click(within(form).getByRole("radio", { name: "Automático" }));
+    await user.click(within(form).getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Con Color")?.color).toBeNull());
+  });
+
+  it("recepcion (personal) da de alta un doctor, edita sus datos y lo da de baja", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    await user.click(await screen.findByRole("button", { name: "Nuevo doctor" }));
+    const alta = await screen.findByRole("dialog", { name: "Nuevo doctor" });
+    await user.type(within(alta).getByLabelText("Nombre"), "Dra. Alta Recepción");
+    await user.type(within(alta).getByLabelText("Especialidad"), "Pediatría");
+    await user.type(within(alta).getByLabelText("Sinónimos"), "pediatra");
+    await user.click(within(alta).getByRole("button", { name: "Dar de alta" }));
+    await waitFor(() => expect(mock.db.doctors.some((d) => d.name === "Dra. Alta Recepción")).toBe(true));
+
+    // sus datos se editan desde «Horario y ausencias» -> pestaña «Datos»
+    await user.click(await screen.findByRole("button", { name: "Horario y ausencias de Dra. Alta Recepción" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dra. Alta Recepción" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    const form = within(dialog).getByRole("form", { name: "Datos del doctor" });
+    const specialty = within(form).getByLabelText("Especialidad");
+    await user.clear(specialty);
+    await user.type(specialty, "Pediatría general");
+    await user.click(within(form).getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Alta Recepción")!.specialty).toBe("Pediatría general"));
+
+    await user.click(within(form).getByRole("checkbox", { name: /Activo/ }));
+    await user.click(within(form).getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Alta Recepción")!.active).toBe(false));
+  });
+
+  it("el administrador elimina un doctor dado de alta por error (con confirmación); con citas o cuenta no se deja", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "admin", hash: "#/doctores" });
+    violations = v;
+    await user.click(await screen.findByRole("button", { name: "Nuevo doctor" }));
+    const alta = await screen.findByRole("dialog", { name: "Nuevo doctor" });
+    await user.type(within(alta).getByLabelText("Nombre"), "Dr. Por Error");
+    await user.type(within(alta).getByLabelText("Especialidad"), "Cardiología");
+    await user.click(within(alta).getByRole("button", { name: "Dar de alta" }));
+    await waitFor(() => expect(mock.db.doctors.some((d) => d.name === "Dr. Por Error")).toBe(true));
+
+    const openData = async (name: string) => {
+      await user.click(await screen.findByRole("button", { name: `Horario y ausencias de ${name}` }));
+      const dlg = await screen.findByRole("dialog", { name });
+      await user.click(within(dlg).getByRole("tab", { name: "Datos" }));
+      return dlg;
+    };
+
+    // el doctor sin historial: pide confirmación (Cancelar no borra nada) y luego se elimina
+    let dialog = await openData("Dr. Por Error");
+    await user.click(within(dialog).getByRole("button", { name: "Eliminar doctor…" }));
+    expect(within(dialog).getByText(/¿Eliminar definitivamente a Dr\. Por Error\?/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancelar" }));
+    expect(mock.db.doctors.some((d) => d.name === "Dr. Por Error")).toBe(true);
+    await user.click(within(dialog).getByRole("button", { name: "Eliminar doctor…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Sí, eliminar" }));
+    await waitFor(() => expect(mock.db.doctors.some((d) => d.name === "Dr. Por Error")).toBe(false));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dr. Por Error" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Horario y ausencias de Dr. Por Error" })).not.toBeInTheDocument();
+
+    // un doctor con citas (y con cuenta): el servidor se niega, dice por qué y no se pierde nada
+    dialog = await openData("Dr. Cervantes Peláez");
+    await user.click(within(dialog).getByRole("button", { name: "Eliminar doctor…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Sí, eliminar" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/citas en el historial.*baja/);
+    expect(mock.db.doctors.some((d) => d.id === "d1")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Sí, eliminar" })).toBeEnabled();      // se puede cancelar o reintentar
+  });
+
+  it("recepcion no ve «Eliminar doctor»: solo da de baja", async () => {
+    const { user, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    await user.click(await screen.findByRole("button", { name: "Horario y ausencias de Dr. Cervantes Peláez" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dr. Cervantes Peláez" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    expect(within(dialog).getByRole("checkbox", { name: /Activo/ })).toBeInTheDocument();    // la baja sí
+    expect(within(dialog).queryByRole("button", { name: /Eliminar doctor/ })).not.toBeInTheDocument();
   });
 
   it("el administrador da de alta un doctor", async () => {

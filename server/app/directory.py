@@ -16,13 +16,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .agenda import Availability
 from .agenda.audit import SYSTEM, Actor, audit
-from .agenda.errors import NO_ENCONTRADO, TRANSICION_INVALIDA, VALIDACION, AgendaError
+from .agenda.errors import (DOCTOR_CON_CITAS, DOCTOR_CON_USUARIO, NO_ENCONTRADO, TRANSICION_INVALIDA, VALIDACION,
+                            AgendaError)
 from .agenda.repo import Repo
 from .agenda.rules import Rules
 from .agenda.uow import Unit
+from .colors import HEX, is_readable_on_white
 from .db import is_unique_violation, to_db
-from .models import (ATTENTION_STATUSES, REQUEST_STATUSES, Appointment, AttentionCase, Doctor, PushSubscription, Room,
-                     ScheduleChangeRequest, User)
+from .models import (ATTENTION_STATUSES, REQUEST_STATUSES, Appointment, AppointmentBlock, AttentionCase, Doctor,
+                     DoctorAbsence, PushSubscription, Room, ScheduleChangeRequest, User)
 
 MAX_ALIASES, MAX_PENDING_REQUESTS, MAX_PUSH_PER_USER = 20, 3, 10
 
@@ -36,6 +38,7 @@ class DoctorView:
     active: bool
     weekly: dict
     uses_clinic_hours: bool
+    color: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,18 @@ def _text(value, field: str, maxlen: int, *, required=True) -> str | None:
     return v or None
 
 
+def _color(value) -> str | None:
+    """`None` = automatico; si no, `#rrggbb` (se guarda en minusculas) con texto blanco legible encima."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not HEX.match(value):
+        raise _bad("color: usa el formato #rrggbb (por ejemplo #1d4ed8) o null para el automatico")
+    value = value.lower()
+    if not is_readable_on_white(value):
+        raise _bad("color: es demasiado claro, el texto blanco de las citas no se leeria; elige uno mas oscuro")
+    return value
+
+
 def _aliases(value) -> list[str]:
     if not isinstance(value, list) or len(value) > MAX_ALIASES:
         raise _bad(f"aliases: una lista de hasta {MAX_ALIASES} textos")
@@ -98,7 +113,7 @@ class Directory(Unit):
     @staticmethod
     def _doctor_view(repo: Repo, doc: Doctor, clinic) -> DoctorView:
         return DoctorView(doc.id, doc.name, doc.specialty, list(doc.aliases or []), bool(doc.active),
-                          repo.doctor_schedule(doc, clinic).to_weekly(), bool(doc.uses_clinic_hours))
+                          repo.doctor_schedule(doc, clinic).to_weekly(), bool(doc.uses_clinic_hours), doc.color)
 
     def doctors(self, only_id: int | None = None) -> list[DoctorView]:
         """Todos los doctores (activos o no) con su horario efectivo; `only_id` limita a uno."""
@@ -118,9 +133,10 @@ class Directory(Unit):
         active = data.get("active", True)
         if not isinstance(active, bool):
             raise _bad("active debe ser verdadero o falso")
+        color = _color(data.get("color"))
 
         def work(repo, s):
-            doc = Doctor(name=name, specialty=specialty, aliases=aliases, active=active, uses_clinic_hours=True)
+            doc = Doctor(name=name, specialty=specialty, aliases=aliases, active=active, color=color, uses_clinic_hours=True)
             s.add(doc)
             s.flush()
             audit(s, actor, "doctor.create", "doctor", doc.id)
@@ -141,6 +157,8 @@ class Directory(Unit):
             if not isinstance(data["active"], bool):
                 raise _bad("active debe ser verdadero o falso")
             changes["active"] = data["active"]
+        if "color" in data:                      # null = volver al color automatico
+            changes["color"] = _color(data["color"])
 
         def work(repo, s):
             doc = repo.doctor(doctor_id)
@@ -152,6 +170,28 @@ class Directory(Unit):
             audit(s, actor, "doctor.update", "doctor", doc.id, {"changed": sorted(changes)})
             return self._doctor_view(repo, doc, repo.clinic_schedule())
         return self._unique_name(work)
+
+    def delete_doctor(self, doctor_id, actor: Actor = SYSTEM) -> None:
+        """Elimina DEFINITIVAMENTE un doctor. Solo si nunca tuvo citas (ni bloques de agenda) y no hay una cuenta de
+        usuario ligada a el: asi no quedan citas huerfanas ni se pierde historial. En cualquier otro caso se da de baja
+        (`active=false`). Sus horarios, ausencias y solicitudes de cambio de horario se van con el. Queda en la bitacora."""
+        def work(repo, s):
+            doc = repo.doctor(doctor_id)
+            if doc is None:
+                raise AgendaError(NO_ENCONTRADO)
+            citas = (s.scalar(select(func.count()).select_from(Appointment).where(Appointment.doctor_id == doc.id)) or 0) \
+                + (s.scalar(select(func.count()).select_from(AppointmentBlock).where(AppointmentBlock.doctor_id == doc.id)) or 0)
+            if citas:
+                raise AgendaError(DOCTOR_CON_CITAS,
+                                  "Este doctor tiene citas en el historial: no se puede eliminar. Dalo de baja para que deje de ofrecerse.")
+            if s.scalar(select(func.count()).select_from(User).where(User.doctor_id == doc.id)):
+                raise AgendaError(DOCTOR_CON_USUARIO,
+                                  "Hay una cuenta de usuario ligada a este doctor: elimínala o cámbiala primero en Usuarios.")
+            audit(s, actor, "doctor.delete", "doctor", doc.id, {"name": doc.name, "specialty": doc.specialty})
+            s.execute(delete(DoctorAbsence).where(DoctorAbsence.doctor_id == doc.id))
+            s.execute(delete(ScheduleChangeRequest).where(ScheduleChangeRequest.doctor_id == doc.id))
+            s.delete(doc)  # sus tramos de horario se borran en cascada
+        self._write(work)
 
     def _unique_name(self, work):
         try:

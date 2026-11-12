@@ -321,13 +321,84 @@ describe("permisos y sesion", () => {
     const seen = vi.fn();
     api.onUnauthenticated(seen);
     expect(await code(api.users.list())).toBe("403 sin_permiso"); // staff no administra usuarios
-    expect(await code(api.doctors.create({ name: "Dr. X Y", specialty: "Z" }))).toBe("403 sin_permiso");
-    expect(await code(api.clinicHours.set({}))).toBe("403 sin_permiso");
     expect(await code(api.doctorSelf.hours())).toBe("403 sin_permiso");
 
     mock.controls.expireSession();
     expect(await code(api.appointments.list({ from: NOW.toISOString(), to: new Date(NOW.getTime() + 86_400_000).toISOString() }))).toBe("401 no_autenticado");
     expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  it("el personal (recepcion) da de alta, edita y da de baja doctores; un doctor recibe 403", async () => {
+    await login("staff");
+    const created = await api.doctors.create({ name: "Dra. Alta Recepcion", specialty: "Pediatria", aliases: ["pediatra"] });
+    expect(created).toMatchObject({ name: "Dra. Alta Recepcion", specialty: "Pediatria", active: true });
+    expect((await api.doctors.update(created.id, { specialty: "Pediatria general" })).specialty).toBe("Pediatria general");
+    expect((await api.doctors.update(created.id, { active: false })).active).toBe(false);
+
+    await api.auth.logout();
+    await login("doctor");
+    expect(await code(api.doctors.create({ name: "Dr. X Y", specialty: "Z" }))).toBe("403 sin_permiso");
+    expect(await code(api.doctors.update(D.torrealba, { specialty: "Otra" }))).toBe("403 sin_permiso");
+  });
+
+  it("solo el administrador elimina doctores, y solo sin citas ni cuenta ligada; si no, se da de baja", async () => {
+    const nuevo = await api.doctors.create({ name: "Dr. Por Error", specialty: "Cardiologia" });   // sesion: personal
+    expect(await code(api.doctors.remove(nuevo.id))).toBe("403 sin_permiso");
+    await api.auth.logout();
+    await login("doctor");
+    expect(await code(api.doctors.remove(nuevo.id))).toBe("403 sin_permiso");
+    await api.auth.logout();
+    await login("admin");
+
+    expect(await code(api.doctors.remove(D.cervantes))).toBe("409 doctor_con_usuario");             // tiene cuenta (la PWA)
+    const cita = await book({ doctorId: D.bordas });
+    expect(await code(api.doctors.remove(D.bordas))).toBe("409 doctor_con_citas");
+    await api.appointments.update(cita.id, { status: "cancelada" });
+    expect(await code(api.doctors.remove(D.bordas))).toBe("409 doctor_con_citas");                  // cancelada sigue siendo historial
+    expect((await api.doctors.update(D.bordas, { active: false })).active).toBe(false);             // lo que si se puede: la baja
+
+    expect(await api.doctors.remove(nuevo.id)).toBeUndefined();                                      // sin historial: se elimina
+    expect((await api.doctors.list()).map((d) => d.id)).not.toContain(nuevo.id);
+    expect((await api.doctors.list()).map((d) => d.id)).toContain(D.bordas);                         // el de baja sigue ahi
+    expect(await code(api.doctors.remove(nuevo.id))).toBe("404 no_encontrado");
+  });
+
+  it("el color de un doctor se elige, se quita y llega a sus citas; uno demasiado claro o mal escrito se rechaza", async () => {
+    expect((await api.doctors.list()).every((d) => d.color === null)).toBe(true);                     // sin color elegido: automatico
+    const d = await api.doctors.create({ name: "Dr. Con Color", specialty: "Urologia", color: "#1D4ED8" });
+    expect(d.color).toBe("#1d4ed8");                                                                  // se guarda en minusculas
+
+    const cita = await book({ doctorId: d.id });
+    expect(cita.doctor?.color).toBe("#1d4ed8");
+    expect((await api.doctors.update(d.id, { color: "#be185d" })).color).toBe("#be185d");
+    expect((await api.doctors.update(d.id, { specialty: "Urologia general" })).color).toBe("#be185d");  // no se pierde al editar otra cosa
+    expect((await api.appointments.get(cita.id)).doctor?.color).toBe("#be185d");                      // la cita ya agendada lo sigue
+    expect((await api.doctors.update(d.id, { color: null })).color).toBeNull();                        // null = automatico
+    expect((await api.appointments.get(cita.id)).doctor?.color).toBeNull();
+
+    for (const malo of ["azul", "#fff", "1d4ed8", "#12345g", 123, ""]) {
+      expect(await code(lax.doctors.update(d.id, { color: malo as never }))).toBe("422 validacion");
+    }
+    for (const claro of ["#ffffff", "#ffff00", "#cccccc", "#777777"]) {
+      expect(await code(api.doctors.update(d.id, { color: claro }))).toBe("422 validacion");          // el texto blanco no se leeria
+      expect(await code(api.doctors.create({ name: "Dr. Muy Claro", specialty: "X", color: claro }))).toBe("422 validacion");
+    }
+    expect((await api.doctors.list()).some((x) => x.name === "Dr. Muy Claro")).toBe(false);
+    expect((await api.doctors.update(d.id, { color: "#767676" })).color).toBe("#767676");             // justo el limite AA
+  });
+
+  it("el personal (recepcion) cambia el horario de la clinica; un doctor recibe 403 y el horario no se mueve", async () => {
+    await login("staff");
+    const before = await api.clinicHours.get();
+    const next = { ...before, mon: [{ start: "09:00", end: "17:00" }] };
+    expect(await api.clinicHours.set(next)).toEqual(next);
+    expect(await api.clinicHours.get()).toEqual(next);
+    expect(await code(api.clinicHours.set({}))).not.toBe("403 sin_permiso"); // llega a la validacion (el servidor rechaza un horario vacio)
+
+    await api.auth.logout();
+    await login("doctor");
+    expect(await code(api.clinicHours.set(before))).toBe("403 sin_permiso");
+    expect(await api.clinicHours.get()).toEqual(next);                         // el doctor puede leerlo, no cambiarlo
   });
 
   it("el doctor solo ve lo suyo, sin telefono, y no entra a la agenda del personal", async () => {

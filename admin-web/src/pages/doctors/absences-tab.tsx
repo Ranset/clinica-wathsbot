@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { CalendarOff, Trash2 } from "lucide-react";
-import { addDaysISO, isIsoDate, todayInTz, wallClock } from "@clinica/calendar";
+import { addDaysISO, hhmmLabel, isIsoDate, todayInTz, wallClock } from "@clinica/calendar";
 import { isAbortError, type Absence, type Booking, type Doctor } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { messageFor } from "../../lib/errors";
@@ -145,12 +145,12 @@ export function AbsencesTab({ doctor, now }: { doctor: Doctor; now: Date }) {
           <div className="grid grid-cols-2 gap-3">
             <Field label="Hora de inicio">
               <Select value={fromTime} onChange={(e) => setFromTime(e.target.value)}>
-                {TIMES.map((t) => <option key={t}>{t}</option>)}
+                {TIMES.map((t) => <option key={t} value={t}>{hhmmLabel(t)}</option>)}
               </Select>
             </Field>
             <Field label="Hora final">
               <Select value={toTime} onChange={(e) => setToTime(e.target.value)}>
-                {TIMES.map((t) => <option key={t}>{t}</option>)}
+                {TIMES.map((t) => <option key={t} value={t}>{hhmmLabel(t)}</option>)}
               </Select>
             </Field>
           </div>

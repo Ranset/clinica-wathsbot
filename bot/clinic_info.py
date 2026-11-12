@@ -13,13 +13,43 @@ _NAMES = {"mon": "lunes", "tue": "martes", "wed": "miercoles", "thu": "jueves", 
           "sat": "sabados", "sun": "domingos"}
 
 
+def time12(h, m):
+    """Hora de 24 h -> texto de 12 h con meridiano, como se la decimos al paciente: (13, 30) -> '1:30 PM'; (0, 5) -> '12:05 AM'."""
+    h, m = int(h) % 24, int(m)
+    return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
 def _time(hhmm):
     h, m = str(hhmm).split(":")[:2]
-    return f"{int(h)}:{m}"
+    return time12(h, m)
 
 
 def _ranges(ranges):
     return " y ".join(f"{_time(r['start'])} a {_time(r['end'])}" for r in ranges)
+
+
+# --- red de seguridad: horas de 24 h en lo que va a leer el paciente ---------------------------------------------------
+# El prompt le pide al modelo hablar en 12 h (AM/PM); si se le escapa un "16:30" o "09:00 hrs" se corrige aqui, sin
+# adivinar. Solo se tocan las formas SIN ambiguedad: hora de 13 a 23, hora con cero a la izquierda ("09:30") o con "hrs"
+# ("10:00 hrs"). Un "10:00" suelto no se toca (podria ser ya de 12 h). No toca fechas ISO ("2026-11-12T10:00").
+_NOT_AFTER = r"(?<![\w:.])"
+_NOT_BEFORE = r"(?![\d:])"
+_SUFFIX = r"(?:\s*(?:hrs?\b\.?|horas?\b))?"
+_HOUR24 = re.compile(_NOT_AFTER + r"(0\d|1[3-9]|2[0-3]):([0-5]\d)" + _NOT_BEFORE + r"(?!\s*[ap]\.?\s?m\b)" + _SUFFIX, re.I)
+_HOUR_HRS = re.compile(_NOT_AFTER + r"(1?\d):([0-5]\d)" + _NOT_BEFORE + r"\s*hrs?\b\.?", re.I)
+
+
+# una fecha-hora ISO completa ("2026-11-12T16:30-05:00") se deja intacta, desfase incluido ("-05:00" no es una hora)
+_ISO = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)")
+
+
+def to_12h(text):
+    """Pasa a 12 h con meridiano las horas de 24 h inequivocas de un texto para el paciente (ver arriba)."""
+    if not text:
+        return text
+    sub = lambda m: time12(m.group(1), m.group(2))
+    parts = _ISO.split(text)  # con un grupo de captura: los tramos pares son texto, los impares son fechas ISO
+    return "".join(p if i % 2 else _HOUR_HRS.sub(sub, _HOUR24.sub(sub, p)) for i, p in enumerate(parts))
 
 
 def _day_list(days):
@@ -41,8 +71,8 @@ def _day_list(days):
 
 
 def summarize_hours(weekly):
-    """Horario semanal ({'mon': [{'start','end'}], ...}) -> 'lunes a viernes 9:00 a 18:00 hrs, sabados 9:00 a 13:00 hrs'.
-    Vacio o sin dias abiertos -> ''."""
+    """Horario semanal ({'mon': [{'start','end'}], ...}) -> 'lunes a viernes 9:00 AM a 6:00 PM, sabados 9:00 AM a 1:00 PM'
+    (12 h con meridiano; los datos de la API vienen en 24 h). Vacio o sin dias abiertos -> ''."""
     by_key, order = {}, []
     for d in _DAYS:
         rs = (weekly or {}).get(d) or []
@@ -53,7 +83,7 @@ def summarize_hours(weekly):
             by_key[key] = []
             order.append(key)
         by_key[key].append(d)
-    return ", ".join(f"{_day_list(by_key[k])} {k} hrs" for k in order)
+    return ", ".join(f"{_day_list(by_key[k])} {k}" for k in order)
 
 
 def _specialty(d):

@@ -62,7 +62,7 @@ describe("ausencias propias", () => {
     await t.user.click(screen.getByRole("button", { name: "Registrar ausencia" }));
 
     expect(await screen.findByText("No tienes citas agendadas en ese rango.")).toBeInTheDocument();
-    expect(await screen.findByText("sáb 5 dic · 10:00 → sáb 5 dic · 12:30")).toBeInTheDocument();
+    expect(await screen.findByText("sáb 5 dic · 10:00 AM → sáb 5 dic · 12:30 PM")).toBeInTheDocument();
     expect(posts(t.log)[0]!.body).toEqual({ startUtc: "2026-12-05T15:00:00.000Z", endUtc: "2026-12-05T17:30:00.000Z" });
   });
 
@@ -132,7 +132,7 @@ describe("ausencias sin conexión: solo lectura", () => {
     window.dispatchEvent(new Event("focus")); // el siguiente refresco falla
     expect(await screen.findByTestId("offline-pill")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Registrar ausencia" })).toBeDisabled();
-    expect(screen.getByText(/Última sincronización: hoy 10:00/)).toBeInTheDocument();
+    expect(screen.getByText(/Última sincronización: hoy 10:00 AM/)).toBeInTheDocument();
 
     t.mock.controls.setOffline(false);
     window.dispatchEvent(new Event("online"));
