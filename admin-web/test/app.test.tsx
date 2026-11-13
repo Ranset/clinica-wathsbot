@@ -1031,7 +1031,7 @@ describe("boton del bot", () => {
     violations = v;
     const toggle = await screen.findByRole("switch", { name: "Bot de WhatsApp" });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
-    mock.db.bot = { active: false, updatedAt: NOW.toISOString(), updatedBy: "Otra Persona" };
+    mock.db.bot = { ...mock.db.bot, active: false, channels: { ...mock.db.bot.channels, whatsapp: false }, updatedAt: NOW.toISOString(), updatedBy: "Otra Persona" };
     // La pestana vuelve a estar visible: se consulta de inmediato.
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));

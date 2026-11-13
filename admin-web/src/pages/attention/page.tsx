@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { AlertTriangle, Bot, CalendarOff, Check, Copy, MessageSquareWarning } from "lucide-react";
-import { Button, cn } from "@clinica/calendar";
-import { isAbortError, type AttentionItem } from "@clinica/api-client";
+import { Button, channelLabel, cn } from "@clinica/calendar";
+import { isAbortError, type AttentionItem, type Channel } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { messageFor } from "../../lib/errors";
 import { fmtDateTime, fmtPhone } from "../../lib/fmt";
@@ -25,10 +25,15 @@ const REASON: Record<string, string> = {
   otro: "Otro motivo",
 };
 
+/** Los canales del filtro, en orden. */
+const CHANNEL_FILTER: readonly Channel[] = ["whatsapp", "facebook", "instagram"];
+
 function Case({ item, onResolve, busy }: { item: AttentionItem; onResolve?: () => void; busy: boolean }) {
   const kind = KIND[item.kind];
   const Icon = kind.icon;
+  const channel: Channel = item.channel ?? "whatsapp";
   const [copied, setCopied] = useState(false);
+  const [copiedConv, setCopiedConv] = useState(false);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(item.phone ?? "");
@@ -38,6 +43,15 @@ function Case({ item, onResolve, busy }: { item: AttentionItem; onResolve?: () =
       /* el número queda visible para copiarlo a mano */
     }
   };
+  const copyConversation = async () => {
+    try {
+      await navigator.clipboard.writeText(item.conversationId ?? "");
+      setCopiedConv(true);
+      setTimeout(() => setCopiedConv(false), 2000);
+    } catch {
+      /* el id queda visible para copiarlo a mano */
+    }
+  };
   return (
     <li className={cn("flex flex-col gap-2 rounded-xl border bg-background p-4", item.status === "resolved" && "opacity-70")}>
       <div className="flex flex-wrap items-center gap-2">
@@ -45,6 +59,12 @@ function Case({ item, onResolve, busy }: { item: AttentionItem; onResolve?: () =
           <Icon className="h-4 w-4" aria-hidden />
         </span>
         <span className="text-sm font-bold">{kind.label}</span>
+        {item.kind !== "absence_affects_appointments" && (
+          <Pill tone={channel === "whatsapp" ? "neutral" : "brand"}>
+            <span className="sr-only">Canal: </span>
+            {channelLabel(channel)}
+          </Pill>
+        )}
         <span className="ml-auto text-xs text-text-3">{fmtDateTime(item.createdAtUtc)}</span>
       </div>
       <p className="text-sm">{REASON[item.reason] ?? item.reason}</p>
@@ -61,6 +81,22 @@ function Case({ item, onResolve, busy }: { item: AttentionItem; onResolve?: () =
             >
               {copied ? <Check className="h-3.5 w-3.5 text-success" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
             </button>
+          </span>
+        )}
+        {/* Messenger e Instagram no dan telefono: se contesta desde el inbox de Zernio, buscando la conversacion */}
+        {!item.phone && channel !== "whatsapp" && item.kind !== "absence_affects_appointments" && (
+          <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+            Contestar desde el inbox de Zernio
+            {item.conversationId && (
+              <button
+                type="button"
+                onClick={() => void copyConversation()}
+                aria-label={`Copiar el id de la conversación ${item.conversationId}`}
+                className="flex h-7 w-7 items-center justify-center rounded text-text-3 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft"
+              >
+                {copiedConv ? <Check className="h-3.5 w-3.5 text-success" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
+              </button>
+            )}
           </span>
         )}
         {item.conversationId && <span className="font-mono text-[11px] text-text-4">{item.conversationId}</span>}
@@ -86,6 +122,7 @@ export function AttentionPage() {
   const api = useApi();
   const toast = useToast();
   const [status, setStatus] = useState<"open" | "resolved">("open");
+  const [channel, setChannel] = useState<Channel | null>(null);
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<AttentionItem[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -95,7 +132,7 @@ export function AttentionPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  const key = `${status}:${page}`;
+  const key = `${status}:${page}:${channel ?? "todos"}`;
   const goToPage = (p: number) => {
     setPage(p);
     listRef.current?.scrollIntoView?.({ block: "start" });
@@ -105,12 +142,12 @@ export function AttentionPage() {
     async (signal?: AbortSignal) => {
       try {
         if (status === "open") {
-          const all = await api.attention.list("open", { signal });
+          const all = await api.attention.list("open", { signal, channel: channel ?? undefined });
           setItems(all);
           setTotal(all.length);
         } else {
           const offset = (page - 1) * PAGE_SIZE;
-          const res = await api.attention.page("resolved", { limit: PAGE_SIZE, offset }, { signal });
+          const res = await api.attention.page("resolved", { limit: PAGE_SIZE, offset, channel: channel ?? undefined }, { signal });
           // Un servidor que todavía no se actualizó (versión anterior: sin reiniciar) ignora `limit`/`offset` y no manda `total`:
           // se sigue viendo bien, con la lista completa y la paginación hecha aquí, en vez de «Página 1 de NaN».
           const total = Number.isInteger(res.total) ? res.total : res.items.length;
@@ -123,13 +160,13 @@ export function AttentionPage() {
           setItems(rows);
           setTotal(total);
         }
-        setLoadedKey(`${status}:${page}`);
+        setLoadedKey(`${status}:${page}:${channel ?? "todos"}`);
         setError(null);
       } catch (e) {
         if (!isAbortError(e)) setError(messageFor(e));
       }
     },
-    [api, status, page]
+    [api, status, page, channel]
   );
   usePolling(load, 15_000, true, key);
 
@@ -173,6 +210,27 @@ export function AttentionPage() {
       </header>
 
       <p className="text-sm text-text-3">Casos que el bot no pudo resolver solo. Contesta a cada paciente desde Zernio y márcalo aquí como atendido.</p>
+
+      <div role="group" aria-label="Canal" className="flex flex-wrap items-center gap-1.5">
+        {([null, ...CHANNEL_FILTER] as const).map((c) => (
+          <button
+            key={c ?? "todos"}
+            type="button"
+            aria-pressed={channel === c}
+            onClick={() => {
+              setItems(null);
+              setPage(1);
+              setChannel(c);
+            }}
+            className={cn(
+              "h-7 rounded-full border px-3 text-[13px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft",
+              channel === c ? "border-brand bg-brand-tint text-brand-text" : "bg-background text-text-3 hover:text-foreground"
+            )}
+          >
+            {c === null ? "Todos los canales" : channelLabel(c)}
+          </button>
+        ))}
+      </div>
 
       {error && !items && (
         <PageMessage title="No se pudieron cargar los casos" action={<Button onClick={() => void load()}>Reintentar</Button>}>

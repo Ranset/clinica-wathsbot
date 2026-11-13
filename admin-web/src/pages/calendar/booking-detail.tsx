@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Bot, CalendarClock, CalendarDays, Check, Copy, UserX, X } from "lucide-react";
-import { Button, bookingDotStyle, bookingTitle, bookingTone, hhmm, hhmmLabel, isIsoDate, longDayLabel, statusLabel, wallClock, cn } from "@clinica/calendar";
+import { Button, bookingDotStyle, bookingTitle, bookingTone, channelLabel, hhmm, hhmmLabel, isIsoDate, longDayLabel, statusLabel, wallClock, cn } from "@clinica/calendar";
 import type { Booking, BookingPatch, BookingStatus, Room } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { features } from "../../features";
@@ -96,7 +96,7 @@ export function BookingDetail({
 
   const copyPhone = async () => {
     try {
-      await navigator.clipboard.writeText(b.patient?.phone ?? "");
+      await navigator.clipboard.writeText(contactPhone ?? "");
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -105,6 +105,10 @@ export function BookingDetail({
   };
 
   const active = b.status === "agendada";
+  // El telefono de CONTACTO de la cita. En Messenger / Instagram es el que dio la persona al agendar (no hay otro: su identidad es un id
+  // de Meta, que nunca se muestra como telefono).
+  const contactPhone = b.contactPhone ?? b.patient?.phone ?? null;
+  const channel = b.channel ?? "whatsapp";
   const notesChanged = notes.trim() !== (b.notes ?? "");
 
   return (
@@ -137,10 +141,15 @@ export function BookingDetail({
           )}
           {b.room && <Row label="Consultorio">{b.room.name}</Row>}
           {!isBlock && (
-            <Row label="Teléfono">
-              {b.patient?.phone ? (
+            <Row label="Canal">
+              <Pill tone={channel === "whatsapp" ? "neutral" : "brand"}>{channelLabel(channel)}</Pill>
+            </Row>
+          )}
+          {!isBlock && (
+            <Row label={channel === "whatsapp" ? "Teléfono" : "Teléfono de contacto"}>
+              {contactPhone ? (
                 <span className="inline-flex items-center gap-2">
-                  {fmtPhone(b.patient.phone)}
+                  {fmtPhone(contactPhone)}
                   <button
                     type="button"
                     onClick={() => void copyPhone()}
@@ -158,7 +167,7 @@ export function BookingDetail({
           <Row label="Origen">
             {b.source === "ai" ? (
               <Pill tone="brand">
-                <Bot className="h-3 w-3" aria-hidden /> Agendó el bot de WhatsApp
+                <Bot className="h-3 w-3" aria-hidden /> Agendó el bot de {channelLabel(channel)}
               </Pill>
             ) : (
               <Pill>Personal de la clínica</Pill>

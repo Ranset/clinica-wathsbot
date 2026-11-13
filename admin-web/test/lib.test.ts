@@ -92,6 +92,7 @@ describe("textos", () => {
     expect(fmtSpan("2026-11-12T16:45:00.000Z", 30)).toBe(nb("11:45 AM – 12:15 PM"));
     expect(fmtPhone("529980001234")).toBe("+52 998 000 1234");
     expect(fmtPhone("14155550123")).toBe("+14155550123");
+    expect(fmtPhone("9981234567")).toBe("998 123 4567");                  // 10 digitos sin lada: no se inventa un "+"
   });
 
   it("ago", () => {

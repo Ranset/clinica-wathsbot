@@ -43,8 +43,13 @@ export const ROLE_LABEL: Record<Role, string> = {
   doctor: "Doctor",
 };
 
-/** Teléfono para leer: "529980001234" -> "+52 998 000 1234" (lo demás queda como "+dígitos"). */
+/**
+ * Teléfono para leer: "529980001234" -> "+52 998 000 1234". Un número de 10 dígitos (el de contacto que da quien escribe por Messenger
+ * o Instagram, sin lada de país) se agrupa SIN el "+", porque no sabemos de qué país es: "9981234567" -> "998 123 4567". Lo demás
+ * queda como "+dígitos".
+ */
 export function fmtPhone(digits: string): string {
   if (/^52\d{10}$/.test(digits)) return `+52 ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
+  if (/^\d{10}$/.test(digits)) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
   return `+${digits}`;
 }
