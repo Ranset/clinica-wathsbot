@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { ON_DOCTOR_COLOR, colorOf } from "../lib/doctor-color";
-import type { Booking, BookingStatus } from "../types";
+import type { Booking, BookingChannel, BookingStatus } from "../types";
 
 export type { Booking };
 
@@ -12,6 +12,13 @@ export const STATUS_LABEL: Record<BookingStatus, string> = {
   no_show: "No asistió",
   cancelada: "Cancelada",
 };
+
+/** El canal por el que llego la cita, como se nombra en pantalla (`facebook` es Messenger). Ausente = WhatsApp. */
+export const CHANNEL_LABEL: Record<BookingChannel, string> = { whatsapp: "WhatsApp", facebook: "Messenger", instagram: "Instagram" };
+
+export function channelLabel(channel?: BookingChannel | null): string {
+  return CHANNEL_LABEL[channel ?? "whatsapp"] ?? "WhatsApp";
+}
 
 /** Un bloqueo no se "agenda" ni se "cancela": esta activo o se quito. */
 export function statusLabel(b: Booking): string {
@@ -41,6 +48,8 @@ export function bookingSubtitle(b: Booking, parts: { doctor?: boolean; room?: bo
  */
 export function bookingHover(b: Booking): string | undefined {
   const parts = [b.doctor?.name, b.doctor?.specialty, b.room?.name].map((s) => s?.trim()).filter(Boolean);
+  // el canal solo se dice cuando NO es WhatsApp (lo de siempre): una cita de Messenger o Instagram se reconoce al pasar el puntero
+  if (parts.length > 0 && b.kind === "session" && b.channel && b.channel !== "whatsapp") parts.push(channelLabel(b.channel));
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 

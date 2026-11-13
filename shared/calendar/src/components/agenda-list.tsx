@@ -5,7 +5,7 @@ import { bookingSegments, longDayLabel, spanLabel, type DateRange } from "../lib
 import { timeRangeLabel } from "../lib/time-format";
 import { cn } from "../lib/utils";
 import { EmptyState } from "./ui";
-import { STATUS_LABEL, bookingDotStyle, bookingSubtitle, bookingTitle, bookingTone, type Booking } from "./booking-look";
+import { STATUS_LABEL, bookingDotStyle, bookingSubtitle, bookingTitle, bookingTone, channelLabel, type Booking } from "./booking-look";
 
 /**
  * 215 — La Lista: las citas del rango, agrupadas por día, como la «Agenda» de
@@ -96,7 +96,9 @@ export function AgendaList({
                     <span className="block truncate text-xs text-text-3">
                       {b.kind === "block"
                         ? `Bloqueo · ${b.durationMinutes} min`
-                        : [bookingSubtitle(b), `${b.durationMinutes} min`, b.source === "ai" ? "Agendó el bot" : "Manual"].filter(Boolean).join(" · ")}
+                        : [bookingSubtitle(b), `${b.durationMinutes} min`, b.source === "ai" ? "Agendó el bot" : "Manual", b.channel && b.channel !== "whatsapp" ? channelLabel(b.channel) : null]
+            .filter(Boolean)
+            .join(" · ")}
                     </span>
                   </span>
                   <span className="hidden shrink-0 text-xs font-medium text-text-2 sm:block">

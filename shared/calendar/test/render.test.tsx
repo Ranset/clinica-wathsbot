@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AgendaList, DoctorLegend, MonthGrid, TimeGrid, monthWeeks, datesOf, visibleRange, zonedWallClockToUtc, type Booking, type Lane, type WeeklyHours } from "../src";
+import { AgendaList, DoctorLegend, MonthGrid, TimeGrid, channelLabel, monthWeeks, datesOf, visibleRange, zonedWallClockToUtc, type Booking, type Lane, type WeeklyHours } from "../src";
 
 const TZ = "America/Cancun";
 const DAY = "2026-11-17"; // martes
@@ -345,6 +345,54 @@ describe("Al pasar el puntero por una cita se dice el doctor, su especialidad y 
     );
     expect(titleOf(html, "Paciente 1")).toBe("Dr. cervantes · Proctología · Consultorio 1");
     expect(titleOf(html, "Paciente 6")).toBe("Dr. perez · Ginecología · Consultorio 2");
+  });
+});
+
+describe("El canal de la cita (WhatsApp, Messenger, Instagram) se dice sin identificar a nadie", () => {
+  const titleOf = (html: string, patient: string) => (html.split("<button").find((b) => b.includes(patient)) ?? "").match(/ title="([^"]*)"/)?.[1];
+  const dr = { id: "cervantes", name: "Dr. cervantes", specialty: "Proctología" };
+
+  it("channelLabel: facebook es Messenger y lo ausente es WhatsApp", () => {
+    expect((["whatsapp", "facebook", "instagram", undefined, null] as const).map((c) => channelLabel(c))).toEqual(["WhatsApp", "Messenger", "Instagram", "WhatsApp", "WhatsApp"]);
+  });
+
+  it("al pasar el puntero: Messenger e Instagram lo dicen; WhatsApp (lo de siempre) o sin canal no cambian", () => {
+    const html = renderToStaticMarkup(
+      <TimeGrid
+        {...common}
+        days={[DAY]}
+        bookings={[
+          mk("1", "09:00", "cervantes", "1", { doctor: dr, channel: "facebook" }),
+          mk("2", "09:00", "cervantes", "2", { doctor: dr, channel: "instagram" }),
+          mk("3", "10:00", "cervantes", "1", { doctor: dr, channel: "whatsapp" }),
+          mk("4", "11:00", "cervantes", "1", { doctor: dr }),
+        ]}
+      />
+    );
+    expect(titleOf(html, "Paciente 1,")).toBe("Dr. cervantes · Proctología · Consultorio 1 · Messenger");
+    expect(titleOf(html, "Paciente 2,")).toBe("Dr. cervantes · Proctología · Consultorio 2 · Instagram");
+    expect(titleOf(html, "Paciente 3,")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+    expect(titleOf(html, "Paciente 4,")).toBe("Dr. cervantes · Proctología · Consultorio 1");
+  });
+
+  it("la lista dice el canal solo cuando no es WhatsApp, y nunca un telefono ni un id de Meta", () => {
+    const html = renderToStaticMarkup(
+      <AgendaList
+        range={{ from: DAY, to: DAY }}
+        bookings={[
+          mk("1", "09:00", "cervantes", "1", { source: "ai", channel: "facebook", contactPhone: "9981234567", patient: { id: "facebook:29894443490173495", name: "Paciente 1" } }),
+          mk("2", "10:00", "cervantes", "1", { source: "ai", channel: "whatsapp" }),
+        ]}
+        timezone={TZ}
+        today={DAY}
+        selectedId={null}
+        onSelect={() => {}}
+      />
+    );
+    expect(html).toContain("Agendó el bot · Messenger");
+    expect(count(html, "Messenger")).toBe(1);
+    expect(html).not.toContain("29894443490173495");
+    expect(html).not.toContain("9981234567");
   });
 });
 

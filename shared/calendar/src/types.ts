@@ -5,6 +5,9 @@ export type WeeklyHours = Partial<Record<WeekdayKey, Interval[]>>;
 
 export type BookingStatus = "agendada" | "realizada" | "no_show" | "cancelada";
 
+/** Canal de mensajeria por el que llego una cita: WhatsApp, Messenger de Facebook o Instagram. */
+export type BookingChannel = "whatsapp" | "facebook" | "instagram";
+
 /**
  * Una cita de la clinica. `kind: "block"` es un bloqueo (consultorio en
  * mantenimiento, etc.). Los instantes viajan en UTC; la rejilla los pinta en
@@ -14,8 +17,12 @@ export type Booking = {
   id: string;
   kind: "session" | "block";
   status: BookingStatus;
-  /** `ai` = la agendo el bot de WhatsApp; `manual` = el personal. */
+  /** `ai` = la agendo el bot (WhatsApp, Messenger o Instagram); `manual` = el personal. */
   source: "manual" | "ai";
+  /** Canal por el que llego la cita; ausente = `whatsapp`. */
+  channel?: BookingChannel;
+  /** Telefono de contacto (el mismo de `patient.phone`). Nunca llega al doctor ni es un id de Meta. */
+  contactPhone?: string;
   scheduledAtUtc: string;
   durationMinutes: number;
   patient: { id: string; name: string; phone?: string } | null;
