@@ -2,10 +2,12 @@ import { addDaysISO, todayInTz, zonedWallClockToUtc } from "@clinica/calendar/sr
 import { daysBetween, isIsoDate, wallClock } from "@clinica/calendar/src/lib/calendar";
 import { checkLogo } from "../image";
 import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
-import type { Absence, AttentionItem, Booking, Branding, BookingStatus, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
+import type { Absence, AttentionItem, Booking, Branding, BookingStatus, Channel, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
+import { CHANNELS, isChannel } from "./bot";
 import {
   HttpError,
   asObject,
+  badRequest,
   forbidden,
   invalid,
   isoInstant,
@@ -24,6 +26,7 @@ import {
 } from "./http";
 import { HORIZON_DAYS, TZ, hoursInside, outsideHours, parseWeeklyHours, placeInSchedule } from "./rules";
 import {
+  applyBotChanges,
   bookingFor,
   doctorRef,
   doctorView,
@@ -239,6 +242,8 @@ export function buildRoutes(db: DB): MockRoute[] {
     return {
       id, kind: "session", status: "agendada", source: "manual", scheduledAtUtc: startUtc, durationMinutes: duration,
       patient: phone ? { id: phone, name, phone } : { id, name },
+      channel: "whatsapp",
+      ...(phone ? { contactPhone: phone } : {}),
       doctor: doctorRef(doctor),
       room: db.rooms.find((r) => r.id === roomId)!, notes,
     };
@@ -697,9 +702,31 @@ export function buildRoutes(db: DB): MockRoute[] {
     route<StoredUser>("getBotSettings", STAFF, () => ok(structuredClone(db.bot))),
 
     route<StoredUser>("setBotSettings", STAFF, (c) => {
-      const active = asObject(c.body).active;
-      if (typeof active !== "boolean") throw invalid(`"active" debe ser verdadero o falso.`);
-      db.bot = { active, updatedAt: c.now.toISOString(), updatedBy: c.user.name };
+      const b = asObject(c.body);
+      // Tres formas, como el servidor: `{channel, active}` (un canal), `{channels}` (varios; solo los que vienen) y `{active}` (la forma
+      // vieja: SOLO WhatsApp). Lo invalido de las formas nuevas es 400; en la vieja sigue siendo 422.
+      let changes: Partial<Record<Channel, boolean>>;
+      if ("channels" in b) {
+        const ch = b.channels;
+        if ("channel" in b || "active" in b) throw badRequest(`use "channels" solo, o "channel" con "active"`);
+        if (typeof ch !== "object" || ch === null || Array.isArray(ch) || Object.keys(ch).length === 0) {
+          throw badRequest(`"channels" debe ser un objeto con al menos un canal: ${CHANNELS.join(", ")}`);
+        }
+        changes = {};
+        for (const [name, value] of Object.entries(ch)) {
+          if (!isChannel(name)) throw badRequest(`canal desconocido; debe ser uno de: ${CHANNELS.join(", ")}`);
+          if (typeof value !== "boolean") throw badRequest(`el valor de "${name}" debe ser verdadero o falso`);
+          changes[name] = value;
+        }
+      } else if ("channel" in b) {
+        if (!isChannel(b.channel)) throw badRequest(`canal desconocido; debe ser uno de: ${CHANNELS.join(", ")}`);
+        if (typeof b.active !== "boolean") throw badRequest(`"active" debe ser verdadero o falso`);
+        changes = { [b.channel]: b.active };
+      } else {
+        if (typeof b.active !== "boolean") throw invalid(`"active" debe ser verdadero o falso.`);
+        changes = { whatsapp: b.active };
+      }
+      applyBotChanges(db, changes, c.now, c.user.name);
       return ok(structuredClone(db.bot));
     }),
 
@@ -718,7 +745,11 @@ export function buildRoutes(db: DB): MockRoute[] {
       const limit = intParam("limit", 1, 100);
       const offset = intParam("offset", 0);
       if (offset && limit === undefined) throw invalid("offset: solo se admite junto con limit");
-      const all = db.attention.filter((a) => a.status === status).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
+      const channel = c.query.get("channel");
+      if (channel !== null && !isChannel(channel)) throw invalid(`"channel" debe ser ${CHANNELS.join(" | ")}.`);
+      const all = db.attention
+        .filter((a) => a.status === status && (channel === null || (a.channel ?? "whatsapp") === channel))
+        .sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
       return ok({ items: limit === undefined ? all : all.slice(offset ?? 0, (offset ?? 0) + limit), total: all.length });
     }),
 
@@ -792,7 +823,7 @@ export function buildRoutes(db: DB): MockRoute[] {
       if (affected.length) {
         const item: AttentionItem = {
           id: nextId(db, "at"), kind: "absence_affects_appointments", status: "open", createdAtUtc: c.now.toISOString(),
-          conversationId: null, phone: null,
+          conversationId: null, channel: "whatsapp", contactId: null, phone: null,
           reason: `${doc.name} marcó una ausencia con citas agendadas`,
           detail: `${affected.length} cita(s) entre el ${wallClock(input.startUtc, TZ).day} y el ${wallClock(input.endUtc, TZ).day}: avisa a los pacientes.`,
         };

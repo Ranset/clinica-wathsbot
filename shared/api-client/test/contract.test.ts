@@ -92,6 +92,13 @@ describe("un recorrido completo por el cliente cumple el contrato en cada interc
 
     await api.bot.get();
     await api.bot.set(false);
+    await api.bot.setChannel("facebook", true);                                      // un interruptor por canal, validado contra el contrato
+    const channels = await api.bot.setChannels({ instagram: true, facebook: false });
+    expect(channels.channels).toEqual({ whatsapp: false, facebook: false, instagram: true });
+    expect(channels.active).toBe(channels.channels.whatsapp);
+    mock.bot.handoff({ conversationId: "conv-ig", reason: "pidio_persona", canal: "instagram", contacto_id: "17841400000000000" });
+    expect((await api.attention.list("open", { channel: "instagram" })).map((a) => a.contactId)).toEqual(["17841400000000000"]);
+    expect((await api.attention.page("open", { limit: 5, channel: "facebook" })).total).toBe(0);
     const open = await api.attention.list("open");
     const pagina = await api.attention.page("open", { limit: 2, offset: 0 });            // una pagina + su total, validado contra el contrato
     expect(pagina.items.length).toBeLessThanOrEqual(2);

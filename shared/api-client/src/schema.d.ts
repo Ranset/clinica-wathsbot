@@ -28,7 +28,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Interruptor del bot. El bot lo consulta antes de contestar cada evento. */
+        /**
+         * Interruptores del bot, uno por canal. El bot los consulta antes de contestar cada evento.
+         * @description `channels` trae SIEMPRE los tres canales con su booleano; un canal sin dato es `false` (el bot falla
+         *     cerrado). `active` se conserva para clientes viejos y es SIEMPRE igual a `channels.whatsapp`.
+         */
         get: operations["botStatus"];
         put?: never;
         post?: never;
@@ -105,7 +109,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Accion `mis_citas`: citas futuras agendadas del paciente (por telefono). */
+        /**
+         * Accion `mis_citas`: citas futuras agendadas del paciente (por su identidad: telefono, o canal + contacto_id).
+         * @description La identidad va como `telefono` (WhatsApp) **o** como `canal` + `contacto_id` (Messenger / Instagram), nunca mezcladas.
+         *     Falta de identidad: 422 en WhatsApp (como siempre); canal desconocido, `telefono` con un canal que no es WhatsApp,
+         *     o `contacto_id` ausente / mal formado: 400.
+         */
         get: operations["botMyAppointments"];
         put?: never;
         /** Accion `agendar`: reserva atomica; el servidor elige consultorio. */
@@ -125,7 +134,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Accion `cancelar`: solo si la cita es de ese telefono. */
+        /**
+         * Accion `cancelar`: solo si la cita es de esa identidad (telefono, o canal + contacto_id).
+         * @description Una cita inexistente o de OTRA identidad (aunque los digitos coincidan en otro canal) es 404 `cita_no_encontrada`: no se distinguen.
+         */
         post: operations["botCancel"];
         delete?: never;
         options?: never;
@@ -250,8 +262,8 @@ export interface paths {
          *     duplicarse y no hay garantia de orden: la cola es idempotente por `id` del evento (indice unico; un
          *     duplicado responde 200 sin encolar).
          *
-         *     Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; `webhook.test` y
-         *     el resto se responden 200 y se descartan.
+         *     Solo se encolan `message.received` de WhatsApp, Messenger (`facebook`) e Instagram (`instagram`), entrantes y sin
+         *     `metadata.standby`; `webhook.test`, cualquier otra plataforma y el resto se responden 200 y se descartan.
          */
         post: operations["zernioWebhook"];
         delete?: never;
@@ -781,11 +793,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Estado del interruptor del bot. */
+        /** Estado de los interruptores del bot (uno por canal). */
         get: operations["getBotSettings"];
         /**
-         * Enciende o apaga el bot (el boton del personal).
-         * @description Apagado, el bot deja de contestar (los eventos se cierran como `skipped_bot_inactive`); las personas atienden desde Zernio.
+         * Enciende o apaga el bot de UN canal, o de varios a la vez (los botones del personal).
+         * @description Apagado un canal, el bot deja de contestar por el (los eventos se cierran como `skipped_bot_inactive`); las personas
+         *     atienden desde Zernio. Tres formas de cuerpo: `{"channel": "facebook", "active": true}` (solo ese canal),
+         *     `{"active": true}` (la forma vieja, sin canal: cambia SOLO `whatsapp`) y `{"channels": {"facebook": true, "instagram": false}}`
+         *     (varios; solo cambian los que vienen). Cada canal que cambia deja una entrada `bot.set_active` en la bitacora, con el canal.
+         *     Un canal desconocido o un valor no booleano en las formas nuevas (`channel` / `channels`) es 400; en la forma vieja
+         *     (`{"active": ...}`) sigue siendo 422, como siempre.
          */
         put: operations["setBotSettings"];
         post?: never;
@@ -1178,6 +1195,29 @@ export interface components {
          */
         Phone: string;
         /**
+         * @description Canal de mensajeria por el que escribe el paciente. `facebook` = Messenger de Facebook.
+         * @enum {string}
+         */
+        Channel: "whatsapp" | "facebook" | "instagram";
+        /**
+         * @description Id de Meta (PSID de Messenger / IGSID de Instagram) de quien escribe, tal como llega en `message.sender.id`. NO es un telefono ni un dato verificado.
+         * @example 29894443490173495
+         */
+        ContactId: string;
+        /**
+         * @description Quien escribe, en una de dos formas (NUNCA mezcladas): `telefono` (WhatsApp, la de siempre) o `canal` (`facebook` | `instagram`)
+         *     + `contacto_id`. `canal` ausente = `whatsapp`; `telefono` junto con un canal distinto de `whatsapp` es 400. La identidad es la
+         *     pareja (canal, id): el mismo numero en dos canales son dos personas distintas.
+         */
+        BotIdentity: {
+            telefono?: components["schemas"]["Phone"];
+            canal?: components["schemas"]["Channel"];
+            contacto_id?: components["schemas"]["ContactId"];
+        } & (unknown | {
+            /** @enum {unknown} */
+            canal: "facebook" | "instagram";
+        });
+        /**
          * @description Hora local de Cancun con desfase, sin segundos.
          * @example 2026-11-12T13:30-05:00
          */
@@ -1204,6 +1244,7 @@ export interface components {
         };
         BotAppointment: {
             cita_id: string;
+            canal?: components["schemas"]["Channel"];
             doctor: string;
             especialidad: string;
             consultorio: string;
@@ -1236,12 +1277,55 @@ export interface components {
                 usesClinicHours?: boolean;
             }[];
         };
-        BotSettings: {
-            active: boolean;
+        /** @description El interruptor de cada canal (`true` = el bot contesta por ese canal). Siempre trae los tres; un canal sin dato es `false`. */
+        BotChannels: {
+            whatsapp: boolean;
+            facebook: boolean;
+            instagram: boolean;
+        };
+        /** @description Cuando y quien cambio por ultima vez el interruptor de un canal (`null` si nunca se ha cambiado). */
+        BotChannelUpdate: {
             /** Format: date-time */
-            updatedAt?: string;
+            updatedAt: string | null;
             /** @description Nombre del usuario que lo cambio. */
+            updatedBy: string | null;
+        };
+        BotSettings: {
+            /**
+             * @deprecated
+             * @description Compatibilidad con clientes viejos. SIEMPRE igual a `channels.whatsapp`.
+             */
+            active: boolean;
+            channels: components["schemas"]["BotChannels"];
+            /**
+             * Format: date-time
+             * @description Del interruptor de WhatsApp (el de `active`).
+             */
+            updatedAt?: string;
+            /** @description Nombre del usuario que cambio el interruptor de WhatsApp. */
             updatedBy?: string | null;
+            /** @description Cuando y quien cambio cada canal. Lo usan los tres botones de la web. */
+            channelUpdates?: {
+                whatsapp: components["schemas"]["BotChannelUpdate"];
+                facebook: components["schemas"]["BotChannelUpdate"];
+                instagram: components["schemas"]["BotChannelUpdate"];
+            };
+        };
+        /**
+         * @description Una de tres formas: `{channel, active}` (un canal), `{active}` (la forma vieja: solo WhatsApp) o `{channels}` (varios;
+         *     solo los que vienen). No se pueden mezclar `channel` y `channels`.
+         */
+        BotSettingsUpdate: {
+            channel: components["schemas"]["Channel"];
+            active: boolean;
+        } | {
+            active: boolean;
+        } | {
+            channels: {
+                whatsapp?: boolean;
+                facebook?: boolean;
+                instagram?: boolean;
+            };
         };
         BotEvent: {
             id: string;
@@ -1254,7 +1338,8 @@ export interface components {
         /**
          * @description Evento tal como lo manda Zernio. Todos traen `id`, `event`, `timestamp` y `test`; `profiles` solo si
          *     el evento pertenece a un perfil. En `message.received` el bot usa `message.text`, `message.sender.id`
-         *     (telefono), `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
+         *     (telefono en WhatsApp; id de Meta en Messenger / Instagram), `message.platform` (`whatsapp` | `facebook` | `instagram`),
+         *     `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
          *     Ojo: en el evento de prueba `webhook.test` `message` es un **texto**, no un objeto.
          */
         ZernioEvent: {
@@ -1285,18 +1370,22 @@ export interface components {
             kind: "session" | "block";
             status: components["schemas"]["BookingStatus"];
             /**
-             * @description `ai` = la agendo el bot de WhatsApp; `manual` = el personal.
+             * @description `ai` = la agendo el bot (WhatsApp, Messenger o Instagram); `manual` = el personal.
              * @enum {string}
              */
             source: "manual" | "ai";
+            /** @description Canal por el que llego la cita. Ausente = `whatsapp`. Las del personal son `whatsapp`. */
+            channel?: components["schemas"]["Channel"];
+            /** @description Telefono de contacto de la cita (el mismo de `patient.phone`). Se omite para el rol `doctor` y si la cita no tiene telefono. En Messenger / Instagram es el que dio el paciente al agendar. */
+            contactPhone?: string;
             /** Format: date-time */
             scheduledAtUtc: string;
             durationMinutes: number;
             patient: {
-                /** @description Telefono (digitos) si existe; si no, el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): el telefono no se le entrega por ningun campo. */
+                /** @description WhatsApp: el telefono (digitos) si existe. Messenger / Instagram: `canal:contacto_id` (estable; NO es el telefono de contacto). Sin identidad: el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): ni el telefono ni el id de Meta se le entregan por ningun campo. */
                 id: string;
                 name: string;
-                /** @description Se omite para el rol `doctor`. */
+                /** @description Telefono de contacto. Se omite para el rol `doctor`. NUNCA es un id de Meta. */
                 phone?: string;
             } | null;
             doctor: {
@@ -1586,6 +1675,11 @@ export interface components {
             /** Format: date-time */
             createdAtUtc: string;
             conversationId?: string | null;
+            /** @description Canal de la conversacion. Ausente = `whatsapp`. */
+            channel?: components["schemas"]["Channel"];
+            /** @description Id de Meta (PSID / IGSID) en Messenger / Instagram; `null` en WhatsApp. Sin telefono: la clinica contesta desde el inbox de Zernio con `conversationId`. */
+            contactId?: string | null;
+            /** @description Solo WhatsApp. `null` en Messenger / Instagram. */
             phone?: string | null;
             reason: string;
             detail?: string | null;
@@ -1637,6 +1731,15 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
+        /** @description Identidad o canal invalido (`validacion`): canal desconocido, `telefono` con un canal que no es WhatsApp, `contacto_id` ausente o mal formado, `telefono_contacto` ausente o invalido fuera de WhatsApp, o canal / valor invalido en el interruptor. */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description `horario_ocupado`. */
         BotConflict: {
             headers: {
@@ -1655,7 +1758,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
-        /** @description `cita_no_encontrada` (no existe o es de otro telefono). */
+        /** @description `cita_no_encontrada` (no existe o es de otra identidad: otro telefono, otro `contacto_id` u otro canal). */
         BotNotFound: {
             headers: {
                 [name: string]: unknown;
@@ -1813,8 +1916,13 @@ export interface operations {
     };
     botMyAppointments: {
         parameters: {
-            query: {
-                telefono: components["schemas"]["Phone"];
+            query?: {
+                /** @description WhatsApp. Es la forma de siempre; no se manda junto con `canal` distinto de `whatsapp`. */
+                telefono?: components["schemas"]["Phone"];
+                /** @description `facebook` o `instagram` (con `contacto_id`). Ausente = `whatsapp`. */
+                canal?: components["schemas"]["Channel"];
+                /** @description Id de Meta (PSID / IGSID) de quien escribe. Solo con `facebook` o `instagram`. */
+                contacto_id?: components["schemas"]["ContactId"];
             };
             header?: never;
             path?: never;
@@ -1822,7 +1930,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Solo las citas de ese telefono (incluye las creadas por el personal con ese telefono). */
+            /** @description Solo las citas de ESA identidad (en WhatsApp incluye las creadas por el personal con ese telefono). Cada cita lleva su `canal`. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1833,6 +1941,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             422: components["responses"]["RuleError"];
         };
@@ -1846,12 +1955,13 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    telefono: components["schemas"]["Phone"];
+                "application/json": components["schemas"]["BotIdentity"] & {
                     /** @description Nombre y apellido (>= 2 palabras) o `falta_nombre_completo`. */
                     nombre: string;
                     especialidad: string;
                     inicio: components["schemas"]["IsoLocalInput"];
+                    /** @description OBLIGATORIO si el canal no es WhatsApp (falta o invalido = 400): el telefono al que la clinica llama al paciente. En WhatsApp se ignora (el telefono es la identidad). */
+                    telefono_contacto?: components["schemas"]["Phone"];
                 };
             };
         };
@@ -1865,6 +1975,7 @@ export interface operations {
                     "application/json": components["schemas"]["BotBooked"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             409: components["responses"]["BotConflict"];
             422: components["responses"]["BotRuleError"];
@@ -1882,9 +1993,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    telefono: components["schemas"]["Phone"];
-                };
+                "application/json": components["schemas"]["BotIdentity"];
             };
         };
         responses: {
@@ -1901,6 +2010,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["BotNotFound"];
             422: components["responses"]["RuleError"];
@@ -1918,8 +2028,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    telefono: components["schemas"]["Phone"];
+                "application/json": components["schemas"]["BotIdentity"] & {
                     inicio: components["schemas"]["IsoLocalInput"];
                 };
             };
@@ -1936,6 +2045,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             404: components["responses"]["BotNotFound"];
             409: components["responses"]["BotConflict"];
@@ -2050,6 +2160,8 @@ export interface operations {
                 "application/json": {
                     conversationId: string;
                     telefono?: components["schemas"]["Phone"];
+                    canal?: components["schemas"]["Channel"];
+                    contacto_id?: components["schemas"]["ContactId"];
                     /** @enum {string} */
                     reason: "modelo_fallo" | "accion_invalida" | "pidio_persona" | "fuera_de_alcance" | "otro";
                     detail?: string;
@@ -2068,6 +2180,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             422: components["responses"]["RuleError"];
         };
@@ -3061,9 +3174,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    active: boolean;
-                };
+                "application/json": components["schemas"]["BotSettingsUpdate"];
             };
         };
         responses: {
@@ -3076,6 +3187,7 @@ export interface operations {
                     "application/json": components["schemas"]["BotSettings"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["RuleError"];
@@ -3221,6 +3333,8 @@ export interface operations {
         parameters: {
             query?: {
                 status?: "open" | "resolved";
+                /** @description Solo los casos de ese canal. Sin el, todos. */
+                channel?: components["schemas"]["Channel"];
                 /** @description Cuantos casos devolver (1 a 100). Sin el, todos. */
                 limit?: number;
                 /** @description Cuantos casos saltar (0 por defecto). Solo con `limit`. */

@@ -1,10 +1,11 @@
 import { todayInTz } from "@clinica/calendar/src/lib/slots";
 import { readBytes } from "../image";
-import type { Booking } from "../types";
+import type { Booking, Channel } from "../types";
 import { buildRoutes } from "./handlers";
 import { HttpError, forbidden, invalid, matchRoute, unauthorized, type Result, type Route } from "./http";
 import { TZ, nextFreeSlot } from "./rules";
 import { createSeededDb } from "./seed";
+import { botBook, botCancel, botHandoff, botMine, botWho } from "./bot";
 import { doctorRef, nextId, type DB, type StoredUser } from "./state";
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -171,26 +172,23 @@ export function createMockApi(options: MockApiOptions = {}) {
   }
 
   /** Hace lo que haria el bot al agendar: una cita `source: "ai"` en el primer hueco libre del doctor. */
-  function simulateBotBooking(opts: { doctorId?: string; patientName?: string } = {}): Booking | null {
+  function simulateBotBooking(
+    opts: { doctorId?: string; patientName?: string; channel?: Channel; contactId?: string; contactPhone?: string } = {}
+  ): Booking | null {
     const now = clock();
     const active = db.doctors.filter((d) => d.active);
     const doctor = opts.doctorId ? db.doctors.find((d) => d.id === opts.doctorId) : active[Math.floor(Math.random() * active.length)];
     if (!doctor) return null;
-    const startUtc = nextFreeSlot(db, now, doctor.id, todayInTz(new Date(now.getTime() + 61 * 60_000), TZ));
-    if (!startUtc) return null;
-    // Misma puerta que el resto: placeInSchedule ya eligio consultorio al probar el hueco.
-    const taken = new Set(db.bookings.filter((b) => b.status !== "cancelada" && b.scheduledAtUtc === startUtc).map((b) => b.room?.id));
-    const room = db.rooms.find((r) => !taken.has(r.id))!;
-    const id = nextId(db, "b");
+    // Sin canal: una persona de WhatsApp con un telefono inventado (lo de siempre). Con canal: la misma puerta que el bot de verdad
+    // (identidad, `telefono_contacto` obligatorio fuera de WhatsApp...).
+    const channel = opts.channel ?? "whatsapp";
     const phone = `52998${String(70000 + db.bookings.length).padStart(7, "0")}`;
-    const booking: Booking = {
-      id, kind: "session", status: "agendada", source: "ai", scheduledAtUtc: startUtc, durationMinutes: 30,
-      patient: { id: phone, name: opts.patientName ?? "Paciente WhatsApp Demo", phone },
-      doctor: doctorRef(doctor),
-      room: { ...room }, notes: null,
-    };
-    db.bookings.push(booking);
-    return booking;
+    const who = botWho(channel === "whatsapp" ? { telefono: phone } : { canal: channel, contacto_id: opts.contactId });
+    return botBook(db, now, who, {
+      patientName: opts.patientName ?? (channel === "whatsapp" ? "Paciente WhatsApp Demo" : "Paciente Messenger Demo"),
+      doctorId: doctor.id,
+      contactPhone: opts.contactPhone,
+    });
   }
 
   return {
@@ -206,6 +204,19 @@ export function createMockApi(options: MockApiOptions = {}) {
       return requests;
     },
     simulateBotBooking,
+    /**
+     * Lo que hace el bot contra la API (no hay `/api/bot/*` por HTTP): identidad por canal, aislamiento entre canales, `telefono_contacto`
+     * obligatorio fuera de WhatsApp y traspasos. Las entradas son los cuerpos del contrato (`telefono` o `canal` + `contacto_id`).
+     */
+    bot: {
+      /** Lo que contestaria `GET /api/bot/status`. */
+      status: () => structuredClone(db.bot),
+      mine: (who: Record<string, unknown>): Booking[] => botMine(db, clock(), botWho(who)),
+      book: (who: Record<string, unknown>, input: { patientName: string; doctorId: string; contactPhone?: unknown }): Booking | null =>
+        botBook(db, clock(), botWho(who), input),
+      cancel: (who: Record<string, unknown>, bookingId: string): Booking => botCancel(db, botWho(who), bookingId),
+      handoff: (body: Record<string, unknown>) => botHandoff(db, clock(), body),
+    },
     /** Vuelve a los datos de ejemplo y cierra la sesion. */
     reset() {
       db = createSeededDb(clock());

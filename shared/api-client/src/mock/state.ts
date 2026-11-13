@@ -3,6 +3,7 @@ import type {
   AttentionItem,
   Booking,
   BotSettings,
+  Channel,
   Doctor,
   PersonalEvent,
   Role,
@@ -102,10 +103,32 @@ export const accountKey = (u: StoredUser): string => (u.email ? u.email.toLowerC
 /** El doctor ve la cita sin telefono, y su `patient.id` no puede ser el telefono. */
 export function bookingFor(role: Role, b: Booking): Booking {
   const copy = structuredClone(b);
-  if (role === "doctor" && copy.patient) {
-    copy.patient = { id: copy.id, name: copy.patient.name };
+  if (role === "doctor") {
+    // ni el telefono, ni el de contacto, ni el id de Meta (`canal:contacto_id`): el canal SI se ve, no identifica a nadie
+    delete copy.contactPhone;
+    if (copy.patient) copy.patient = { id: copy.id, name: copy.patient.name };
   }
   return copy;
+}
+
+/**
+ * Aplica un cambio de interruptores a `db.bot`: SOLO los canales que vienen. `active`, `updatedAt` y `updatedBy` son los de WhatsApp (los
+ * de los clientes viejos), igual que en el servidor.
+ */
+export function applyBotChanges(db: DB, changes: Partial<Record<Channel, boolean>>, now: Date, by: string): void {
+  const bot = db.bot;
+  for (const c of ["whatsapp", "facebook", "instagram"] as const) {
+    const value = changes[c];
+    if (value === undefined) continue;
+    bot.channels[c] = value;
+    bot.channelUpdates![c] = { updatedAt: now.toISOString(), updatedBy: by };
+  }
+  bot.active = bot.channels.whatsapp;
+  const wa = bot.channelUpdates!.whatsapp;
+  if (wa.updatedAt) {
+    bot.updatedAt = wa.updatedAt;
+    bot.updatedBy = wa.updatedBy;
+  }
 }
 
 /** Huella corta y estable de unos bytes (FNV-1a): la `?v=` del logotipo en el simulador (el servidor real usa SHA-256). */

@@ -1198,6 +1198,145 @@ describe("horarios libres para una cita nueva", () => {
   });
 });
 
+describe("canales de mensajeria (WhatsApp, Messenger e Instagram)", () => {
+  const NUM = "529990000001"; // el MISMO numero, como telefono de WhatsApp y como id de Facebook / Instagram
+  const IG = "17841400000000000";
+  const CONTACT = "9981234567";
+
+  it("el interruptor es por canal: la forma vieja solo toca WhatsApp y `active` siempre es el de WhatsApp", async () => {
+    expect((await api.bot.get()).channels).toEqual({ whatsapp: true, facebook: false, instagram: false });
+    let st = await api.bot.setChannel("facebook", true);
+    expect(st.channels).toEqual({ whatsapp: true, facebook: true, instagram: false });
+    expect(st.channelUpdates!.facebook).toEqual({ updatedAt: NOW.toISOString(), updatedBy: "Recepción Clínica" });
+    expect(st.channelUpdates!.instagram).toEqual({ updatedAt: null, updatedBy: null });
+    st = await api.bot.set(false); // la forma vieja: apagar WhatsApp NO apaga Messenger
+    expect(st.channels).toEqual({ whatsapp: false, facebook: true, instagram: false });
+    expect(st.active).toBe(false);
+    st = await api.bot.setChannels({ instagram: true, whatsapp: true });
+    expect(st.channels).toEqual({ whatsapp: true, facebook: true, instagram: true });
+    expect(st.active).toBe(st.channels.whatsapp);
+    expect(await api.bot.get()).toEqual(st);
+    expect(mock.bot.status()).toEqual(st); // lo que lee el bot
+  });
+
+  it("lo invalido de las formas nuevas es 400; en la forma vieja sigue siendo 422", async () => {
+    // el cuerpo tal cual (el cliente tipado no deja mandar formas invalidas), con el token CSRF de la sesion
+    const put = async (body: unknown) => {
+      const r = await mock.fetch("/api/settings/bot", { method: "PUT", headers: { "Content-Type": "application/json", "X-CSRF-Token": api.csrfToken! }, body: JSON.stringify(body) });
+      return `${r.status} ${((await r.json()) as { error: string }).error}`;
+    };
+    for (const body of [
+      { channel: "telegram", active: true },
+      { channel: "facebook", active: "si" },
+      { channel: "facebook" },
+      { channels: {} },
+      { channels: { telegram: true } },
+      { channels: { facebook: 1 } },
+      { channels: { facebook: true }, active: true },
+    ]) {
+      expect(await put(body), JSON.stringify(body)).toBe("400 validacion");
+    }
+    for (const body of [{}, { active: "si" }, { active: null }]) expect(await put(body), JSON.stringify(body)).toBe("422 validacion");
+    expect((await api.bot.get()).channels).toEqual({ whatsapp: true, facebook: false, instagram: false });
+  });
+
+  it("el mismo numero en dos canales son dos personas: cada identidad ve y cancela solo lo suyo", () => {
+    const wa = mock.bot.book({ telefono: NUM }, { patientName: "Ana Lopez", doctorId: D.cervantes })!;
+    const fb = mock.bot.book({ canal: "facebook", contacto_id: NUM }, { patientName: "Ana Lopez", doctorId: D.perez, contactPhone: CONTACT })!;
+    expect([wa.channel, fb.channel]).toEqual(["whatsapp", "facebook"]);
+    expect(wa.patient).toEqual({ id: NUM, name: "Ana Lopez", phone: NUM });
+    expect(fb.patient).toEqual({ id: `facebook:${NUM}`, name: "Ana Lopez", phone: CONTACT }); // el id NO es el telefono de contacto
+    expect(fb.contactPhone).toBe(CONTACT);
+
+    expect(mock.bot.mine({ telefono: NUM }).map((b) => b.id)).toEqual([wa.id]);
+    expect(mock.bot.mine({ canal: "facebook", contacto_id: NUM }).map((b) => b.id)).toEqual([fb.id]);
+    expect(mock.bot.mine({ canal: "instagram", contacto_id: NUM })).toEqual([]); // instagram con el mismo id tampoco ve la de facebook
+    expect(mock.bot.mine({ telefono: CONTACT })).toEqual([]); // y el telefono de contacto de Facebook no es una identidad de WhatsApp
+
+    for (const [who, ajena] of [
+      [{ telefono: NUM }, fb.id],
+      [{ canal: "facebook", contacto_id: NUM }, wa.id],
+      [{ canal: "instagram", contacto_id: NUM }, fb.id],
+      [{ telefono: CONTACT }, fb.id],
+    ] as const) {
+      expect(() => mock.bot.cancel(who, ajena)).toThrowError(/No hay una cita/); // 404: no se distingue de "no existe"
+    }
+    expect(mock.bot.cancel({ canal: "facebook", contacto_id: NUM }, fb.id).status).toBe("cancelada");
+    expect(mock.bot.mine({ canal: "facebook", contacto_id: NUM })).toEqual([]);
+    expect(mock.bot.mine({ telefono: NUM }).map((b) => b.id)).toEqual([wa.id]);
+  });
+
+  it("identidad invalida: 400 (canal, id de Meta, telefono con otro canal); un telefono de WhatsApp mal formado sigue siendo 422", () => {
+    const status = (f: () => unknown) => {
+      try {
+        f();
+      } catch (e) {
+        return (e as { status: number }).status;
+      }
+      return 0;
+    };
+    for (const who of [
+      { canal: "telegram", contacto_id: IG },
+      { canal: "facebook" },
+      { canal: "facebook", contacto_id: "ab c!" },
+      { canal: "instagram", contacto_id: "1234" },
+      { canal: "instagram", contacto_id: "1".repeat(65) },
+      { canal: "facebook", contacto_id: IG, telefono: NUM },
+    ]) {
+      expect(status(() => mock.bot.mine(who)), JSON.stringify(who)).toBe(400);
+    }
+    expect(status(() => mock.bot.mine({ telefono: "123" }))).toBe(422);
+    expect(status(() => mock.bot.mine({}))).toBe(422);
+  });
+
+  it("fuera de WhatsApp agendar exige telefono_contacto de 8 a 15 digitos; en WhatsApp se ignora", () => {
+    for (const contactPhone of [undefined, "", "123", "12345678901234567", "99812345ab"]) {
+      expect(() => mock.bot.book({ canal: "instagram", contacto_id: IG }, { patientName: "Ana Lopez", doctorId: D.cervantes, contactPhone })).toThrowError(
+        /telefono_contacto/
+      );
+    }
+    expect(mock.bot.mine({ canal: "instagram", contacto_id: IG })).toEqual([]);
+    const wa = mock.bot.book({ telefono: NUM }, { patientName: "Ana Lopez", doctorId: D.cervantes, contactPhone: "1112223334" })!;
+    expect(wa.patient!.phone).toBe(NUM); // el de contacto NO sustituye al telefono de WhatsApp
+  });
+
+  it("el traspaso de Messenger / Instagram guarda canal e id sin telefono, aparece en Atencion y se filtra por canal", async () => {
+    mock.bot.handoff({ conversationId: "conv-wa", reason: "pidio_persona", telefono: NUM });
+    mock.bot.handoff({ conversationId: "conv-fb", reason: "otro", canal: "facebook", contacto_id: NUM });
+    mock.bot.handoff({ conversationId: "conv-ig", reason: "otro", canal: "instagram", contacto_id: IG });
+    expect(() => mock.bot.handoff({ conversationId: "c", reason: "otro", canal: "instagram", contacto_id: IG, telefono: NUM })).toThrowError(/solo aplica a whatsapp/);
+    expect(() => mock.bot.handoff({ conversationId: "c", reason: "otro", canal: "instagram" })).toThrowError(/contacto_id/);
+    const open = await api.attention.list("open");
+    const byConv = Object.fromEntries(open.map((a) => [a.conversationId, a]));
+    expect(byConv["conv-ig"]).toMatchObject({ channel: "instagram", contactId: IG, phone: null });
+    expect(byConv["conv-wa"]).toMatchObject({ channel: "whatsapp", contactId: null, phone: NUM });
+    expect((await api.attention.list("open", { channel: "facebook" })).map((a) => a.conversationId)).toEqual(["conv-fb"]);
+    expect((await api.attention.page("open", { limit: 1, channel: "instagram" })).total).toBe(1);
+    expect(await code(lax.attention.list("open", { channel: "telegram" as never }))).toBe("422 validacion");
+  });
+
+  it("el personal ve canal, id estable y telefono de contacto; el doctor NUNCA recibe telefono ni id de Meta", async () => {
+    const fb = mock.bot.book({ canal: "facebook", contacto_id: NUM }, { patientName: "Ana Lopez", doctorId: D.cervantes, contactPhone: CONTACT })!;
+    mock.bot.book({ canal: "instagram", contacto_id: IG }, { patientName: "Luis Gomez", doctorId: D.cervantes, contactPhone: CONTACT });
+    mock.bot.book({ telefono: NUM }, { patientName: "Maria Perez", doctorId: D.cervantes });
+    const range = { from: at("2026-11-09", "00:00"), to: at("2026-12-09", "00:00") };
+    const listed = await api.appointments.list(range);
+    if (listed.notModified) throw new Error("se esperaba la lista completa");
+    const seen = listed.data.items.find((b) => b.id === fb.id)!;
+    expect(seen).toMatchObject({ channel: "facebook", contactPhone: CONTACT, patient: { id: `facebook:${NUM}`, phone: CONTACT } });
+
+    await api.auth.logout();
+    await login("doctor");
+    const asDoctor = await api.doctorSelf.appointments(range);
+    if (asDoctor.notModified) throw new Error("se esperaba la lista completa");
+    expect(asDoctor.data.items.length).toBeGreaterThanOrEqual(3);
+    const text = JSON.stringify(asDoctor.data);
+    for (const secret of [NUM, CONTACT, IG, "facebook:", "instagram:", "contactPhone", "contactId"]) expect(text).not.toContain(secret);
+    for (const b of asDoctor.data.items) expect(b.patient?.id).toBe(b.id); // solo el id de la cita
+    expect(new Set(asDoctor.data.items.map((b) => b.channel))).toEqual(new Set(["facebook", "instagram", "whatsapp"])); // el canal SI se ve
+  });
+});
+
 describe("controles de desarrollo", () => {
   it("el bot simulado agenda una cita source 'ai' en un hueco que cumple las reglas, y cambia el ETag", async () => {
     const range = { from: at("2026-11-09", "00:00"), to: at("2026-12-09", "00:00") };

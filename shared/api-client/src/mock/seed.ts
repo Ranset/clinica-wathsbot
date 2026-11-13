@@ -88,7 +88,18 @@ export function createSeededDb(now: Date): DB {
     branding: { name: "Clínica CUBAMEX", logo: null },
     personalEvents: [],
     requests: [],
-    bot: { active: true, updatedAt: now.toISOString(), updatedBy: null },
+    // WhatsApp encendido (como el demo de siempre); Messenger e Instagram apagados, como nacen en el servidor
+    bot: {
+      active: true,
+      channels: { whatsapp: true, facebook: false, instagram: false },
+      updatedAt: now.toISOString(),
+      updatedBy: null,
+      channelUpdates: {
+        whatsapp: { updatedAt: now.toISOString(), updatedBy: null },
+        facebook: { updatedAt: null, updatedBy: null },
+        instagram: { updatedAt: null, updatedBy: null },
+      },
+    },
     attention: [],
     sessions: new Map(),
     loginFailures: new Map(),

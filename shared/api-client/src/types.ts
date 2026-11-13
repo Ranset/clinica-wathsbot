@@ -46,6 +46,10 @@ export type AttentionItem = S["AttentionItem"];
 export type AttentionList = S["AttentionList"];
 export type Branding = S["Branding"];
 export type BotSettings = S["BotSettings"];
+/** Canal de mensajeria: `whatsapp`, `facebook` (Messenger) o `instagram`. */
+export type Channel = S["Channel"];
+/** El interruptor del bot de cada canal (siempre trae los tres). */
+export type BotChannels = S["BotChannels"];
 
 /** Respuesta de `PUT /api/doctors/{id}/weekly-hours` (y de aprobar una solicitud, por dentro). */
 export type WeeklyHoursResult = {

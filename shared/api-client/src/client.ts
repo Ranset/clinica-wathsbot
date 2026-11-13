@@ -11,7 +11,9 @@ import type {
   BookingList,
   BookingPatch,
   BookingStatus,
+  BotChannels,
   BotSettings,
+  Channel,
   Branding,
   BusyTime,
   Doctor,
@@ -350,7 +352,13 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     bot: {
       get: (o?: RequestOptions) => json<BotSettings>("getBotSettings", o),
+      /** La forma de siempre: enciende / apaga SOLO WhatsApp. */
       set: (active: boolean, o?: RequestOptions) => json<BotSettings>("setBotSettings", { body: { active }, ...o }),
+      /** Enciende / apaga UN canal (`whatsapp`, `facebook` o `instagram`) sin tocar los otros. */
+      setChannel: (channel: Channel, active: boolean, o?: RequestOptions) =>
+        json<BotSettings>("setBotSettings", { body: { channel, active }, ...o }),
+      /** Cambia varios canales a la vez; solo los que vienen. */
+      setChannels: (channels: Partial<BotChannels>, o?: RequestOptions) => json<BotSettings>("setBotSettings", { body: { channels }, ...o }),
     },
 
     /**
@@ -370,14 +378,16 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     attention: {
       /** TODOS los casos de ese estado (lo que conviene a los pendientes, que son pocos). */
-      list: (status: "open" | "resolved" = "open", o?: RequestOptions) =>
-        items<AttentionItem>("listAttention", { query: { status }, ...o }),
+      list: (status: "open" | "resolved" = "open", o?: RequestOptions & { channel?: Channel }) => {
+        const { channel, ...opts } = o ?? {};
+        return items<AttentionItem>("listAttention", { query: { status, channel }, ...opts });
+      },
       /**
        * UNA pagina de casos (mas recientes primero) y cuantos hay en total con ese estado. Los atendidos se acumulan sin
        * fin: asi el servidor solo trae `limit` (1 a 100) a partir de `offset`.
        */
-      page: (status: "open" | "resolved", page: { limit: number; offset?: number }, o?: RequestOptions) =>
-        json<AttentionList>("listAttention", { query: { status, limit: page.limit, offset: page.offset ?? 0 }, ...o }),
+      page: (status: "open" | "resolved", page: { limit: number; offset?: number; channel?: Channel }, o?: RequestOptions) =>
+        json<AttentionList>("listAttention", { query: { status, limit: page.limit, offset: page.offset ?? 0, channel: page.channel }, ...o }),
       resolve: (id: string, o?: RequestOptions) =>
         json<AttentionItem>("resolveAttention", { path: { attentionId: id }, ...o }),
     },
