@@ -1,7 +1,8 @@
 """Del modelo al JSON del contrato (`docs/openapi.yaml`). Los ids viajan como texto; los instantes en UTC (`...Z`).
 
 Privacidad: para el rol `doctor` la cita NUNCA lleva el telefono del paciente, ni en `phone` ni en `patient.id` (alli va el
-id de la cita).
+id de la cita), ni `contactPhone`, ni el id de Meta de Messenger / Instagram (que viaja en `patient.id` como `canal:contacto_id`
+solo para el personal).
 """
 from __future__ import annotations
 
@@ -12,21 +13,33 @@ from ..models import Appointment, AttentionCase, DoctorAbsence, PersonalEvent, R
 from ..settings import BotSettings
 
 
+def _patient_id(a: Appointment, role: str) -> str:
+    """Id estable del paciente para el personal. WhatsApp: el telefono (como siempre). Messenger / Instagram: `canal:contacto_id`,
+    NUNCA el telefono de contacto (que no es su identidad). Sin identidad, o para el doctor: el id de la cita."""
+    if role == "doctor":
+        return str(a.id)
+    if a.channel != "whatsapp":
+        return f"{a.channel}:{a.contact_id}" if a.contact_id else str(a.id)
+    return a.phone or str(a.id)
+
+
 def booking_json(a: Appointment, role: str) -> dict:
     patient = None
     if a.kind == "session" and a.patient_name:
-        hide = role == "doctor" or not a.phone
-        patient = {"id": str(a.id) if hide else a.phone, "name": a.patient_name}
+        patient = {"id": _patient_id(a, role), "name": a.patient_name}
         if a.phone and role != "doctor":
             patient["phone"] = a.phone
-    return {
-        "id": str(a.id), "kind": a.kind, "status": a.status, "source": a.source,
+    out = {
+        "id": str(a.id), "kind": a.kind, "status": a.status, "source": a.source, "channel": a.channel,
         "scheduledAtUtc": iso_utc(a.start_utc), "durationMinutes": a.duration_minutes, "patient": patient,
         "doctor": {"id": str(a.doctor.id), "name": a.doctor.name, "specialty": a.doctor.specialty, "color": a.doctor.color}
         if a.doctor else None,
         "room": {"id": str(a.room.id), "name": a.room.name} if a.room else None,
         "notes": a.notes,
     }
+    if a.kind == "session" and a.phone and role != "doctor":
+        out["contactPhone"] = a.phone  # el doctor nunca recibe un telefono, ni este
+    return out
 
 
 def doctor_json(d: DoctorView) -> dict:
@@ -70,11 +83,15 @@ def request_json(r: RequestView) -> dict:
 
 def attention_json(c: AttentionCase) -> dict:
     return {"id": str(c.id), "kind": c.kind, "status": c.status, "createdAtUtc": iso_utc(c.created_at),
-            "conversationId": c.conversation_id, "phone": c.phone, "reason": c.reason, "detail": c.detail}
+            "conversationId": c.conversation_id, "channel": c.channel, "contactId": c.contact_id, "phone": c.phone,
+            "reason": c.reason, "detail": c.detail}
 
 
 def bot_settings_json(st: BotSettings) -> dict:
-    out = {"active": st.active}
+    """Los tres interruptores. `active` (y `updatedAt` / `updatedBy`) son los de WhatsApp, para los clientes que solo lo conocen."""
+    out = {"active": st.active, "channels": dict(st.channels)}
     if st.updated_at:
         out.update(updatedAt=iso_utc(st.updated_at), updatedBy=st.updated_by)
+    out["channelUpdates"] = {c: {"updatedAt": iso_utc(u.updated_at) if u.updated_at else None, "updatedBy": u.updated_by}
+                             for c, u in st.updates.items()}
     return out

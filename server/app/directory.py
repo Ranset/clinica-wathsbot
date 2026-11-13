@@ -317,15 +317,19 @@ class Directory(Unit):
         return self._write(work)
 
     # ------------------------------------------------------------------ casos de atencion
-    def attention(self, status: str = "open", limit: int | None = None, offset: int = 0) -> tuple[list[AttentionCase], int]:
+    def attention(self, status: str = "open", limit: int | None = None, offset: int = 0,
+                  channel: str | None = None) -> tuple[list[AttentionCase], int]:
         """`(casos, total)` con ese estado, el mas reciente primero. Con `limit`/`offset` solo se TRAE esa pagina (los atendidos
         se acumulan sin fin); `total` cuenta todos los del estado. Ordena por `id` (crece con el tiempo) para usar el indice
         `(status, id)`: ni la lista ni el conteo recorren la tabla entera."""
         if status not in ATTENTION_STATUSES:
             raise _bad("status: " + " | ".join(ATTENTION_STATUSES))
+        where = [AttentionCase.status == status]
+        if channel is not None:                      # solo los de ese canal (WhatsApp / Messenger / Instagram)
+            where.append(AttentionCase.channel == channel)
         with self._read() as repo:
-            total = repo.s.scalar(select(func.count()).select_from(AttentionCase).where(AttentionCase.status == status)) or 0
-            q = select(AttentionCase).where(AttentionCase.status == status).order_by(AttentionCase.id.desc())
+            total = repo.s.scalar(select(func.count()).select_from(AttentionCase).where(*where)) or 0
+            q = select(AttentionCase).where(*where).order_by(AttentionCase.id.desc())
             if limit is not None:
                 q = q.limit(limit).offset(offset)
             return list(repo.s.scalars(q)), total

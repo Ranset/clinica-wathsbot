@@ -94,7 +94,7 @@ def test_entregas_duplicadas_simultaneas_dejan_una_sola_fila(app, db):
                                                       "text": "respuesta", "sender": {"id": "5219981112222"}})),
     ("standby", zernio_message("e3", message={"conversationId": "c", "platform": "whatsapp", "direction": "incoming",
                                               "text": "x", "sender": {"id": "5219981112222"}, "metadata": {"standby": True}})),
-    ("otra plataforma", zernio_message("e4", message={"conversationId": "c", "platform": "instagram", "direction": "incoming",
+    ("otra plataforma", zernio_message("e4", message={"conversationId": "c", "platform": "telegram", "direction": "incoming",
                                                       "text": "x", "sender": {"id": "5219981112222"}})),
     ("otro evento", zernio_message("e5", event="message.sent")),
     ("message no es objeto", zernio_message("e6", message="texto suelto")),

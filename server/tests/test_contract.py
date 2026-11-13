@@ -52,9 +52,10 @@ def test_endpoints_del_bot_solo_con_token_de_servicio(spec):
 
 def test_codigos_de_error_del_bot_actual_estan_en_el_contrato(spec):
     # codigos que el bot devuelve al modelo por su cuenta (no vienen de la API): agenda caida, accion desconocida,
-    # `pasar_a_persona` fuera del backend api o con el aviso a la clinica fallido
+    # `pasar_a_persona` fuera del backend api o con el aviso a la clinica fallido, y (canales) una conversacion sin identidad
+    # utilizable o un agendado en Messenger / Instagram al que aun le falta el telefono de contacto
     codigos = set(spec["components"]["schemas"]["ErrorCode"]["enum"]) | {
-        "agenda_no_disponible", "accion_desconocida", "no_disponible", "no_se_pudo_avisar"}
+        "agenda_no_disponible", "accion_desconocida", "no_disponible", "no_se_pudo_avisar", "sin_identidad", "falta_telefono"}
     fuente = (ROOT / "bot" / "scheduler.py").read_text(encoding="utf-8") + (ROOT / "bot" / "server.py").read_text(encoding="utf-8")
     usados = set(re.findall(r'"error":\s*"([a-z_]+)"', fuente)) | set(re.findall(r'error="([a-z_]+)"', fuente))
     assert usados - codigos == set()
@@ -71,5 +72,5 @@ def test_cada_accion_del_bot_tiene_endpoint(spec):
 def test_booking_del_contrato_coincide_con_types_ts(spec):
     ts = (ROOT / "shared" / "calendar" / "src" / "types.ts").read_text(encoding="utf-8")
     cuerpo = ts.split("export type Booking = {")[1].split("\n};")[0]
-    claves_ts = set(re.findall(r"^  (\w+):", cuerpo, re.M))
+    claves_ts = set(re.findall(r"^  (\w+)\??:", cuerpo, re.M))      # `channel?:` (opcional) tambien cuenta
     assert claves_ts == set(spec["components"]["schemas"]["Booking"]["properties"])

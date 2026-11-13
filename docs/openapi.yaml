@@ -26,7 +26,17 @@ info:
     - **Roles** (`x-roles` en cada operacion): `admin` (tecnico), `staff` (personal), `doctor`, `bot`.
       Un doctor solo ve y toca lo suyo (su `doctorId`); lo ajeno responde 404, no 403.
     - **Privacidad:** solo nombre, telefono, especialidad y horario. Nada de sintomas; `notes` es texto
-      administrativo. A los doctores no se les devuelve el telefono del paciente.
+      administrativo. A los doctores no se les devuelve el telefono del paciente ni el id de Messenger/Instagram.
+    - **Canales de mensajeria (v0.3):** ademas de WhatsApp el bot atiende Messenger (`facebook`) e Instagram
+      (`instagram`). La identidad de quien escribe es **(`canal`, `contacto_id`)**: en `whatsapp` es el telefono
+      (`telefono`, como siempre; `canal` ausente = `whatsapp`); en los otros dos es el id de Meta (PSID / IGSID),
+      que NO es un dato verificado ni un telefono. **Aislamiento total entre canales:** toda consulta por
+      identidad filtra por canal Y contacto; el mismo numero en dos canales son dos personas distintas y nunca se
+      unifican solas. Las citas de Messenger/Instagram guardan ademas un telefono de contacto
+      (`telefono_contacto`, obligatorio al agendar) para que la clinica llame al paciente. Un cliente que solo
+      conoce `telefono` sigue funcionando sin cambios. El interruptor del bot es POR CANAL (`BotSettings.channels`).
+      Errores de identidad/canal invalidos en las rutas nuevas = **400** `validacion`; los de siempre
+      (telefono mal formado en WhatsApp, `active` no booleano en la forma vieja del interruptor) siguen en 422.
     - **Reglas de agenda** (se imponen siempre en el servidor, tambien al reprogramar): doctor libre en
       cualquier consultorio y al menos un consultorio libre; dentro del horario de la clinica y del doctor;
       el doctor no esta ausente; antelacion minima 60 min; horizonte 60 dias. Reservar es atomico (bloques de
@@ -83,7 +93,10 @@ paths:
     get:
       operationId: botStatus
       tags: [bot]
-      summary: Interruptor del bot. El bot lo consulta antes de contestar cada evento.
+      summary: Interruptores del bot, uno por canal. El bot los consulta antes de contestar cada evento.
+      description: |
+        `channels` trae SIEMPRE los tres canales con su booleano; un canal sin dato es `false` (el bot falla
+        cerrado). `active` se conserva para clientes viejos y es SIEMPRE igual a `channels.whatsapp`.
       x-roles: [bot, admin, staff]
       security: [{ botToken: [] }, { session: [] }]
       responses:
@@ -160,14 +173,21 @@ paths:
     get:
       operationId: botMyAppointments
       tags: [bot]
-      summary: "Accion `mis_citas`: citas futuras agendadas del paciente (por telefono)."
+      summary: "Accion `mis_citas`: citas futuras agendadas del paciente (por su identidad: telefono, o canal + contacto_id)."
+      description: |
+        La identidad va como `telefono` (WhatsApp) **o** como `canal` + `contacto_id` (Messenger / Instagram), nunca mezcladas.
+        Falta de identidad: 422 en WhatsApp (como siempre); canal desconocido, `telefono` con un canal que no es WhatsApp,
+        o `contacto_id` ausente / mal formado: 400.
       x-roles: [bot]
       security: [{ botToken: [] }]
       parameters:
-        - { name: telefono, in: query, required: true, schema: { $ref: "#/components/schemas/Phone" } }
+        - { name: telefono, in: query, schema: { $ref: "#/components/schemas/Phone" }, description: "WhatsApp. Es la forma de siempre; no se manda junto con `canal` distinto de `whatsapp`." }
+        - { name: canal, in: query, schema: { $ref: "#/components/schemas/Channel" }, description: "`facebook` o `instagram` (con `contacto_id`). Ausente = `whatsapp`." }
+        - { name: contacto_id, in: query, schema: { $ref: "#/components/schemas/ContactId" }, description: "Id de Meta (PSID / IGSID) de quien escribe. Solo con `facebook` o `instagram`." }
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "200":
-          description: Solo las citas de ese telefono (incluye las creadas por el personal con ese telefono).
+          description: Solo las citas de ESA identidad (en WhatsApp incluye las creadas por el personal con ese telefono). Cada cita lleva su `canal`.
           content:
             application/json:
               schema:
@@ -190,14 +210,19 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [telefono, nombre, especialidad, inicio]
-              properties:
-                telefono: { $ref: "#/components/schemas/Phone" }
-                nombre: { type: string, description: "Nombre y apellido (>= 2 palabras) o `falta_nombre_completo`." }
-                especialidad: { type: string }
-                inicio: { $ref: "#/components/schemas/IsoLocalInput" }
+              allOf:
+                - $ref: "#/components/schemas/BotIdentity"
+                - type: object
+                  required: [nombre, especialidad, inicio]
+                  properties:
+                    nombre: { type: string, description: "Nombre y apellido (>= 2 palabras) o `falta_nombre_completo`." }
+                    especialidad: { type: string }
+                    inicio: { $ref: "#/components/schemas/IsoLocalInput" }
+                    telefono_contacto:
+                      $ref: "#/components/schemas/Phone"
+                      description: "OBLIGATORIO si el canal no es WhatsApp (falta o invalido = 400): el telefono al que la clinica llama al paciente. En WhatsApp se ignora (el telefono es la identidad)."
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "201":
           description: Cita creada.
           content:
@@ -210,7 +235,8 @@ paths:
     post:
       operationId: botCancel
       tags: [bot]
-      summary: "Accion `cancelar`: solo si la cita es de ese telefono."
+      summary: "Accion `cancelar`: solo si la cita es de esa identidad (telefono, o canal + contacto_id)."
+      description: "Una cita inexistente o de OTRA identidad (aunque los digitos coincidan en otro canal) es 404 `cita_no_encontrada`: no se distinguen."
       x-roles: [bot]
       security: [{ botToken: [] }]
       parameters:
@@ -219,12 +245,9 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [telefono]
-              properties:
-                telefono: { $ref: "#/components/schemas/Phone" }
+            schema: { $ref: "#/components/schemas/BotIdentity" }
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "200":
           description: Cita cancelada; libera el hueco.
           content:
@@ -252,12 +275,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [telefono, inicio]
-              properties:
-                telefono: { $ref: "#/components/schemas/Phone" }
-                inicio: { $ref: "#/components/schemas/IsoLocalInput" }
+              allOf:
+                - $ref: "#/components/schemas/BotIdentity"
+                - type: object
+                  required: [inicio]
+                  properties:
+                    inicio: { $ref: "#/components/schemas/IsoLocalInput" }
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "200":
           description: Cita movida.
           content:
@@ -367,14 +392,20 @@ paths:
             schema:
               type: object
               required: [conversationId, reason]
+              description: |
+                WhatsApp: igual que siempre (`telefono` opcional). Messenger / Instagram: `canal` y `contacto_id` OBLIGATORIOS y
+                sin `telefono`. El caso guarda el canal y el id, nunca el texto del paciente.
               properties:
                 conversationId: { type: string }
                 telefono: { $ref: "#/components/schemas/Phone" }
+                canal: { $ref: "#/components/schemas/Channel" }
+                contacto_id: { $ref: "#/components/schemas/ContactId" }
                 reason:
                   type: string
                   enum: [modelo_fallo, accion_invalida, pidio_persona, fuera_de_alcance, otro]
                 detail: { type: string, maxLength: 500 }
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "201":
           description: Caso registrado.
           content:
@@ -409,8 +440,8 @@ paths:
         duplicarse y no hay garantia de orden: la cola es idempotente por `id` del evento (indice unico; un
         duplicado responde 200 sin encolar).
 
-        Solo se encolan `message.received` de WhatsApp, entrantes y sin `metadata.standby`; `webhook.test` y
-        el resto se responden 200 y se descartan.
+        Solo se encolan `message.received` de WhatsApp, Messenger (`facebook`) e Instagram (`instagram`), entrantes y sin
+        `metadata.standby`; `webhook.test`, cualquier otra plataforma y el resto se responden 200 y se descartan.
       security: []
       requestBody:
         required: true
@@ -1186,7 +1217,7 @@ paths:
     get:
       operationId: getBotSettings
       tags: [admin]
-      summary: Estado del interruptor del bot.
+      summary: Estado de los interruptores del bot (uno por canal).
       x-roles: [admin, staff]
       responses:
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1199,20 +1230,23 @@ paths:
     put:
       operationId: setBotSettings
       tags: [admin]
-      summary: Enciende o apaga el bot (el boton del personal).
-      description: Apagado, el bot deja de contestar (los eventos se cierran como `skipped_bot_inactive`); las personas atienden desde Zernio.
+      summary: Enciende o apaga el bot de UN canal, o de varios a la vez (los botones del personal).
+      description: |
+        Apagado un canal, el bot deja de contestar por el (los eventos se cierran como `skipped_bot_inactive`); las personas
+        atienden desde Zernio. Tres formas de cuerpo: `{"channel": "facebook", "active": true}` (solo ese canal),
+        `{"active": true}` (la forma vieja, sin canal: cambia SOLO `whatsapp`) y `{"channels": {"facebook": true, "instagram": false}}`
+        (varios; solo cambian los que vienen). Cada canal que cambia deja una entrada `bot.set_active` en la bitacora, con el canal.
+        Un canal desconocido o un valor no booleano en las formas nuevas (`channel` / `channels`) es 400; en la forma vieja
+        (`{"active": ...}`) sigue siendo 422, como siempre.
       x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [active]
-              properties:
-                active: { type: boolean }
+            schema: { $ref: "#/components/schemas/BotSettingsUpdate" }
       responses:
+        "400": { $ref: "#/components/responses/BadRequest" }
         "422": { $ref: "#/components/responses/RuleError" }
         "200":
           description: Estado guardado.
@@ -1339,6 +1373,7 @@ paths:
       x-roles: [admin, staff]
       parameters:
         - { name: status, in: query, schema: { type: string, enum: [open, resolved], default: open } }
+        - { name: channel, in: query, description: "Solo los casos de ese canal. Sin el, todos.", schema: { $ref: "#/components/schemas/Channel" } }
         - { name: limit, in: query, description: "Cuantos casos devolver (1 a 100). Sin el, todos.", schema: { type: integer, minimum: 1, maximum: 100 } }
         - { name: offset, in: query, description: "Cuantos casos saltar (0 por defecto). Solo con `limit`.", schema: { type: integer, minimum: 0, default: 0 } }
       responses:
@@ -1828,6 +1863,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
+    BadRequest:
+      description: "Identidad o canal invalido (`validacion`): canal desconocido, `telefono` con un canal que no es WhatsApp, `contacto_id` ausente o mal formado, `telefono_contacto` ausente o invalido fuera de WhatsApp, o canal / valor invalido en el interruptor."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
     BotConflict:
       description: "`horario_ocupado`."
       content:
@@ -1839,7 +1879,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
     BotNotFound:
-      description: "`cita_no_encontrada` (no existe o es de otro telefono)."
+      description: "`cita_no_encontrada` (no existe o es de otra identidad: otro telefono, otro `contacto_id` u otro canal)."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -1897,6 +1937,30 @@ components:
       pattern: '^[0-9]{8,15}$'
       description: Digitos completos del WhatsApp del remitente (`message.sender.id`), con lada de pais. NUNCA lo que el paciente escriba en el chat.
       examples: ["529988908000"]
+    Channel:
+      type: string
+      enum: [whatsapp, facebook, instagram]
+      description: Canal de mensajeria por el que escribe el paciente. `facebook` = Messenger de Facebook.
+    ContactId:
+      type: string
+      pattern: '^[0-9A-Za-z_-]{5,64}$'
+      description: Id de Meta (PSID de Messenger / IGSID de Instagram) de quien escribe, tal como llega en `message.sender.id`. NO es un telefono ni un dato verificado.
+      examples: ["29894443490173495"]
+    BotIdentity:
+      type: object
+      description: |
+        Quien escribe, en una de dos formas (NUNCA mezcladas): `telefono` (WhatsApp, la de siempre) o `canal` (`facebook` | `instagram`)
+        + `contacto_id`. `canal` ausente = `whatsapp`; `telefono` junto con un canal distinto de `whatsapp` es 400. La identidad es la
+        pareja (canal, id): el mismo numero en dos canales son dos personas distintas.
+      properties:
+        telefono: { $ref: "#/components/schemas/Phone" }
+        canal: { $ref: "#/components/schemas/Channel" }
+        contacto_id: { $ref: "#/components/schemas/ContactId" }
+      oneOf:
+        - required: [telefono]
+        - required: [canal, contacto_id]
+          properties:
+            canal: { enum: [facebook, instagram] }
     IsoLocal:
       type: string
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2}$'
@@ -1937,6 +2001,7 @@ components:
       required: [cita_id, doctor, especialidad, consultorio, inicio, paciente]
       properties:
         cita_id: { type: string }
+        canal: { $ref: "#/components/schemas/Channel" }
         doctor: { type: string }
         especialidad: { type: string }
         consultorio: { type: string }
@@ -1973,13 +2038,70 @@ components:
                 $ref: "#/components/schemas/WeeklyHours"
                 description: Horario efectivo del doctor (el propio o, si no tiene, el de la clinica).
               usesClinicHours: { type: boolean }
+    BotChannels:
+      type: object
+      description: El interruptor de cada canal (`true` = el bot contesta por ese canal). Siempre trae los tres; un canal sin dato es `false`.
+      required: [whatsapp, facebook, instagram]
+      additionalProperties: false
+      properties:
+        whatsapp: { type: boolean }
+        facebook: { type: boolean }
+        instagram: { type: boolean }
+    BotChannelUpdate:
+      type: object
+      description: Cuando y quien cambio por ultima vez el interruptor de un canal (`null` si nunca se ha cambiado).
+      required: [updatedAt, updatedBy]
+      properties:
+        updatedAt: { type: [string, "null"], format: date-time }
+        updatedBy: { type: [string, "null"], description: "Nombre del usuario que lo cambio." }
     BotSettings:
       type: object
-      required: [active]
+      required: [active, channels]
       properties:
-        active: { type: boolean }
-        updatedAt: { type: string, format: date-time }
-        updatedBy: { type: [string, "null"], description: "Nombre del usuario que lo cambio." }
+        active:
+          type: boolean
+          deprecated: true
+          description: Compatibilidad con clientes viejos. SIEMPRE igual a `channels.whatsapp`.
+        channels: { $ref: "#/components/schemas/BotChannels" }
+        updatedAt: { type: string, format: date-time, description: "Del interruptor de WhatsApp (el de `active`)." }
+        updatedBy: { type: [string, "null"], description: "Nombre del usuario que cambio el interruptor de WhatsApp." }
+        channelUpdates:
+          type: object
+          description: Cuando y quien cambio cada canal. Lo usan los tres botones de la web.
+          required: [whatsapp, facebook, instagram]
+          additionalProperties: false
+          properties:
+            whatsapp: { $ref: "#/components/schemas/BotChannelUpdate" }
+            facebook: { $ref: "#/components/schemas/BotChannelUpdate" }
+            instagram: { $ref: "#/components/schemas/BotChannelUpdate" }
+    BotSettingsUpdate:
+      description: |
+        Una de tres formas: `{channel, active}` (un canal), `{active}` (la forma vieja: solo WhatsApp) o `{channels}` (varios;
+        solo los que vienen). No se pueden mezclar `channel` y `channels`.
+      oneOf:
+        - type: object
+          required: [channel, active]
+          additionalProperties: false
+          properties:
+            channel: { $ref: "#/components/schemas/Channel" }
+            active: { type: boolean }
+        - type: object
+          required: [active]
+          additionalProperties: false
+          properties:
+            active: { type: boolean }
+        - type: object
+          required: [channels]
+          additionalProperties: false
+          properties:
+            channels:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                whatsapp: { type: boolean }
+                facebook: { type: boolean }
+                instagram: { type: boolean }
     BotEvent:
       type: object
       required: [id, zernioEventId, payload, attempts]
@@ -1997,7 +2119,8 @@ components:
       description: |
         Evento tal como lo manda Zernio. Todos traen `id`, `event`, `timestamp` y `test`; `profiles` solo si
         el evento pertenece a un perfil. En `message.received` el bot usa `message.text`, `message.sender.id`
-        (telefono), `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
+        (telefono en WhatsApp; id de Meta en Messenger / Instagram), `message.platform` (`whatsapp` | `facebook` | `instagram`),
+        `message.conversationId` y `account.accountId`/`account.id`, igual que hoy `handle()`.
         Ojo: en el evento de prueba `webhook.test` `message` es un **texto**, no un objeto.
       properties:
         id: { type: string }
@@ -2028,16 +2151,22 @@ components:
         source:
           type: string
           enum: [manual, ai]
-          description: "`ai` = la agendo el bot de WhatsApp; `manual` = el personal."
+          description: "`ai` = la agendo el bot (WhatsApp, Messenger o Instagram); `manual` = el personal."
+        channel:
+          $ref: "#/components/schemas/Channel"
+          description: "Canal por el que llego la cita. Ausente = `whatsapp`. Las del personal son `whatsapp`."
+        contactPhone:
+          type: string
+          description: "Telefono de contacto de la cita (el mismo de `patient.phone`). Se omite para el rol `doctor` y si la cita no tiene telefono. En Messenger / Instagram es el que dio el paciente al agendar."
         scheduledAtUtc: { type: string, format: date-time }
         durationMinutes: { type: integer, minimum: 30, multipleOf: 30 }
         patient:
           type: [object, "null"]
           required: [id, name]
           properties:
-            id: { type: string, description: "Telefono (digitos) si existe; si no, el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): el telefono no se le entrega por ningun campo." }
+            id: { type: string, description: "WhatsApp: el telefono (digitos) si existe. Messenger / Instagram: `canal:contacto_id` (estable; NO es el telefono de contacto). Sin identidad: el id de la cita. Para el rol `doctor` SIEMPRE es el id de la cita (y `phone` se omite): ni el telefono ni el id de Meta se le entregan por ningun campo." }
             name: { type: string }
-            phone: { type: string, description: "Se omite para el rol `doctor`." }
+            phone: { type: string, description: "Telefono de contacto. Se omite para el rol `doctor`. NUNCA es un id de Meta." }
         doctor:
           type: [object, "null"]
           required: [id, name, specialty]
@@ -2368,6 +2497,12 @@ components:
         status: { type: string, enum: [open, resolved] }
         createdAtUtc: { type: string, format: date-time }
         conversationId: { type: [string, "null"] }
-        phone: { type: [string, "null"] }
+        channel:
+          $ref: "#/components/schemas/Channel"
+          description: Canal de la conversacion. Ausente = `whatsapp`.
+        contactId:
+          type: [string, "null"]
+          description: "Id de Meta (PSID / IGSID) en Messenger / Instagram; `null` en WhatsApp. Sin telefono: la clinica contesta desde el inbox de Zernio con `conversationId`."
+        phone: { type: [string, "null"], description: "Solo WhatsApp. `null` en Messenger / Instagram." }
         reason: { type: string }
         detail: { type: [string, "null"] }

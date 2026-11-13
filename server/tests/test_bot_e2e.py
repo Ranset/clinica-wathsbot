@@ -248,3 +248,76 @@ def test_el_mensaje_de_respaldo_del_bot_pasa_la_conversacion_a_una_persona(bot, 
     assert event_row(stack, "evt-1").status == "done"
     (caso,) = cases(stack)
     assert (caso.kind, caso.conversation_id, caso.phone, caso.reason) == ("handoff", "conv-7", PHONE, "otro")
+
+
+# ------------------------------------------------------------------ canales: Messenger e Instagram con el cliente REAL
+def test_messenger_e_instagram_con_el_cliente_real_y_aislamiento_contra_whatsapp_con_el_mismo_numero(bot, stack):
+    """Interruptor por canal, agendar desde `facebook` con `telefono_contacto`, `mis_citas`, `reprogramar`, `cancelar`, un traspaso de
+    `instagram` y el aislamiento contra una cita de WhatsApp con el MISMO numero. Todo con `bot/api_client.py` y `run_action` reales
+    contra el servidor Flask real, por HTTP."""
+    from app.settings import set_bot_channels
+    num, ig_id = "529990000001", "17841400000000000"
+    Ident = bot.api_client.Ident
+    wa, fb, ig = num, Ident(num, "facebook"), Ident(ig_id, "instagram")      # un str suelto es WhatsApp (el cliente viejo)
+    c, run = bot.client, bot.server.run_action
+
+    # 1. interruptor por canal: nace todo apagado, y encender uno no enciende los otros
+    assert (c.bot_active(), c.bot_active("facebook"), c.bot_active("instagram")) == (False, False, False)
+    with stack.sf() as s, s.begin():
+        set_bot_channels(s, {"facebook": True})
+    assert (c.bot_active(), c.bot_active("facebook"), c.bot_active("instagram")) == (False, True, False)
+    with stack.sf() as s, s.begin():
+        set_bot_channels(s, {"instagram": True, "whatsapp": True})
+    assert (c.bot_active(), c.bot_active("facebook"), c.bot_active("instagram")) == (True, True, True)
+
+    # 2. agendar desde facebook: el telefono de contacto es obligatorio (el bot lo pide antes de llamar a la API)
+    t = next_weekday(stack.agenda, 1, 10)
+    asked = t.strftime("%Y-%m-%dT%H:%M")
+    falta = run({"name": "agendar", "especialidad": "proctologia", "nombre": "Ana Lopez", "inicio": asked}, fb)
+    assert falta["error"] == "falta_telefono"                                  # no se llego a la API
+    with pytest.raises(bot.api_client.ApiUnavailable) as caido:                # y si llegara sin telefono, la API lo rechaza (400)
+        c.book(fb, "Ana Lopez", "proctologia", t)
+    assert caido.value.status == 400
+    r = run({"name": "agendar", "especialidad": "proctologia", "nombre": "Ana Lopez", "inicio": asked,
+             "telefono_contacto": "(998) 123-4567"}, fb)
+    assert r["ok"] and r["canal"] == "facebook" and r["inicio"] == iso(t) and r["event_id"] == r["cita_id"]
+    cid_fb = r["cita_id"]
+    with stack.sf() as s:
+        from app.models import Appointment
+        a = s.get(Appointment, int(cid_fb))
+        assert (a.channel, a.contact_id, a.phone, a.source) == ("facebook", num, "9981234567", "ai")    # el id de Meta NO es el telefono
+
+    # 3. una cita de WhatsApp con el MISMO numero, otro dia
+    t_wa = next_weekday(stack.agenda, 2, 10)
+    r = run({"name": "agendar", "especialidad": "proctologia", "nombre": "Ana Lopez", "inicio": t_wa.strftime("%Y-%m-%dT%H:%M")}, wa)
+    assert r["ok"] and r["canal"] == "whatsapp"
+    cid_wa = r["cita_id"]
+
+    # 4. mis_citas: cada identidad ve SOLO la suya
+    assert [x["cita_id"] for x in run({"name": "mis_citas"}, fb)["citas"]] == [cid_fb]
+    assert [x["cita_id"] for x in run({"name": "mis_citas"}, wa)["citas"]] == [cid_wa]
+    assert run({"name": "mis_citas"}, ig) == {"citas": []}
+    assert run({"name": "mis_citas"}, Ident(num, "instagram")) == {"citas": []}          # instagram con el mismo numero tampoco ve la de facebook
+
+    # 5. lo cruzado es 404 (no se distingue de "no existe")
+    nuevo = (t + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+    for quien, ajena in ((wa, cid_fb), (fb, cid_wa), (Ident(num, "instagram"), cid_fb), (Ident(num, "instagram"), cid_wa)):
+        assert run({"name": "cancelar", "event_id": ajena}, quien)["error"] == "cita_no_encontrada"
+        assert run({"name": "reprogramar", "event_id": ajena, "inicio": nuevo}, quien)["error"] == "cita_no_encontrada"
+    assert [x["cita_id"] for x in run({"name": "mis_citas"}, fb)["citas"]] == [cid_fb]       # nada cambio
+    assert [x["cita_id"] for x in run({"name": "mis_citas"}, wa)["citas"]] == [cid_wa]
+
+    # 6. reprogramar y cancelar la propia
+    mov = run({"name": "reprogramar", "event_id": cid_fb, "inicio": nuevo}, fb)
+    assert mov["ok"] and mov["reprogramada_desde"] == iso(t) and mov["inicio"] == iso(t + timedelta(hours=1)) and mov["canal"] == "facebook"
+    can = run({"name": "cancelar", "event_id": cid_fb}, fb)
+    assert can["ok"] and can["cancelada"]["event_id"] == cid_fb
+    assert run({"name": "mis_citas"}, fb) == {"citas": []}
+    assert [x["cita_id"] for x in run({"name": "mis_citas"}, wa)["citas"]] == [cid_wa]       # la de WhatsApp sigue ahi
+
+    # 7. traspaso de instagram: guarda canal e id de Meta, sin telefono ni texto
+    c.handoff("conv-ig-7", "pidio_persona", canal="instagram", contacto_id=ig_id, detail="quiere hablar con una persona")
+    (caso,) = cases(stack)
+    assert (caso.kind, caso.channel, caso.contact_id, caso.phone, caso.conversation_id, caso.reason) == (
+        "handoff", "instagram", ig_id, None, "conv-ig-7", "pidio_persona")
+    assert bot.api_client.canal_of(wa) == "whatsapp"                                          # y WhatsApp sigue mandando solo `telefono`

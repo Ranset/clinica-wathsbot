@@ -26,6 +26,8 @@ ROLES = ("admin", "staff", "doctor")
 STATUSES = ("agendada", "realizada", "no_show", "cancelada")
 KINDS = ("session", "block")
 SOURCES = ("manual", "ai")
+#: Canales de mensajeria. `facebook` = Messenger. WhatsApp es el de siempre (la identidad es el telefono).
+CHANNELS = ("whatsapp", "facebook", "instagram")
 EVENT_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 ATTENTION_KINDS = ("handoff", "event_failed", "absence_affects_appointments")
 ATTENTION_STATUSES = ("open", "resolved")
@@ -173,18 +175,25 @@ class Appointment(Base):
         CheckConstraint(_in("status", STATUSES), name="status"),
         CheckConstraint(_in("kind", KINDS), name="kind"),
         CheckConstraint(_in("source", SOURCES), name="source"),
+        CheckConstraint(_in("channel", CHANNELS), name="channel"),
         CheckConstraint("duration_minutes > 0 AND duration_minutes % 30 = 0", name="duration"),
         Index("ix_appointments_start_utc", "start_utc"),
         Index("ix_appointments_doctor_id_start_utc", "doctor_id", "start_utc"),
         Index("ix_appointments_phone_start_utc", "phone", "start_utc"),
+        Index("ix_appointments_channel_contact_id_start_utc", "channel", "contact_id", "start_utc"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str] = mapped_column(String(8), default="session")
     status: Mapped[str] = mapped_column(String(16), default="agendada")
     source: Mapped[str] = mapped_column(String(8), default="manual")
-    #: telefono de WhatsApp (digitos). Identidad del paciente; NULL en citas de mostrador sin telefono y en bloqueos.
+    #: Telefono (digitos). En WhatsApp es la IDENTIDAD del paciente; en Messenger / Instagram es solo el telefono de CONTACTO que
+    #: dio al agendar (la identidad es `channel` + `contact_id`). NULL en citas de mostrador sin telefono y en bloqueos.
     phone: Mapped[str | None] = mapped_column(String(20))
+    #: Canal por el que llego (`whatsapp`, `facebook`, `instagram`). Toda consulta por identidad filtra por canal Y contacto.
+    channel: Mapped[str] = mapped_column(String(12), default="whatsapp", server_default="whatsapp")
+    #: Id de Meta (PSID / IGSID) de quien escribio; NULL en WhatsApp, donde la identidad es `phone`. No es un telefono ni un dato verificado.
+    contact_id: Mapped[str | None] = mapped_column(String(64))
     patient_name: Mapped[str | None] = mapped_column(String(120))
     doctor_id: Mapped[int | None] = mapped_column(ForeignKey("doctors.id"))
     room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id"))
@@ -309,6 +318,9 @@ class AttentionCase(Base):
     status: Mapped[str] = mapped_column(String(10), default="open")
     conversation_id: Mapped[str | None] = mapped_column(String(64))
     phone: Mapped[str | None] = mapped_column(String(20))
+    #: Canal de la conversacion y, fuera de WhatsApp, el id de Meta de quien escribio (sin telefono: se contesta desde el inbox de Zernio).
+    channel: Mapped[str] = mapped_column(String(12), default="whatsapp", server_default="whatsapp")
+    contact_id: Mapped[str | None] = mapped_column(String(64))
     #: codigo corto (`pidio_persona`, `mensaje_sin_atender`, ...)
     reason: Mapped[str] = mapped_column(String(64))
     detail: Mapped[str | None] = mapped_column(String(500))

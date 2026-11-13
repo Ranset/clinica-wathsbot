@@ -26,35 +26,53 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from .agenda.identity import CONTACT_ID_RE
 from .agenda.rules import Rules
 from .agenda.uow import Unit
 from .db import is_unique_violation, iso_utc, to_db
-from .models import AttentionCase, WebhookEvent
+from .models import CHANNELS, AttentionCase, WebhookEvent
 
 #: resultado que informa el bot -> estado final del evento
 OUTCOMES = {"replied": "done", "skipped_bot_inactive": "skipped", "skipped_ignored": "skipped"}
 HANDOFF_REASONS = ("modelo_fallo", "accion_invalida", "pidio_persona", "fuera_de_alcance", "otro")
 CLOSED = ("done", "skipped")
+#: plataformas de Zernio que atiende el bot: WhatsApp, Messenger (`facebook`) e Instagram. Cualquier otra (telegram...) no se encola.
+PLATFORMS = CHANNELS
 
 
 def is_patient_message(p: dict) -> bool:
-    """Lo unico que se encola: `message.received` de WhatsApp, entrante, real y sin `metadata.standby`.
+    """Lo unico que se encola: `message.received` de WhatsApp, Messenger o Instagram, entrante, real y sin `metadata.standby`.
     (Misma regla que `Processor._is_patient_message` del bot y que el `do_POST` del bot antiguo.)"""
     m = p.get("message")
     if p.get("event") != "message.received" or p.get("test") or not isinstance(m, dict):
         return False
     md = m.get("metadata")
-    return m.get("platform") == "whatsapp" and m.get("direction") == "incoming" and not (
+    return m.get("platform") in PLATFORMS and m.get("direction") == "incoming" and not (
         isinstance(md, dict) and md.get("standby"))
 
 
 def routing(p: dict) -> tuple[str | None, str | None]:
-    """(conversationId, telefono) de un evento, o None. El telefono es `message.sender.id` (digitos)."""
+    """(conversationId, telefono) de un evento, o None. El telefono es `message.sender.id` (digitos) y SOLO se rellena en WhatsApp:
+    en Messenger / Instagram ese id es de Meta, no un telefono, asi que el telefono es siempre None (ver `channel_of`)."""
     m = p.get("message") if isinstance(p.get("message"), dict) else {}
     sender = m.get("sender") if isinstance(m.get("sender"), dict) else {}
     conv = str(m.get("conversationId") or "").strip()[:64] or None
+    if channel_of(p)[0] != "whatsapp":
+        return conv, None
     phone = str(sender.get("id") or "").strip()
     return conv, (phone if phone.isdigit() and 8 <= len(phone) <= 15 else None)
+
+
+def channel_of(p: dict) -> tuple[str, str | None]:
+    """(canal, contacto_id) de un evento. WhatsApp (o plataforma ausente / desconocida) -> ("whatsapp", None): alli la identidad es el
+    telefono de `routing`. Messenger / Instagram -> (canal, `message.sender.id`) si es un id valido, o None."""
+    m = p.get("message") if isinstance(p.get("message"), dict) else {}
+    platform = m.get("platform")
+    if platform not in PLATFORMS or platform == "whatsapp":
+        return "whatsapp", None
+    sender = m.get("sender") if isinstance(m.get("sender"), dict) else {}
+    cid = str(sender.get("id") or "").strip()
+    return platform, (cid if CONTACT_ID_RE.fullmatch(cid) else None)
 
 
 def redact(p: dict) -> dict:
@@ -179,15 +197,18 @@ class EventQueue(Unit):
 
     def _mark_failed(self, s: Session, e: WebhookEvent, reason: str, now: datetime) -> None:
         conv, phone = routing(e.payload)
+        channel, contact_id = channel_of(e.payload)
         e.status, e.last_error, e.claimed_until, e.processed_at = "failed", reason[:500], None, now
         e.payload = redact(e.payload)
-        s.add(AttentionCase(kind="event_failed", status="open", conversation_id=conv, phone=phone,
-                            reason="mensaje_sin_atender", detail=reason[:500], event_id=e.id, created_at=now))
+        s.add(AttentionCase(kind="event_failed", status="open", conversation_id=conv, phone=phone, channel=channel,
+                            contact_id=contact_id, reason="mensaje_sin_atender", detail=reason[:500], event_id=e.id, created_at=now))
 
     # ------------------------------------------------------------------ traspaso a una persona
-    def handoff(self, conversation_id: str, reason: str, phone: str | None = None, detail: str | None = None) -> int:
+    def handoff(self, conversation_id: str, reason: str, phone: str | None = None, detail: str | None = None, *,
+                channel: str = "whatsapp", contact_id: str | None = None) -> int:
         """Registra que una persona debe atender la conversacion. Si ya hay un caso abierto de esa conversacion
-        devuelve ese (el bot puede repetir el aviso sin llenar la lista)."""
+        devuelve ese (el bot puede repetir el aviso sin llenar la lista). En Messenger / Instagram no hay telefono: se guarda el
+        canal y el id de Meta, y la clinica contesta desde el inbox de Zernio con la conversacion."""
         conv = str(conversation_id).strip()[:64]
         now = self._utc()
 
@@ -197,8 +218,8 @@ class EventQueue(Unit):
                 AttentionCase.conversation_id == conv).order_by(AttentionCase.id.desc())).first()
             if open_case is not None:
                 return open_case.id
-            c = AttentionCase(kind="handoff", status="open", conversation_id=conv, phone=phone, reason=reason,
-                              detail=(detail or None) and detail[:500], created_at=now)
+            c = AttentionCase(kind="handoff", status="open", conversation_id=conv, phone=phone, channel=channel,
+                              contact_id=contact_id, reason=reason, detail=(detail or None) and detail[:500], created_at=now)
             s.add(c)
             s.flush()
             return c.id

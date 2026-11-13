@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, lazyload
 from ..db import to_db
 from ..models import (Appointment, AppointmentBlock, ClinicHours, Doctor, DoctorAbsence, DoctorHours, PersonalEvent, Room)
 from .hours import Schedule
+from .identity import Identity
 from .rules import Rules
 
 
@@ -134,29 +135,35 @@ class Repo:
             q = q.options(lazyload(Appointment.doctor), lazyload(Appointment.room)).with_for_update()
         return self.s.scalars(q).unique().first()
 
-    def own_appointment(self, phone, appointment_id, lock: bool = False) -> Appointment | None:
-        """Cita agendada y futura-o-en-curso de ESE telefono. Un telefono vacio no es dueno de nada
-        (evita que `phone IS NULL` empareje citas de mostrador sin telefono)."""
-        phone = (str(phone).strip() if phone is not None else "")
-        if not phone:
+    def own_appointment(self, who, appointment_id, lock: bool = False) -> Appointment | None:
+        """Cita agendada y futura-o-en-curso de ESA identidad (`Identity`; un texto suelto es un telefono de WhatsApp). Una identidad
+        vacia no es dueña de nada (evita que `phone IS NULL` empareje citas de mostrador sin telefono), y una cita de otro canal
+        NUNCA es de esta identidad aunque los digitos coincidan."""
+        ident = Identity.coerce(who)
+        if not ident:
             return None
         a = self.appointment(appointment_id, lock=lock)
-        if a is None or a.kind != "session" or a.status != "agendada" or a.phone != phone:
+        if a is None or a.kind != "session" or a.status != "agendada" or not ident.owns(a):
             return None
         return a
 
-    def upcoming_for_phone(self, phone, now_utc: datetime, until_utc: datetime) -> list[Appointment]:
-        phone = (str(phone).strip() if phone is not None else "")
-        if not phone:
+    def upcoming_for(self, who, now_utc: datetime, until_utc: datetime) -> list[Appointment]:
+        """Citas agendadas, futuras o en curso, de ESA identidad (canal Y clave)."""
+        ident = Identity.coerce(who)
+        if not ident:
             return []
         earliest_start = now_utc - timedelta(minutes=self.rules.max_duration_minutes)
         q = (select(Appointment)
-             .where(Appointment.phone == phone, Appointment.kind == "session", Appointment.status == "agendada",
+             .where(ident.matches(), Appointment.kind == "session", Appointment.status == "agendada",
                     Appointment.start_utc >= earliest_start, Appointment.start_utc <= until_utc)
              .order_by(Appointment.start_utc, Appointment.id))
         # en curso o futura: su fin (inicio + duracion) es posterior a ahora
         return [a for a in self.s.scalars(q).unique()
                 if a.start_utc + timedelta(minutes=a.duration_minutes) > now_utc]
+
+    def upcoming_for_phone(self, phone, now_utc: datetime, until_utc: datetime) -> list[Appointment]:
+        """Por telefono = WhatsApp (la forma de siempre)."""
+        return self.upcoming_for(Identity.coerce(phone), now_utc, until_utc)
 
     def list_range(self, start, end, *, doctor_id=None, room_id=None, status=None) -> list[Appointment]:
         """Citas y bloqueos que se solapan con [start, end) (instantes con zona)."""

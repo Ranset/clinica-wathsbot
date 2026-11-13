@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from ..db import is_unique_violation, to_db, utcnow
 from ..models import SOURCES, STATUSES, Appointment, AppointmentBlock, Doctor, Room
 from .audit import BOT, SYSTEM, Actor, audit
+from .identity import Identity
 from .errors import (CITA_NO_ENCONTRADA, DOCTOR_NO_DISPONIBLE, ESPECIALIDAD, FALTA_NOMBRE, FUERA_DE_HORARIO,
                      FUERA_DE_RANGO, HORARIO_OCUPADO, HORARIO_PASADO, NO_ENCONTRADO, RANGO_INVALIDO, TRANSICION_INVALIDA,
                      VALIDACION, AgendaError)
@@ -100,7 +101,7 @@ class Agenda(Unit):
     def _bot_view(self, a: Appointment) -> dict:
         return {"cita_id": str(a.id), "doctor": a.doctor.name, "especialidad": a.doctor.specialty,
                 "consultorio": a.room.name, "inicio": iso(a.start_utc.replace(tzinfo=_UTC), self.rules.tz),
-                "paciente": a.patient_name}
+                "paciente": a.patient_name, "canal": a.channel}
 
     def bot_config(self) -> dict:
         """Doctores activos y limites para armar el prompt del bot (`BotConfig` del contrato)."""
@@ -206,11 +207,12 @@ class Agenda(Unit):
                 res["nota"] = "sin horarios libres cerca de esa fecha"
             return res
 
-    def mine(self, phone) -> list[dict]:
-        """Citas agendadas, futuras o en curso, del paciente (por telefono). Incluye las que creo el personal."""
+    def mine(self, who) -> list[dict]:
+        """Citas agendadas, futuras o en curso, del paciente: de ESA identidad (`Identity`; un texto suelto es un telefono de
+        WhatsApp). Incluye las que creo el personal con ese telefono."""
         now = self.now()
         with self._read() as repo:
-            rows = repo.upcoming_for_phone(phone, to_db(now), to_db(now + timedelta(days=self.rules.horizon_days + 30)))
+            rows = repo.upcoming_for(who, to_db(now), to_db(now + timedelta(days=self.rules.horizon_days + 30)))
             return sorted((self._bot_view(a) for a in rows), key=lambda x: x["inicio"])
 
     # ------------------------------------------------------------------ escritura (bot)
@@ -220,26 +222,36 @@ class Agenda(Unit):
         except AgendaError as e:
             return e.body()
 
-    def book(self, phone, patient_name, specialty, start: datetime, *, source="ai", actor: Actor = BOT):
+    def book(self, who, patient_name, specialty, start: datetime, *, source="ai", actor: Actor = BOT, contact_phone=None):
+        """Reserva para la identidad `who` (`Identity`; un texto suelto es un telefono de WhatsApp). Fuera de WhatsApp la identidad es
+        el id de Meta y `contact_phone` (8 a 15 digitos) es OBLIGATORIO: el telefono para que la clinica llame al paciente. En WhatsApp
+        el telefono es la identidad y `contact_phone` se ignora."""
+        ident = Identity.coerce(who)
         with self._read() as repo:
             doc = find_doctor(specialty, repo.doctors())
             if not doc:
                 return self._unknown_specialty(repo)
         if not patient_name or len(patient_name.split()) < 2:
             return {"error": FALTA_NOMBRE}
-        if not phone:  # sin telefono el paciente no podria ver, cancelar ni mover su cita
+        if not ident:  # sin identidad el paciente no podria ver, cancelar ni mover su cita
             return {"error": VALIDACION, "detail": "falta el telefono del paciente"}
+        if ident.is_whatsapp:
+            phone, contact_id = ident.key, None
+        else:
+            phone, contact_id = str(contact_phone or "").strip(), ident.key
+            if not (phone.isascii() and phone.isdigit() and 8 <= len(phone) <= 15):
+                return {"error": VALIDACION, "detail": "se requiere telefono_contacto (8 a 15 digitos) para este canal"}
 
         def work(repo, s):
             a = self._create(repo, s, kind="session", start=start, minutes=self.rules.slot_minutes,
                              patient_name=patient_name, phone=phone, doctor_id=doc.id, room_id=None, notes=None,
-                             allow_short_notice=False, source=source, actor=actor)
+                             allow_short_notice=False, source=source, actor=actor, channel=ident.channel, contact_id=contact_id)
             return {"ok": True, **self._bot_view(a)}
         return self._bot(work)
 
-    def cancel(self, phone, cita_id, *, actor: Actor = BOT):
+    def cancel(self, who, cita_id, *, actor: Actor = BOT):
         def work(repo, s):
-            a = repo.own_appointment(phone, cita_id, lock=True)
+            a = repo.own_appointment(who, cita_id, lock=True)
             if a is None:
                 raise AgendaError(CITA_NO_ENCONTRADA)
             view = self._bot_view(a)
@@ -247,10 +259,10 @@ class Agenda(Unit):
             return {"ok": True, "cancelada": view}
         return self._bot(work)
 
-    def reschedule(self, phone, cita_id, new_start: datetime, *, actor: Actor = BOT):
+    def reschedule(self, who, cita_id, new_start: datetime, *, actor: Actor = BOT):
         """Mueve la cita DEL PACIENTE en una sola transaccion: si el nuevo horario falla, la original se conserva."""
         def work(repo, s):
-            a = repo.own_appointment(phone, cita_id, lock=True)
+            a = repo.own_appointment(who, cita_id, lock=True)
             if a is None:
                 raise AgendaError(CITA_NO_ENCONTRADA)
             old = iso(a.start_utc.replace(tzinfo=_UTC), self.rules.tz)  # sin SQL: _move bloquea antes de leer nada mas
@@ -417,7 +429,7 @@ class Agenda(Unit):
 
     # ------------------------------------------------------------------ nucleo transaccional
     def _create(self, repo: Repo, s: Session, *, kind, start, minutes, patient_name, phone, doctor_id, room_id, notes,
-                allow_short_notice, source, actor) -> Appointment:
+                allow_short_notice, source, actor, channel="whatsapp", contact_id=None) -> Appointment:
         r = self.rules
         if kind not in ("session", "block"):
             raise AgendaError(VALIDACION, f"kind desconocido: {kind!r}")
@@ -461,7 +473,7 @@ class Agenda(Unit):
         slots_u = [to_db(x) for x in slots]
         free = self._free_rooms(repo, doctor, candidates, slots_u)
         appt = Appointment(kind=kind, status="agendada", source=source, phone=phone_, patient_name=name,
-                           doctor=doctor, room=free[0], start_utc=slots_u[0], duration_minutes=minutes, notes=notes,
+                           channel=channel, contact_id=contact_id if kind == "session" else None, doctor=doctor, room=free[0], start_utc=slots_u[0], duration_minutes=minutes, notes=notes,
                            created_by_id=actor.user_id)
         s.add(appt)
         s.flush()

@@ -6,7 +6,9 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from ..agenda import Actor
 from ..db import iso_utc
-from ..settings import get_bot_settings, set_bot_active
+from ..models import CHANNELS
+from ..settings import get_bot_settings, set_bot_channels
+from .common import ApiError
 from .inputs import bad, body, opt_bool, query_int
 from .security import require
 from .serializers import attention_json, bot_settings_json, doctor_json, user_json
@@ -67,14 +69,44 @@ def get_bot():
         return jsonify(bot_settings_json(get_bot_settings(s)))
 
 
+def _bot_changes(b: dict) -> dict[str, bool]:
+    """Los canales que pide cambiar el cuerpo. Tres formas: `{"channel": c, "active": x}` (un canal), `{"channels": {c: x, ...}}` (varios;
+    solo los que vienen) y `{"active": x}` (la forma vieja, sin canal: SOLO WhatsApp). Un canal desconocido o un valor que no sea
+    booleano en las formas nuevas es 400; en la forma vieja sigue siendo 422, como siempre."""
+    def invalid(msg):
+        return ApiError("validacion", 400, msg)
+
+    if "channels" in b:
+        if "channel" in b or "active" in b:
+            raise invalid('use "channels" solo, o "channel" con "active"')
+        ch = b["channels"]
+        if not isinstance(ch, dict) or not ch:
+            raise invalid('"channels" debe ser un objeto con al menos un canal: ' + ", ".join(CHANNELS))
+        for canal, value in ch.items():
+            if canal not in CHANNELS:
+                raise invalid(f"canal desconocido; debe ser uno de: {', '.join(CHANNELS)}")
+            if not isinstance(value, bool):
+                raise invalid(f'el valor de "{canal}" debe ser verdadero o falso')
+        return dict(ch)
+    if "channel" in b:
+        canal, value = b["channel"], b.get("active")
+        if not isinstance(canal, str) or canal not in CHANNELS:
+            raise invalid(f"canal desconocido; debe ser uno de: {', '.join(CHANNELS)}")
+        if not isinstance(value, bool):
+            raise invalid('"active" debe ser verdadero o falso')
+        return {canal: value}
+    active = b.get("active")                     # forma vieja: sin canal = WhatsApp
+    if not isinstance(active, bool):
+        raise bad('"active" debe ser verdadero o falso')
+    return {"whatsapp": active}
+
+
 @bp.put("/api/settings/bot")
 @require(*STAFF)
 def set_bot():
-    active = body().get("active")
-    if not isinstance(active, bool):
-        raise bad('"active" debe ser verdadero o falso')
+    changes = _bot_changes(body())
     with _x("db").session_factory() as s, s.begin():
-        return jsonify(bot_settings_json(set_bot_active(s, active, _actor())))
+        return jsonify(bot_settings_json(set_bot_channels(s, changes, _actor())))
 
 
 # --------------------------------------------------------------------------- casos de atencion
@@ -85,7 +117,10 @@ def list_attention():
     limit, offset = query_int("limit", 1, MAX_PAGE_SIZE), query_int("offset", 0)
     if offset and limit is None:
         raise bad("offset: solo se admite junto con limit")
-    rows, total = _x("directory").attention(request.args.get("status", "open"), limit=limit, offset=offset or 0)
+    channel = request.args.get("channel")
+    if channel is not None and channel not in CHANNELS:
+        raise bad("channel: " + " | ".join(CHANNELS))
+    rows, total = _x("directory").attention(request.args.get("status", "open"), limit=limit, offset=offset or 0, channel=channel)
     return jsonify(items=[attention_json(c) for c in rows], total=total)
 
 

@@ -50,8 +50,12 @@ def seed(s: Session, config: dict | None = None, *, bot_active: bool = False) ->
             s.add(ClinicHours(weekday=int(wd), start_time=time.fromisoformat(a), end_time=time.fromisoformat(b)))
             made["clinic_hours"] += 1
 
-    if s.get(Setting, "bot_active") is None:
+    if s.get(Setting, "bot_active") is None:           # el interruptor de WhatsApp (la clave de siempre)
         s.add(Setting(key="bot_active", value=bool(bot_active)))
         made["settings"] += 1
+    for key in ("bot_active.facebook", "bot_active.instagram"):      # Messenger e Instagram nacen APAGADOS, pase lo que pase
+        if s.get(Setting, key) is None:
+            s.add(Setting(key=key, value=False))
+            made["settings"] += 1
     s.flush()
     return made
