@@ -26,6 +26,33 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo(os.environ.get("TIMEZONE", "America/Cancun"))
 
 
+CHANNELS = ("whatsapp", "facebook", "instagram")
+
+
+class Ident(str):
+    """Quien escribe: el valor (telefono en WhatsApp; id de Meta en Messenger/Instagram) MAS el canal.
+    Un `str` normal es siempre WhatsApp, asi todo el codigo y las pruebas que ya existian siguen igual."""
+    canal = "whatsapp"
+
+    def __new__(cls, value, canal="whatsapp"):
+        o = super().__new__(cls, value)
+        o.canal = canal
+        return o
+
+
+def canal_of(ident):
+    return getattr(ident, "canal", "whatsapp")
+
+
+def _who(ident):
+    """Parametros de identidad para la API. WhatsApp: EXACTAMENTE lo de siempre (`telefono`). Otros canales: `canal` +
+    `contacto_id`. Nunca se manda un id de Meta como si fuera un telefono."""
+    c = canal_of(ident)
+    if c == "whatsapp":
+        return {"telefono": str(ident)}
+    return {"canal": c, "contacto_id": str(ident)}
+
+
 class ApiUnavailable(Exception):
     """La API no se pudo usar (red, 5xx, credenciales, respuesta inesperada). `status` es el HTTP si lo hubo."""
 
@@ -115,15 +142,18 @@ class ApiAgenda:
         _, r = self._call("GET", "/api/bot/nearest", {"especialidad": specialty, "fecha_hora": _iso(target)})
         return r
 
-    def book(self, phone, patient_name, specialty, start, ignore_id=None):
-        """Accion `agendar`. (`ignore_id` solo existia para reprogramar en scheduler.py; aqui es atomico en el servidor.)"""
-        _, r = self._call("POST", "/api/bot/appointments", body={
-            "telefono": phone, "nombre": patient_name, "especialidad": specialty, "inicio": _iso(start)})
+    def book(self, phone, patient_name, specialty, start, ignore_id=None, telefono_contacto=None):
+        """Accion `agendar`. (`ignore_id` solo existia para reprogramar en scheduler.py; aqui es atomico en el servidor.)
+        `telefono_contacto` (opcional, solo canales distintos de WhatsApp): para que el equipo pueda llamar al paciente."""
+        body = dict(_who(phone), nombre=patient_name, especialidad=specialty, inicio=_iso(start))
+        if telefono_contacto and canal_of(phone) != "whatsapp":
+            body["telefono_contacto"] = str(telefono_contacto)
+        _, r = self._call("POST", "/api/bot/appointments", body=body)
         return _legacy(r) if r.get("ok") else r
 
     def mine(self, phone):
         """Accion `mis_citas`: lista de citas futuras de ese telefono."""
-        _, r = self._call("GET", "/api/bot/appointments", {"telefono": phone})
+        _, r = self._call("GET", "/api/bot/appointments", _who(phone))
         if "citas" not in r:
             raise ApiUnavailable("respuesta inesperada de mis_citas: " + str(r)[:120])
         return [_legacy(c) for c in r["citas"]]
@@ -131,7 +161,7 @@ class ApiAgenda:
     def cancel(self, phone, event_id):
         """Accion `cancelar`."""
         _, r = self._call("POST", f"/api/bot/appointments/{urllib.parse.quote(str(event_id), safe='')}/cancel",
-                          body={"telefono": phone})
+                          body=_who(phone))
         if r.get("ok") and isinstance(r.get("cancelada"), dict):
             r = dict(r, cancelada=_legacy(r["cancelada"]))
         return r
@@ -139,7 +169,7 @@ class ApiAgenda:
     def reschedule(self, phone, event_id, new_start):
         """Accion `reprogramar`: atomica en el servidor; si falla, la cita original se conserva."""
         _, r = self._call("POST", f"/api/bot/appointments/{urllib.parse.quote(str(event_id), safe='')}/reschedule",
-                          body={"telefono": phone, "inicio": _iso(new_start)})
+                          body=dict(_who(phone), inicio=_iso(new_start)))
         return _legacy(r) if r.get("ok") else r
 
     # ------------------------------------------------------------- configuracion e interruptor
@@ -147,12 +177,21 @@ class ApiAgenda:
         """Doctores activos y limites (para `agenda_prompt`). Sin copia: si la API cae, lanza ApiUnavailable."""
         return self._call("GET", "/api/bot/config")[1]
 
-    def bot_active(self):
-        """Interruptor del personal. Cualquier fallo lanza ApiUnavailable (nunca se asume 'activo')."""
+    def bot_active(self, canal="whatsapp"):
+        """Interruptor del personal, UNO POR CANAL (`channels: {whatsapp, facebook, instagram}`). Cualquier fallo lanza
+        ApiUnavailable (nunca se asume 'activo'). Compatibilidad: una API vieja solo trae `active` (= WhatsApp); para
+        cualquier otro canal que la API no mencione la respuesta es False: el bot NO contesta por canales que su API no conoce."""
         r = self._call("GET", "/api/bot/status")[1]
-        if not isinstance(r.get("active"), bool):
-            raise ApiUnavailable("respuesta inesperada de /api/bot/status: " + str(r)[:120])
-        return r["active"]
+        ch = r.get("channels")
+        if isinstance(ch, dict) and canal in ch:
+            if not isinstance(ch[canal], bool):
+                raise ApiUnavailable("respuesta inesperada de /api/bot/status: " + str(r)[:120])
+            return ch[canal]
+        if canal == "whatsapp":
+            if not isinstance(r.get("active"), bool):
+                raise ApiUnavailable("respuesta inesperada de /api/bot/status: " + str(r)[:120])
+            return r["active"]
+        return False
 
     # ------------------------------------------------------------------ cola de eventos
     def claim(self, limit=5, lease_seconds=120):
@@ -170,10 +209,15 @@ class ApiAgenda:
         self._call("POST", f"/api/bot/events/{urllib.parse.quote(str(event_id), safe='')}/fail",
                    body={"reason": str(reason)[:500], "retry": bool(retry)})
 
-    def handoff(self, conversation_id, reason, telefono=None, detail=None):
-        """Pasa la conversacion a una persona. reason: modelo_fallo|accion_invalida|pidio_persona|fuera_de_alcance|otro."""
+    def handoff(self, conversation_id, reason, telefono=None, detail=None, canal=None, contacto_id=None):
+        """Pasa la conversacion a una persona. reason: modelo_fallo|accion_invalida|pidio_persona|fuera_de_alcance|otro.
+        Otros canales: `canal` + `contacto_id` (sin `telefono`); WhatsApp sigue mandando solo `telefono`."""
         body = {"conversationId": str(conversation_id), "reason": reason}
-        if telefono:
+        if canal and canal != "whatsapp":
+            body["canal"] = canal
+            if contacto_id:
+                body["contacto_id"] = str(contacto_id)
+        elif telefono:
             body["telefono"] = telefono
         if detail:
             body["detail"] = str(detail)[:500]

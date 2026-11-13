@@ -62,11 +62,12 @@ class Processor:
         except ApiUnavailable as e:
             self.log(f"event={eid} no se pudo devolver a la cola ({e}); vuelve al vencer el plazo")
 
-    @staticmethod
-    def _is_patient_message(payload):
+    platforms = {"whatsapp"}  # canales que atiende; main() lo iguala a server.PLATFORMS
+
+    def _is_patient_message(self, payload):
         m = payload.get("message")
         return (payload.get("event") == "message.received" and not payload.get("test") and isinstance(m, dict)
-                and m.get("platform") == "whatsapp" and m.get("direction") == "incoming"
+                and m.get("platform") in self.platforms and m.get("direction") == "incoming"
                 and not (m.get("metadata") or {}).get("standby"))
 
     def process(self, row):
@@ -84,7 +85,8 @@ class Processor:
         if not self._is_patient_message(payload):
             return self._ack(eid, "skipped_ignored")
         try:
-            active = self.client.bot_active()
+            canal = payload["message"].get("platform") or "whatsapp"
+            active = self.client.bot_active() if canal == "whatsapp" else self.client.bot_active(canal)  # uno por canal
         except ApiUnavailable as e:
             self.log(f"event={eid} no se pudo leer el interruptor: {e}")
             return self._release(eid, "interruptor ilegible: " + str(e))
@@ -92,6 +94,7 @@ class Processor:
             return self._ack(eid, "skipped_bot_inactive")
         m = payload["message"]
         conv = str(m.get("conversationId") or "")
+        canal = m.get("platform") or "whatsapp"
         phone = str((m.get("sender") or {}).get("id") or "")
         try:
             with self._conv_lock(conv):
@@ -106,7 +109,10 @@ class Processor:
         self._ack(eid, "replied")
         if reply == self.fallback:  # el bot no pudo ayudar: avisar al personal (mejor esfuerzo)
             try:
-                self.client.handoff(conv, "otro", telefono=phone or None, detail="El bot envio el mensaje de respaldo")
+                if canal == "whatsapp":
+                    self.client.handoff(conv, "otro", telefono=phone or None, detail="El bot envio el mensaje de respaldo")
+                else:
+                    self.client.handoff(conv, "otro", detail="El bot envio el mensaje de respaldo", canal=canal, contacto_id=phone)
             except ApiUnavailable as e:
                 self.log(f"event={eid} no se pudo registrar el traspaso a una persona: {e}")
 
@@ -162,7 +168,9 @@ def main():
     poll = float(os.environ.get("WATHSBOT_POLL_SECONDS", "2"))
     lease = int(os.environ.get("WATHSBOT_LEASE_SECONDS", "420"))
     _log(f"Wathsbot poller: api={client.base} workers={workers} poll={poll}s lease={lease}s dry_run={server.DRY_RUN}")
-    run(client, Processor(client, server.handle, server.FALLBACK), stop, workers, poll, lease)
+    proc = Processor(client, server.handle, server.FALLBACK)
+    proc.platforms = set(server.PLATFORMS)
+    run(client, proc, stop, workers, poll, lease)
     _log("Wathsbot poller detenido.")
 
 

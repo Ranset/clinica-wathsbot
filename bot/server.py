@@ -18,6 +18,9 @@ BACKEND = os.environ.get("WATHSBOT_BACKEND", "google")
 #   "queue"             Zernio -> servidor de la clinica -> cola; la consulta `poller.py` (no abre puerto).
 INGRESS = os.environ.get("WATHSBOT_INGRESS", "webhook")
 PORT = int(os.environ.get("WATHSBOT_PORT", "8787"))
+# Canales que el bot atiende (por defecto SOLO WhatsApp: activar Messenger/Instagram es una decision explicita).
+PLATFORMS = {x.strip() for x in os.environ.get("WATHSBOT_PLATFORMS", "whatsapp").split(",") if x.strip()}
+CHANNEL_NAMES = {"whatsapp": "WhatsApp", "facebook": "Messenger de Facebook", "instagram": "Instagram"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYSTEM = open(os.path.join(HERE, "system_prompt.md"), encoding="utf-8").read()
 SEEN, GREETED, LOCK = set(), set(), threading.Lock()
@@ -110,12 +113,34 @@ def history(conv_id, account_id):
         return []
 
 
+import api_client
+
+
+def _tapped_button(m):
+    """Messenger/Instagram: tocar 'Comenzar', un ice breaker o una respuesta rapida llega SIN texto pero con metadata."""
+    md = m.get("metadata") or {}
+    return any(md.get(k) for k in ("postbackPayload", "quickReplyPayload", "interactiveId")) and not (m.get("attachments") or [])
+
+
+def _should_handle(ev):
+    """Filtro de entrada del webhook: solo mensajes entrantes de los canales activados y que nadie mas atiende."""
+    if ev.get("event") != "message.received" or ev.get("test"):
+        return False
+    m = ev.get("message") or {}
+    if m.get("platform") not in PLATFORMS or m.get("direction") != "incoming":
+        return False
+    if (m.get("metadata") or {}).get("standby"):
+        return False
+    return True
+
+
 def _prepare(ev):
     """Evento de Zernio -> (texto, conversacion, cuenta, telefono, historial, primer_mensaje)."""
     m, acc = ev["message"], ev["account"]
     text = m.get("text") or ""
     if not text.strip():
-        text = "[el paciente envio un archivo o contenido sin texto]"
+        text = ("[el usuario toco un boton de la pagina (por ejemplo, Comenzar)]" if _tapped_button(m)
+                else "[el paciente envio un archivo o contenido sin texto]")
     conv_id, account_id = m["conversationId"], acc["accountId"] if "accountId" in acc else acc.get("id")
     msgs = history(conv_id, account_id)
     if not msgs or msgs[-1]["role"] != "user" or text not in msgs[-1]["content"]:
@@ -125,7 +150,8 @@ def _prepare(ev):
     with LOCK:
         first = conv_id not in GREETED and len(msgs) <= 1
         GREETED.add(conv_id)
-    phone = str((m.get("sender") or {}).get("id") or "").strip()
+    # Identidad = valor + CANAL (telefono en WhatsApp; id de Meta en Messenger/Instagram). Un `str` normal es WhatsApp.
+    phone = api_client.Ident(str((m.get("sender") or {}).get("id") or "").strip(), m.get("platform") or "whatsapp")
     return text, conv_id, account_id, phone, msgs, first
 
 
@@ -137,7 +163,7 @@ def answer(msgs, phone, first=False):
     sys_prompt = clinic_info.compose_system(SYSTEM, ctx.API) if ctx else SYSTEM
     if first:
         sys_prompt += "\n\nEste es el PRIMER mensaje de la conversacion: aclara que eres un asistente automatico."
-    if agenda_enabled() and phone.isdigit():
+    if agenda_enabled() and (phone.isdigit() if api_client.canal_of(phone) == "whatsapp" else bool(phone)):
         return run_agent(sys_prompt, msgs, phone, ctx=ctx)
     sys_prompt += "\n\nResponde unicamente con el texto del mensaje a enviar."
     return llm(sys_prompt, msgs)
@@ -176,7 +202,7 @@ def _report_delivery_failure(conv_id, phone):
         return
     try:
         _do_handoff(get_agenda(), conv_id, phone, "otro",
-                    "No se pudo enviar la respuesta del bot por WhatsApp (Zernio): el paciente no la recibio", tag="envio")
+                    f"No se pudo enviar la respuesta del bot por {CHANNEL_NAMES.get(api_client.canal_of(phone), 'el chat')} (Zernio): el paciente no la recibio", tag="envio")
     except Exception as e:
         log(f"conv={conv_id} tampoco se pudo avisar del envio fallido: {e!r}")
 
@@ -226,7 +252,10 @@ def _do_handoff(ag, conv_id, phone, reason, detail="", tag=None):
             log(f"HANDOFF conv={conv_id} causa={tag or reason}: ya hay un aviso reciente, no lo duplico")
             return True
     try:
-        ag.handoff(conv_id, reason, telefono=phone or None, detail=(detail or None))
+        if api_client.canal_of(phone) == "whatsapp":
+            ag.handoff(conv_id, reason, telefono=phone or None, detail=(detail or None))
+        else:  # Messenger/Instagram: sin telefono; la API guarda canal + id para que el personal conteste desde el inbox
+            ag.handoff(conv_id, reason, detail=(detail or None), canal=api_client.canal_of(phone), contacto_id=str(phone))
         with _HLOCK:
             _HANDOFF_SEEN[key] = _now()
             for k in [k for k, v in _HANDOFF_SEEN.items() if _now() - v >= HANDOFF_DEDUP_S]:
@@ -275,11 +304,11 @@ def media_info(m):
         t = str((a or {}).get("type") or "archivo")
         if t not in kinds:
             kinds.append(t)
-    if not atts and has_text:
+    if not atts and (has_text or _tapped_button(m)):
         return None
     if not atts:
         return {"kinds": ["contenido sin texto"], "has_text": False}
-    if kinds == ["sticker"] and not has_text:
+    if kinds and set(kinds) <= {"sticker", "share"} and not has_text:
         return {"kinds": kinds, "has_text": False, "ignore": True}
     return {"kinds": kinds, "has_text": has_text}
 
@@ -295,9 +324,11 @@ def reply_for(msgs, phone, conv_id, first=False, media=None):
     ag = get_agenda()
     reason = "otro"
     _TL.conv_id, _TL.handed, _TL.tried = conv_id, False, False
+    canal = api_client.canal_of(phone)
+    _TL.platform = canal
     try:
-        if not ag.bot_active():
-            log(f"conv={conv_id} interruptor del bot APAGADO: no contesto")
+        if not (ag.bot_active() if canal == "whatsapp" else ag.bot_active(canal)):  # un interruptor por canal
+            log(f"conv={conv_id} interruptor del bot APAGADO para {canal}: no contesto")
             return None
         if media:
             if media.get("ignore"):
@@ -424,7 +455,13 @@ REGLAS DE AGENDA (obligatorias):
 """
 
 
+AGENDA_ACTIONS = ("horarios", "cercanos", "agendar", "mis_citas", "cancelar", "reprogramar")
+
+
 def run_action(act, phone):
+    if act.get("name") in AGENDA_ACTIONS and not phone:
+        log(f"ACTION {act.get('name')} BLOQUEADA: sin identidad del remitente")
+        return {"error": "sin_identidad", "detalle": "No se pudo identificar a la persona. Usa pasar_a_persona."}
     if BACKEND == "api":
         import api_client as S  # solo se usa S.parse_dt
     else:
@@ -445,7 +482,13 @@ def run_action(act, phone):
     if n == "cercanos":
         return ag.nearest(act.get("especialidad", ""), S.parse_dt(act["fecha_hora"]))
     if n == "agendar":
-        return ag.book(phone, (act.get("nombre") or "").strip(), act.get("especialidad", ""), S.parse_dt(act["inicio"]))
+        extra = {}
+        if api_client.canal_of(phone) != "whatsapp":
+            tc = re.sub(r"[\s().+-]", "", str(act.get("telefono_contacto") or ""))
+            if not (tc.isdigit() and 8 <= len(tc) <= 15):
+                return {"ok": False, "error": "falta_telefono", "detalle": "Pide a la persona un telefono de contacto valido (8 a 15 digitos) y vuelve a intentar agendar con telefono_contacto."}
+            extra["telefono_contacto"] = tc
+        return ag.book(phone, (act.get("nombre") or "").strip(), act.get("especialidad", ""), S.parse_dt(act["inicio"]), **extra)
     if n == "mis_citas":
         return {"citas": ag.mine(phone)}
     if n == "cancelar":
@@ -471,8 +514,23 @@ def parse_model_json(s):
         return None
 
 
+def channel_prompt(canal):
+    """Solo Messenger/Instagram: la agenda es la misma que en WhatsApp; cambia como se identifica a la persona."""
+    if canal == "whatsapp":
+        return ""
+    name = CHANNEL_NAMES.get(canal, canal)
+    return f"""
+## CANAL: {name} (aplica a TODO lo anterior; lo que diga el texto base sobre WhatsApp se refiere ahora a {name})
+Atiendes por {name}: tienes las MISMAS funciones que en WhatsApp (agendar, consultar, reprogramar, cancelar, precios, traspaso a una persona).
+- No conoces el telefono de la persona. Para AGENDAR pide, ademas de nombre, especialidad y horario, un telefono de contacto (con lada) y mandalo en la accion agendar como "telefono_contacto": {{"name":"agendar", ..., "telefono_contacto":"9981234567"}}. Sin el, no agendes.
+- Las citas que consultes, cambies o canceles son solo las de esta misma cuenta de {name}. Si la persona dice que agendo antes desde otro medio (WhatsApp, telefono), no las veras: dile que el equipo lo revisara y usa pasar_a_persona.
+- Cuando se pase a una persona, el equipo respondera por este mismo chat de {name}: dilo asi, sin pedir que escriba a otro lado.
+- No menciones WhatsApp ni mandes a la persona a otro canal.
+"""
+
+
 def run_agent(sys_prompt, msgs, phone, max_steps=4, ctx=None):
-    sys_prompt += agenda_prompt(ctx)
+    sys_prompt += agenda_prompt(ctx) + channel_prompt(api_client.canal_of(phone))
     msgs = list(msgs)
     for _ in range(max_steps):
         raw = llm(sys_prompt, msgs)
@@ -521,14 +579,10 @@ class H(BaseHTTPRequestHandler):
         self._send(200)
         try:
             ev = json.loads(raw)
-            if ev.get("event") != "message.received" or ev.get("test"):
-                if ev.get("test"):
-                    log("test event received OK")
+            if ev.get("test"):
+                log("test event received OK")
                 return
-            m = ev["message"]
-            if m.get("platform") != "whatsapp" or m.get("direction") != "incoming":
-                return
-            if (m.get("metadata") or {}).get("standby"):
+            if not _should_handle(ev):
                 return
             with LOCK:
                 if ev["id"] in SEEN:
@@ -555,8 +609,11 @@ def startup_report():
     import api_client
     try:
         ag = get_agenda()
-        cfg, active = ag.config(), ag.bot_active()
-        return (f"agenda=API {ag.base} OK | bot {'ACTIVO' if active else 'APAGADO (no contestara)'} | "
+        cfg = ag.config()
+        sw = " ".join(f"{c}={'ACTIVO' if (ag.bot_active() if c == 'whatsapp' else ag.bot_active(c)) else 'apagado'}"
+                      for c in ("whatsapp", "facebook", "instagram") if c in PLATFORMS)
+        active = "ACTIVO" in sw
+        return (f"agenda=API {ag.base} OK | bot por canal: {sw}{'' if active else ' | bot APAGADO (no contestara)'} | "
                 f"{len(cfg['doctors'])} doctores | horario: {clinic_info.summarize_hours(cfg.get('clinicHours')) or '?'}")
     except api_client.ApiUnavailable as e:
         return f"agenda=API NO RESPONDE ({e}): hasta que responda el bot enviara el mensaje de respaldo"
