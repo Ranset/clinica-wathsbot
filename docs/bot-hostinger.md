@@ -79,7 +79,12 @@ computadora no lo alcanza el bot de Hostinger.
    la URL y el token. Manda un mensaje de prueba por WhatsApp: en el registro verás `IN: ... -> OUT: ...` con lo que contestaría, sin enviarlo.
 5. **Corte.** Quita `WATHSBOT_DRY_RUN`, reinicia, **enciende el botón Bot** en la web, y recorre por WhatsApp: pedir horarios, agendar,
    ver, reprogramar y cancelar; comprueba la cita en el calendario. Las citas viejas de Google Calendar no se migran solas.
-6. **Marcha atrás en un minuto.** Apaga el botón **Bot** (deja de contestar), o pon `WATHSBOT_BACKEND=google` (o quita la variable) y
+6. **Messenger e Instagram (opcional, despues de que WhatsApp ande).** Con `WATHSBOT_PLATFORMS=whatsapp,facebook,instagram` el bot atiende
+   tambien esos canales con las mismas funciones; la identidad ahi es un id de Meta (no hay telefono, y el bot pide un telefono de contacto
+   antes de agendar). Cada canal tiene su PROPIO interruptor en la web (tres botones: WhatsApp, Messenger, Instagram) y Messenger e Instagram
+   nacen APAGADOS: despliega la API con la migracion 0009, enciende primero Messenger, prueba, y despues Instagram. Mientras la API no
+   traiga `channels` el bot los trata como apagados y no contesta.
+7. **Marcha atrás en un minuto.** Apaga el botón **Bot** (deja de contestar), o pon `WATHSBOT_BACKEND=google` (o quita la variable) y
    reinicia: vuelve el bot de antes con Google Calendar (etiqueta `pre-api` del repositorio).
 
 ## Ensayo con un túnel de Cloudflare hacia tu computadora
