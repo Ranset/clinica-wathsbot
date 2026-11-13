@@ -456,6 +456,35 @@ export interface paths {
         patch: operations["updateAppointment"];
         trace?: never;
     };
+    "/api/appointments/{appointmentId}/move-slots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                appointmentId: components["parameters"]["AppointmentId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Los horarios libres a los que se puede mover esa cita (el calendario emergente de «Mover a otro horario»).
+         * @description Devuelve, dia por dia en `[from, to)`, los horarios de inicio que `updateAppointment` ACEPTARIA para mover esa cita agendada:
+         *     las mismas reglas de agenda (horario de la clinica y del doctor, ausencias y eventos personales —sin decir cuales—,
+         *     antelacion minima, horizonte de 60 dias, doctor libre y al menos un consultorio libre, teniendo en cuenta cuanto dura la
+         *     cita) pero sin reservar nada. Su PROPIO horario cuenta como libre para ella. Con `roomId` solo cuentan los huecos libres
+         *     en ESE consultorio; sin el, en cualquiera (un bloqueo siempre se queda en el suyo si no se pide otro). `allowShortNotice=true`
+         *     omite la antelacion minima (cita de mostrador). Un BLOQUEO de consultorio no sigue las reglas de pacientes: se ofrecen los
+         *     inicios de 7:00 a 20:00 en que su consultorio este libre. Solo salen los dias con algun horario libre; las horas son hora de
+         *     pared de la clinica (`HH:MM`, 24 h). Mas de 42 dias de una vez = 422 `rango_invalido`.
+         */
+        get: operations["listMoveSlots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rooms": {
         parameters: {
             query?: never;
@@ -1488,6 +1517,19 @@ export interface components {
             /** Format: date-time */
             expiresAtUtc: string;
         };
+        MoveSlots: {
+            /** @description Cada cuantos minutos empieza un horario (30). */
+            slotMinutes: number;
+            /** @description Cuanto dura la cita que se mueve (cada horario ocupa esto). */
+            durationMinutes: number;
+            days: components["schemas"]["MoveSlotsDay"][];
+        };
+        MoveSlotsDay: {
+            /** Format: date */
+            date: string;
+            /** @description Horas de inicio libres, `HH:MM` de la clinica, de menor a mayor. */
+            slots: string[];
+        };
         /** @description Un doctor que puede entrar con su codigo (publico, solo codigo y nombre). */
         LoginDoctor: {
             /** @example 1001 */
@@ -2409,6 +2451,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Booking"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["RuleError"];
+        };
+    };
+    listMoveSlots: {
+        parameters: {
+            query: {
+                /** @description Primer dia (incluido). */
+                from: string;
+                /** @description Ultimo dia (excluido); hasta 42 dias despues de `from`. */
+                to: string;
+                /** @description Solo huecos libres en este consultorio. */
+                roomId?: string;
+                allowShortNotice?: boolean;
+            };
+            header?: never;
+            path: {
+                appointmentId: components["parameters"]["AppointmentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Los horarios libres (puede venir sin dias). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveSlots"];
                 };
             };
             401: components["responses"]["Unauthenticated"];

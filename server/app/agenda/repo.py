@@ -103,10 +103,13 @@ class Repo:
         return [(a, b) for a, b in self.s.execute(q)]
 
     # ---- ocupacion ----
-    def busy(self, start_utc: datetime, end_utc: datetime) -> Busy:
-        """Todos los huecos ocupados con inicio en [start_utc, end_utc): UNA consulta."""
+    def busy(self, start_utc: datetime, end_utc: datetime, ignore_appointment_id: int | None = None) -> Busy:
+        """Todos los huecos ocupados con inicio en [start_utc, end_utc): UNA consulta. `ignore_appointment_id` deja fuera los
+        huecos de esa cita (la que se esta moviendo: su propio horario cuenta como libre para ella)."""
         q = select(AppointmentBlock.doctor_id, AppointmentBlock.room_id, AppointmentBlock.slot_start).where(
             AppointmentBlock.slot_start >= start_utc, AppointmentBlock.slot_start < end_utc)
+        if ignore_appointment_id is not None:
+            q = q.where(AppointmentBlock.appointment_id != ignore_appointment_id)
         b = Busy()
         for doctor_id, room_id, slot in self.s.execute(q):
             b.rooms.setdefault(room_id, set()).add(slot)

@@ -701,6 +701,142 @@ describe("detalle de una cita", () => {
     expect(m.mock.db.bookings.find((b) => b.id === booking.id)!.scheduledAtUtc).toBe("2026-11-12T18:30:00.000Z");
   });
 
+  describe("mover: calendario emergente con los horarios libres", () => {
+    const openMove = async (m: Awaited<ReturnType<typeof mountApp>>, b = pickBooking(m.mock, DAY, { doctorId: "d1", nth: 0 })) => {
+      const { dialog } = await openBooking(m, b);
+      await m.user.click(within(dialog).getByRole("button", { name: "Mover a otro horario" }));
+      return { b, dialog, form: within(within(dialog).getByRole("form", { name: "Mover" })) };
+    };
+    const openPicker = async (m: Awaited<ReturnType<typeof mountApp>>, form: ReturnType<typeof within>) => {
+      await m.user.click(form.getByRole("button", { name: /Elegir en el calendario/ }));
+      return within(await screen.findByRole("dialog", { name: "Elegir fecha y hora" }));
+    };
+    const dayButton = (picker: ReturnType<typeof within>, label: RegExp) => picker.findByRole("button", { name: label });
+
+    it("muestra el mes con los días que tienen horarios libres; el 16:00 ocupado del mismo doctor no sale; al elegir uno llena fecha y hora y la cita se mueve", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+      violations = m.violations;
+      const { b, form } = await openMove(m);
+      const picker = await openPicker(m, form);
+      expect(picker.getByRole("heading", { name: "Elegir fecha y hora" })).toBeInTheDocument();
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("Dr. Cervantes Peláez · Cualquier consultorio libre · dura 30 min");
+      expect(picker.getByText("Noviembre de 2026")).toBeInTheDocument();
+
+      // viene elegido el día de la cita (jueves 12), con SU horario marcado; el 16:00 (otra cita del mismo doctor) no se ofrece; el domingo no tiene horarios
+      const times = await picker.findByRole("region", { name: "Horarios libres" });
+      expect(within(times).getByText(/Horarios libres · jueves, 12 de noviembre/)).toBeInTheDocument();
+      expect(within(times).getByRole("button", { name: /9:00\sAM/ })).toHaveTextContent("Horario actual");
+      expect(within(times).queryByRole("button", { name: /^4:00\sPM/ })).toBeNull();
+      expect(within(times).getByRole("button", { name: /^4:30\sPM/ })).toBeInTheDocument();
+      expect(await dayButton(picker, /domingo, 15 de noviembre, sin horarios libres/)).toBeDisabled();
+      expect(await dayButton(picker, /^jueves, 12 de noviembre/)).toHaveAttribute("aria-pressed", "true");
+
+      // otro día y otra hora: se cierra y el formulario queda llenado
+      await m.user.click(await dayButton(picker, /^viernes, 13 de noviembre/));
+      const friday = await picker.findByRole("region", { name: "Horarios libres" });
+      expect(within(friday).getByText(/Horarios libres · viernes, 13 de noviembre/)).toBeInTheDocument();
+      expect(within(friday).queryByText("Horario actual")).toBeNull(); // el horario actual es de otro día
+      await m.user.click(within(friday).getByRole("button", { name: /10:30\sAM/ }));
+      expect(screen.queryByRole("dialog", { name: "Elegir fecha y hora" })).toBeNull();
+      expect(form.getByLabelText("Nueva fecha")).toHaveValue("2026-11-13");
+      expect(form.getByLabelText("Nueva hora")).toHaveValue("10:30");
+      await m.user.click(form.getByRole("button", { name: "Mover" }));
+      expect(await screen.findByText("Cita movida.")).toBeInTheDocument();
+      expect(m.mock.db.bookings.find((x) => x.id === b.id)!.scheduledAtUtc).toBe("2026-11-13T15:30:00.000Z");
+    });
+
+    it("cambia de mes sin pasar de hoy ni de los 60 días; Esc cierra solo el calendario y el detalle de la cita sigue abierto", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+      violations = m.violations;
+      const { dialog, form } = await openMove(m);
+      const picker = await openPicker(m, form);
+      expect(picker.getByRole("button", { name: "Mes anterior" })).toBeDisabled(); // no hay nada antes de hoy
+      await m.user.click(picker.getByRole("button", { name: "Mes siguiente" }));
+      expect(picker.getByText("Diciembre de 2026")).toBeInTheDocument();
+      expect(await dayButton(picker, /^miércoles, 2 de diciembre/)).toBeEnabled();
+      await m.user.click(picker.getByRole("button", { name: "Mes siguiente" }));
+      expect(picker.getByText("Enero de 2027")).toBeInTheDocument();
+      expect(await dayButton(picker, /^viernes, 8 de enero, \d+ horarios libres/)).toBeEnabled();
+      expect(await dayButton(picker, /^lunes, 11 de enero, sin horarios libres/)).toBeDisabled(); // más allá de los 60 días
+      expect(picker.getByRole("button", { name: "Mes siguiente" })).toBeDisabled();
+      await m.user.click(picker.getByRole("button", { name: "Mes anterior" }));
+      expect(picker.getByText("Diciembre de 2026")).toBeInTheDocument();
+
+      await m.user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog", { name: "Elegir fecha y hora" })).toBeNull();
+      expect(dialog).toBeInTheDocument();
+      expect(within(dialog).getByRole("form", { name: "Mover" })).toBeInTheDocument(); // el formulario sigue ahí
+    });
+
+    it("el consultorio elegido y «Cita de mostrador» cambian lo que se ofrece: con mostrador hoy hay horarios desde antes de la antelación de 60 min", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+      violations = m.violations;
+      const { form } = await openMove(m);
+      await m.user.selectOptions(form.getByLabelText("Consultorio"), "r2");
+      let picker = await openPicker(m, form);
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("Dr. Cervantes Peláez · Consultorio 2 · dura 30 min");
+      const countToday = async (p: ReturnType<typeof within>) => Number(/(\d+) horarios libres/.exec((await dayButton(p, /^martes, 10 de noviembre/)).getAttribute("aria-label")!)![1]);
+      const without = await countToday(picker);
+      await m.user.keyboard("{Escape}");
+      await m.user.click(form.getByRole("checkbox", { name: /Cita de mostrador/ }));
+      picker = await openPicker(m, form);
+      expect(await countToday(picker)).toBeGreaterThan(without); // hoy ya cuentan los horarios de menos de 60 minutos
+    });
+
+    it("un bloqueo de consultorio: ofrece los horarios en que su consultorio está libre, de 7:00 a 19:30", async () => {
+      const m = await mountApp({ hash: "#/calendario?dia=2026-11-12" });
+      violations = m.violations;
+      const bloqueo = m.mock.db.bookings.find((b) => b.kind === "block" && localDay(b.scheduledAtUtc) === "2026-11-12")!;
+      await m.user.click(await screen.findByTitle(bloqueo.room!.name));
+      const dialog = await screen.findByRole("dialog");
+      await m.user.click(within(dialog).getByRole("button", { name: "Mover el bloqueo" }));
+      const form = within(within(dialog).getByRole("form", { name: "Mover" }));
+      const picker = await openPicker(m, form);
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent(`${bloqueo.room!.name} · dura ${bloqueo.durationMinutes} min`);
+      const times = await picker.findByRole("region", { name: "Horarios libres" });
+      expect(within(times).getByRole("button", { name: /^7:00\sAM/ })).toBeInTheDocument();
+      expect(within(times).getByRole("button", { name: /^7:30\sPM/ })).toBeInTheDocument();
+      expect(within(times).getByRole("button", { name: /^2:00\sPM/ })).toHaveTextContent("Horario actual");
+      // el bloqueo no sigue las reglas de pacientes: el domingo SÍ se puede (su consultorio está libre)
+      expect(await dayButton(picker, /^domingo, 15 de noviembre, \d+ horarios libres/)).toBeEnabled();
+    });
+
+    it("con el teclado: flechas entre los días con horarios (saltan los vacíos), RePág/AvPág cambian de mes", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+      violations = m.violations;
+      const { form } = await openMove(m);
+      const picker = await openPicker(m, form);
+      const thursday = await dayButton(picker, /^jueves, 12 de noviembre/);
+      thursday.focus();
+      await m.user.keyboard("{ArrowRight}");
+      expect(document.activeElement).toBe(await dayButton(picker, /^viernes, 13 de noviembre/));
+      await m.user.keyboard("{ArrowRight}");
+      expect(document.activeElement).toBe(await dayButton(picker, /^sábado, 14 de noviembre/));
+      await m.user.keyboard("{ArrowRight}"); // el domingo no tiene horarios: salta al lunes
+      expect(document.activeElement).toBe(await dayButton(picker, /^lunes, 16 de noviembre/));
+      await m.user.keyboard("{ArrowUp}"); // una semana atrás sería el lunes 9, que ya pasó: no se puede, y el foco se queda donde estaba
+      expect(document.activeElement).toBe(await dayButton(picker, /^lunes, 16 de noviembre/));
+      await m.user.keyboard("{PageDown}");
+      expect(picker.getByText("Diciembre de 2026")).toBeInTheDocument();
+      await m.user.keyboard("{PageUp}");
+      expect(picker.getByText("Noviembre de 2026")).toBeInTheDocument();
+    });
+
+    it("sin conexión avisa y «Reintentar» vuelve a buscar los horarios", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
+      violations = m.violations;
+      const { form } = await openMove(m);
+      m.mock.controls.setOffline(true);
+      const picker = await openPicker(m, form);
+      expect(await picker.findByText(/No se pudieron cargar los horarios libres/)).toBeInTheDocument();
+      expect(picker.queryByRole("region", { name: "Horarios libres" })).toBeNull();
+      m.mock.controls.setOffline(false);
+      await m.user.click(picker.getByRole("button", { name: "Reintentar" }));
+      expect(await picker.findByRole("region", { name: "Horarios libres" })).toBeInTheDocument();
+      expect(picker.queryByText(/No se pudieron cargar/)).toBeNull();
+    });
+  });
+
   it("edita las notas", async () => {
     const m = await mountApp({ hash: `#/calendario?dia=${DAY}` });
     violations = m.violations;

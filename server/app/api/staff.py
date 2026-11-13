@@ -9,7 +9,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from ..agenda import UNSET, Actor
 from ..agenda.errors import NO_ENCONTRADO, AgendaError
-from .inputs import (bad, body, bookings_response, instant, opt_bool, opt_int, opt_str, query_id, query_range,
+from .inputs import (bad, body, bookings_response, day, instant, opt_bool, opt_int, opt_str, query_id, query_range,
                      query_status)
 from .common import valid_phone
 from .security import require
@@ -63,6 +63,19 @@ def get_appointment(appointment_id):
     if a is None:
         raise AgendaError(NO_ENCONTRADO)
     return jsonify(booking_json(a, g.principal.role))
+
+
+@bp.get("/api/appointments/<appointment_id>/move-slots")
+@require(*STAFF)
+def move_slots(appointment_id):
+    """Los horarios libres a los que se puede mover esa cita (el calendario emergente del formulario «Mover»). `from` y `to` son fechas
+    (`[from, to)`, hasta 42 dias); `roomId` limita a un consultorio; `allowShortNotice=true` omite la antelacion minima (cita de mostrador)."""
+    short = request.args.get("allowShortNotice", "false").lower()
+    if short not in ("true", "false"):
+        raise bad("allowShortNotice: debe ser true o false")
+    out = _x("agenda").move_slots(appointment_id, day(request.args.get("from"), "from"), day(request.args.get("to"), "to"),
+                                  room_id=query_id("roomId"), allow_short_notice=short == "true")
+    return jsonify(out)
 
 
 @bp.patch("/api/appointments/<appointment_id>")

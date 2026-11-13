@@ -31,6 +31,7 @@ export const OPERATIONS = {
   createAppointment: ["post", "/api/appointments"],
   getAppointment: ["get", "/api/appointments/{appointmentId}"],
   updateAppointment: ["patch", "/api/appointments/{appointmentId}"],
+  listMoveSlots: ["get", "/api/appointments/{appointmentId}/move-slots"],
   listRooms: ["get", "/api/rooms"],
   getClinicHours: ["get", "/api/clinic-hours"],
   setClinicHours: ["put", "/api/clinic-hours"],

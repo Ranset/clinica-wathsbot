@@ -724,6 +724,39 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/RuleError" }
+  /api/appointments/{appointmentId}/move-slots:
+    parameters:
+      - { $ref: "#/components/parameters/AppointmentId" }
+    get:
+      operationId: listMoveSlots
+      tags: [agenda]
+      summary: Los horarios libres a los que se puede mover esa cita (el calendario emergente de «Mover a otro horario»).
+      description: |
+        Devuelve, dia por dia en `[from, to)`, los horarios de inicio que `updateAppointment` ACEPTARIA para mover esa cita agendada:
+        las mismas reglas de agenda (horario de la clinica y del doctor, ausencias y eventos personales —sin decir cuales—,
+        antelacion minima, horizonte de 60 dias, doctor libre y al menos un consultorio libre, teniendo en cuenta cuanto dura la
+        cita) pero sin reservar nada. Su PROPIO horario cuenta como libre para ella. Con `roomId` solo cuentan los huecos libres
+        en ESE consultorio; sin el, en cualquiera (un bloqueo siempre se queda en el suyo si no se pide otro). `allowShortNotice=true`
+        omite la antelacion minima (cita de mostrador). Un BLOQUEO de consultorio no sigue las reglas de pacientes: se ofrecen los
+        inicios de 7:00 a 20:00 en que su consultorio este libre. Solo salen los dias con algun horario libre; las horas son hora de
+        pared de la clinica (`HH:MM`, 24 h). Mas de 42 dias de una vez = 422 `rango_invalido`.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date }, description: "Primer dia (incluido)." }
+        - { name: to, in: query, required: true, schema: { type: string, format: date }, description: "Ultimo dia (excluido); hasta 42 dias despues de `from`." }
+        - { name: roomId, in: query, schema: { type: string }, description: "Solo huecos libres en este consultorio." }
+        - { name: allowShortNotice, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: Los horarios libres (puede venir sin dias).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoveSlots" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/rooms:
     get:
       operationId: listRooms
@@ -2243,6 +2276,24 @@ components:
         doctorCode: { type: string, pattern: "^[0-9]{4}$", examples: ["1001"] }
         doctorName: { type: string, examples: ["Dr. Cervantes Pelaez"] }
         expiresAtUtc: { type: string, format: date-time }
+    MoveSlots:
+      type: object
+      required: [slotMinutes, durationMinutes, days]
+      properties:
+        slotMinutes: { type: integer, description: "Cada cuantos minutos empieza un horario (30)." }
+        durationMinutes: { type: integer, description: "Cuanto dura la cita que se mueve (cada horario ocupa esto)." }
+        days:
+          type: array
+          items: { $ref: "#/components/schemas/MoveSlotsDay" }
+    MoveSlotsDay:
+      type: object
+      required: [date, slots]
+      properties:
+        date: { type: string, format: date }
+        slots:
+          type: array
+          items: { type: string, pattern: "^[0-2][0-9]:[0-5][0-9]$", examples: ["09:30"] }
+          description: "Horas de inicio libres, `HH:MM` de la clinica, de menor a mayor."
     LoginDoctor:
       type: object
       description: "Un doctor que puede entrar con su codigo (publico, solo codigo y nombre)."

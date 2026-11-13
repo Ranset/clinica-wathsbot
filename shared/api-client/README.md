@@ -16,6 +16,7 @@ await api.auth.checkPasswordLink(token);            // PÚBLICO: { doctorCode, d
 await api.auth.usePasswordLink(token, password);    // PÚBLICO: guarda la contraseña (un solo uso) y deja la sesión abierta
 const r = await api.appointments.list({ from, to }, { etag });   // { notModified: true, etag } si el servidor dio 304
 await api.appointments.update(id, { status: "realizada" });
+await api.appointments.moveSlots(id, { from, to, roomId });   // los horarios LIBRES a los que se puede mover esa cita, por día (`[from, to)`, hasta 42 días)
 api.onUnauthenticated(() => /* la sesión venció */);
 ```
 

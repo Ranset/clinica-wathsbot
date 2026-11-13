@@ -1,5 +1,5 @@
-import { addDaysISO, todayInTz } from "@clinica/calendar/src/lib/slots";
-import { wallClock } from "@clinica/calendar/src/lib/calendar";
+import { addDaysISO, todayInTz, zonedWallClockToUtc } from "@clinica/calendar/src/lib/slots";
+import { daysBetween, isIsoDate, wallClock } from "@clinica/calendar/src/lib/calendar";
 import { checkLogo } from "../image";
 import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
 import type { Absence, AttentionItem, Booking, Branding, BookingStatus, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
@@ -45,6 +45,8 @@ const MAX_RANGE_DAYS = 92;
 export const MOCK_DOCTOR_APP_URL = "https://clinica.test/doctor/";
 /** Cuánto dura un enlace para establecer la contraseña (como el servidor: 72 h). */
 export const PASSWORD_LINK_HOURS = 72;
+/** Cuántos días como máximo se piden de una vez a `listMoveSlots` (la cuadrícula de un mes son 42). */
+export const MAX_MOVE_SLOT_DAYS = 42;
 export const LOGIN_MAX_FAILURES = 5;
 export const LOGIN_BLOCK_MS = 60_000;
 
@@ -464,6 +466,45 @@ export function buildRoutes(db: DB): MockRoute[] {
     }),
 
     route<StoredUser>("updateAppointment", STAFF, (c) => ok(bookingFor(c.user.role, patchBooking(c)))),
+
+    // Los horarios libres a los que se puede mover una cita: se prueba cada inicio con LAS MISMAS reglas que el movimiento (`placeInSchedule`,
+    // sin tocar nada), asi que lo que sale es exactamente lo que `updateAppointment` aceptaria. Su propio horario cuenta como libre.
+    route<StoredUser>("listMoveSlots", STAFF, (c) => {
+      const cur = db.bookings.find((x) => x.id === c.params.appointmentId);
+      if (!cur) throw notFound("La cita no existe.");
+      const from = c.query.get("from");
+      const to = c.query.get("to");
+      if (!isIsoDate(from) || !isIsoDate(to)) throw invalid(`Pide el rango con "from" y "to" (AAAA-MM-DD).`);
+      const days = daysBetween(from, to);
+      if (days <= 0 || days > MAX_MOVE_SLOT_DAYS) throw rule("rango_invalido", `El rango debe ser de 1 a ${MAX_MOVE_SLOT_DAYS} días.`);
+      const shortRaw = c.query.get("allowShortNotice") ?? "false";
+      if (shortRaw !== "true" && shortRaw !== "false") throw invalid(`"allowShortNotice" debe ser true o false.`);
+      const roomIn = c.query.get("roomId") || undefined;
+      if (roomIn && !db.rooms.some((r) => r.id === roomIn)) throw invalid("El consultorio no existe.");
+      if (cur.status !== "agendada") throw stateConflict("Solo se puede mover una cita agendada.");
+      const roomId = roomIn ?? (cur.kind === "block" ? cur.room?.id : undefined); // un bloqueo se queda en su consultorio
+      const out: { date: string; slots: string[] }[] = [];
+      for (let i = 0; i < days; i++) {
+        const day = addDaysISO(from, i);
+        const slots: string[] = [];
+        for (let min = 7 * 60; min < 20 * 60; min += 30) {
+          const hhmm = `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+          const start = zonedWallClockToUtc(day, hhmm, TZ);
+          if (!start) continue;
+          try {
+            placeInSchedule(db, c.now, {
+              kind: cur.kind, startUtc: start.toISOString(), durationMinutes: cur.durationMinutes, doctorId: cur.doctor?.id ?? null,
+              roomId, excludeId: cur.id, allowShortNotice: shortRaw === "true",
+            });
+            slots.push(hhmm);
+          } catch (e) {
+            if (!(e instanceof HttpError)) throw e; // una regla incumplida: ese inicio no esta libre
+          }
+        }
+        if (slots.length) out.push({ date: day, slots });
+      }
+      return ok({ slotMinutes: 30, durationMinutes: cur.durationMinutes, days: out });
+    }),
 
     route<StoredUser>("listRooms", ALL, () => ok({ items: structuredClone(db.rooms) })),
 

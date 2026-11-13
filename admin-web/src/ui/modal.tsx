@@ -3,6 +3,12 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@clinica/calendar";
 
+/**
+ * Las ventanas abiertas, de la primera a la de arriba. Con una ventana sobre otra (el calendario de horarios libres sobre el detalle de la
+ * cita), Esc y Tab solo le tocan a la de ARRIBA: si no, un Esc cerraria las dos.
+ */
+const OPEN: symbol[] = [];
+
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -11,6 +17,8 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
  *
  * - `center`: tarjeta al centro (formularios).
  * - `side`: panel a la derecha en escritorio y hoja desde abajo en el celular (detalle de cita).
+ *
+ * Se pueden abrir una sobre otra: solo la de arriba reacciona al teclado.
  */
 export function Modal({
   title,
@@ -39,6 +47,8 @@ export function Modal({
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    const me = Symbol("modal");
+    OPEN.push(me);
     const before = document.activeElement as HTMLElement | null;
     const el = panel.current!;
     // Primero un campo de formulario; si no hay, el primer botón (que no sea la "x" de cerrar).
@@ -52,6 +62,7 @@ export function Modal({
     document.body.style.overflow = "hidden";
 
     const onKey = (e: KeyboardEvent) => {
+      if (OPEN[OPEN.length - 1] !== me) return; // hay otra ventana encima: ella decide
       if (e.key === "Escape") {
         e.stopPropagation();
         onCloseRef.current();
@@ -73,6 +84,7 @@ export function Modal({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      OPEN.splice(OPEN.indexOf(me), 1);
       document.body.style.overflow = overflow;
       before?.focus?.();
     };

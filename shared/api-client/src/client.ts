@@ -17,6 +17,7 @@ import type {
   Doctor,
   DoctorInput,
   LoginDoctor,
+  MoveSlots,
   PasswordLink,
   PasswordLinkInfo,
   PersonalEvent,
@@ -264,6 +265,17 @@ export function createApiClient(options: ApiClientOptions = {}) {
       create: (body: BookingCreate, o?: RequestOptions) => json<Booking>("createAppointment", { body, ...o }),
       update: (id: string, patch: BookingPatch, o?: RequestOptions) =>
         json<Booking>("updateAppointment", { path: { appointmentId: id }, body: patch, ...o }),
+      /**
+       * Los horarios LIBRES a los que se puede mover esa cita agendada, día por día en `[from, to)` (fechas `AAAA-MM-DD`, hasta 42 días):
+       * exactamente los que `update` aceptaría (mismas reglas), sin reservar nada. Su propio horario cuenta como libre. `roomId` limita a un
+       * consultorio; `allowShortNotice` omite la antelación mínima (cita de mostrador). Solo salen los días con algún horario libre.
+       */
+      moveSlots: (id: string, range: { from: string; to: string; roomId?: string; allowShortNotice?: boolean }, o?: RequestOptions) =>
+        json<MoveSlots>("listMoveSlots", {
+          path: { appointmentId: id },
+          query: { from: range.from, to: range.to, roomId: range.roomId, allowShortNotice: range.allowShortNotice ? true : undefined },
+          ...o,
+        }),
     },
 
     rooms: { list: (o?: RequestOptions) => items<Room>("listRooms", o) },

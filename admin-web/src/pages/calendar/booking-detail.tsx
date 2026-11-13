@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { Bot, CalendarClock, Check, Copy, UserX, X } from "lucide-react";
+import { Bot, CalendarClock, CalendarDays, Check, Copy, UserX, X } from "lucide-react";
 import { Button, bookingDotStyle, bookingTitle, bookingTone, hhmm, hhmmLabel, isIsoDate, longDayLabel, statusLabel, wallClock, cn } from "@clinica/calendar";
 import type { Booking, BookingPatch, BookingStatus, Room } from "@clinica/api-client";
 import { useApi } from "../../api-context";
@@ -9,6 +9,7 @@ import { TZ, fmtPhone, fmtSpan } from "../../lib/fmt";
 import { timeOptions, utcOf } from "../../lib/range";
 import { BusyButton, Checkbox, Field, FormError, Pill, Select, TextArea, TextInput, dangerButton } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
+import { MoveSlotPicker } from "./move-slot-picker";
 
 const TIMES = timeOptions("07:00", "20:00");
 
@@ -60,6 +61,7 @@ export function BookingDetail({
   const [moveRoom, setMoveRoom] = useState("");
   const [shortNotice, setShortNotice] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   async function patch(body: BookingPatch, message: string) {
     setBusy(true);
@@ -232,6 +234,10 @@ export function BookingDetail({
                 </Select>
               </Field>
             </div>
+            <Button type="button" variant="outline" className="justify-start" onClick={() => setPicking(true)}>
+              <CalendarDays className="h-4 w-4" aria-hidden />
+              Elegir en el calendario (ver horarios libres)
+            </Button>
             <Field label="Consultorio">
               <Select value={moveRoom} onChange={(e) => setMoveRoom(e.target.value)}>
                 <option value="">Conservar el actual</option>
@@ -255,6 +261,23 @@ export function BookingDetail({
               </BusyButton>
             </div>
           </form>
+        )}
+
+        {mode === "move" && picking && (
+          <MoveSlotPicker
+            booking={b}
+            roomId={moveRoom}
+            roomLabel={moveRoom ? (rooms.find((r) => r.id === moveRoom)?.name ?? "Consultorio") : isBlock ? (b.room?.name ?? "Consultorio") : "Cualquier consultorio libre"}
+            allowShortNotice={shortNotice}
+            value={{ day: moveDay, time: moveTime }}
+            onPick={(day, time) => {
+              setMoveDay(day);
+              setMoveTime(time);
+              setError(null);
+              setPicking(false);
+            }}
+            onClose={() => setPicking(false)}
+          />
         )}
 
         {mode === "cancel" && (

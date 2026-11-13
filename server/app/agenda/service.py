@@ -25,14 +25,18 @@ from ..db import is_unique_violation, to_db, utcnow
 from ..models import SOURCES, STATUSES, Appointment, AppointmentBlock, Doctor, Room
 from .audit import BOT, SYSTEM, Actor, audit
 from .errors import (CITA_NO_ENCONTRADA, DOCTOR_NO_DISPONIBLE, ESPECIALIDAD, FALTA_NOMBRE, FUERA_DE_HORARIO,
-                     FUERA_DE_RANGO, HORARIO_OCUPADO, HORARIO_PASADO, NO_ENCONTRADO, TRANSICION_INVALIDA, VALIDACION,
-                     AgendaError)
+                     FUERA_DE_RANGO, HORARIO_OCUPADO, HORARIO_PASADO, NO_ENCONTRADO, RANGO_INVALIDO, TRANSICION_INVALIDA,
+                     VALIDACION, AgendaError)
 from .repo import Repo
 from .uow import Unit
 from .util import iso, norm, overlaps
 
 _UTC = timezone.utc
 UNSET = object()
+#: cuantos dias como maximo se piden de una vez a `move_slots` (la cuadricula de un mes de la web son 42)
+MAX_MOVE_SLOT_DAYS = 42
+#: el rango de inicios que se ofrece al mover un BLOQUEO de consultorio (de 7:00 a 20:00, como el selector de la web)
+BLOCK_FIRST_HOUR, BLOCK_LAST_HOUR = 7, 20
 
 #: transiciones de estado permitidas (contrato: PATCH /api/appointments/{id})
 TRANSITIONS = {
@@ -289,6 +293,81 @@ class Agenda(Unit):
             a.doctor, a.room  # noqa: B018 - se cargan AHORA: la capa de rutas serializa despues de cerrar la sesion
             return a
         return self._write(work)
+
+    def move_slots(self, appointment_id, from_day: date, to_day: date, *, room_id=None, allow_short_notice=False) -> dict:
+        """Los horarios LIBRES a los que se puede mover esa cita agendada, dia por dia en `[from_day, to_day)`: exactamente los que
+        `update_booking` aceptaria (mismas reglas que `_move`: horario de la clinica y del doctor, ausencias y eventos personales,
+        antelacion, horizonte, doctor y consultorio libres), pero sin reservar nada. Su PROPIO horario cuenta como libre para ella.
+        Con `room_id` solo cuentan los huecos libres en ESE consultorio; sin el, en cualquiera (un bloqueo se queda en el suyo).
+        Un bloqueo no sigue las reglas de pacientes: se ofrecen los inicios de 7:00 a 20:00 donde su consultorio este libre.
+        -> `{"slotMinutes", "durationMinutes", "days": [{"date": "AAAA-MM-DD", "slots": ["HH:MM", ...]}]}` (solo dias con algun
+        horario libre; hora de pared de la clinica)."""
+        r = self.rules
+        if to_day <= from_day or (to_day - from_day).days > MAX_MOVE_SLOT_DAYS:
+            raise AgendaError(RANGO_INVALIDO, f"el rango debe ser de 1 a {MAX_MOVE_SLOT_DAYS} dias")
+        with self._read() as repo:
+            a = repo.appointment(appointment_id)
+            if a is None:
+                raise AgendaError(NO_ENCONTRADO)
+            if a.status != "agendada":
+                raise AgendaError(TRANSICION_INVALIDA, f"una cita {a.status} no se puede mover")
+            now = self.now()
+            minutes = a.duration_minutes
+            if room_id is None and a.kind == "block":
+                room_id = a.room_id
+            if room_id is not None:
+                room = repo.room(room_id)
+                if room is None:
+                    raise AgendaError(VALIDACION, "consultorio inexistente o inactivo")
+                candidates = [room]
+            else:
+                candidates = repo.rooms()
+            lo = datetime.combine(from_day, time(0), r.tz)
+            hi = datetime.combine(to_day, time(0), r.tz) + timedelta(minutes=minutes)       # + lo que ocupa el ultimo inicio
+            lo_u, hi_u = to_db(lo), to_db(hi)
+            busy = repo.busy(lo_u, hi_u, ignore_appointment_id=a.id)
+            floor = now if allow_short_notice else now + timedelta(minutes=r.min_notice_minutes)
+            latest = now + timedelta(days=r.horizon_days)
+
+            def rooms_free(slots_u):
+                return any(not any(busy.room_taken(rm.id, x) for x in slots_u) for rm in candidates)
+
+            days = []
+            if a.kind == "session":
+                doc = a.doctor
+                clinic = repo.clinic_schedule()
+                sched = repo.doctor_schedule(doc, clinic)
+                away = (repo.absences(doc.id, lo_u, hi_u) + repo.personal_events(doc.id, lo_u, hi_u)) if doc.active else []
+                for i in range((to_day - from_day).days):
+                    day = from_day + timedelta(days=i)
+                    found = []
+                    for s in (clinic.all_slots(day) if doc.active else []):
+                        if s < floor or s > latest:
+                            continue
+                        slots = self._slots(s, minutes)
+                        if not all(clinic.has_slot(x) and sched.has_slot(x) for x in slots):
+                            continue
+                        slots_u = [to_db(x) for x in slots]
+                        if any(overlaps(slots_u[0], slots_u[-1] + r.slot, x, y) for x, y in away):
+                            continue
+                        if any(busy.doctor_taken(doc.id, x) for x in slots_u) or not rooms_free(slots_u):
+                            continue
+                        found.append(s.strftime("%H:%M"))
+                    if found:
+                        days.append({"date": day.isoformat(), "slots": found})
+            else:
+                for i in range((to_day - from_day).days):
+                    day = from_day + timedelta(days=i)
+                    found = []
+                    for k in range(BLOCK_FIRST_HOUR * 60 // r.slot_minutes, BLOCK_LAST_HOUR * 60 // r.slot_minutes):
+                        s = datetime.combine(day, time(0), r.tz) + r.slot * k
+                        if s + timedelta(minutes=minutes) <= now:
+                            continue                                                                  # ya termino: no se mueve al pasado
+                        if rooms_free([to_db(x) for x in self._slots(s, minutes)]):
+                            found.append(s.strftime("%H:%M"))
+                    if found:
+                        days.append({"date": day.isoformat(), "slots": found})
+            return {"slotMinutes": r.slot_minutes, "durationMinutes": minutes, "days": days}
 
     def get_booking(self, appointment_id) -> Appointment | None:
         with self._read() as repo:
