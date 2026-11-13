@@ -10,8 +10,19 @@ export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 export const OPERATIONS = {
   health: ["get", "/api/health"],
 
+  // marca de la clinica (nombre y logotipo): leer es publico; cambiar, solo administrador
+  getBranding: ["get", "/api/branding"],
+  getBrandingLogo: ["get", "/api/branding/logo"],
+  setBranding: ["put", "/api/settings/branding"],
+  uploadBrandingLogo: ["put", "/api/settings/branding/logo"],
+  deleteBrandingLogo: ["delete", "/api/settings/branding/logo"],
+
   // auth
   login: ["post", "/api/auth/login"],
+  listLoginDoctors: ["get", "/api/auth/doctors"],
+  doctorLogin: ["post", "/api/auth/doctor-login"],
+  checkPasswordLink: ["post", "/api/auth/password-link/check"],
+  usePasswordLink: ["post", "/api/auth/password-link/use"],
   logout: ["post", "/api/auth/logout"],
   me: ["get", "/api/me"],
 
@@ -27,6 +38,7 @@ export const OPERATIONS = {
   createDoctor: ["post", "/api/doctors"],
   updateDoctor: ["patch", "/api/doctors/{doctorId}"],
   deleteDoctor: ["delete", "/api/doctors/{doctorId}"],
+  createPasswordLink: ["post", "/api/doctors/{doctorId}/password-link"],
   setDoctorWeeklyHours: ["put", "/api/doctors/{doctorId}/weekly-hours"],
   listDoctorAbsences: ["get", "/api/doctors/{doctorId}/absences"],
   createDoctorAbsence: ["post", "/api/doctors/{doctorId}/absences"],

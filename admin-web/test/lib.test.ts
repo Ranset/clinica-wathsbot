@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PAGE_SIZE, pageCountOf } from "../src/ui/pager";
 import { ApiError } from "@clinica/api-client";
 import { MAX_RANGE_DAYS, datesOf, visibleRange } from "@clinica/calendar";
+import { copyText } from "../src/lib/clipboard";
 import { messageFor } from "../src/lib/errors";
+import { passwordLinkMessage, validity } from "../src/lib/password-link";
 import { ago, fmtDateTime, fmtPhone, fmtSpan } from "../src/lib/fmt";
 import { compactHours, summarizeHours, validateHours } from "../src/lib/hours";
 import { rangeToUtc, timeOptions, utcOf } from "../src/lib/range";
@@ -108,9 +110,12 @@ describe("permisos y rutas", () => {
     expect(permissionsFor(null).useAdminWeb).toBe(false);
   });
 
-  it("canOpen: Usuarios solo para el administrador; un doctor no abre nada", () => {
+  it("canOpen: Usuarios y Clínica (logotipo y nombre) solo para el administrador; un doctor no abre nada", () => {
     expect(NAV.filter((n) => canOpen("staff", n.path)).map((n) => n.path)).toEqual(["/calendario", "/doctores", "/atencion"]);
-    expect(NAV.filter((n) => canOpen("admin", n.path)).map((n) => n.path)).toEqual(["/calendario", "/doctores", "/atencion", "/usuarios"]);
+    expect(NAV.filter((n) => canOpen("admin", n.path)).map((n) => n.path)).toEqual(["/calendario", "/doctores", "/atencion", "/usuarios", "/clinica"]);
+    expect(permissionsFor("admin").editBranding).toBe(true);
+    for (const role of ["staff", "doctor", null, undefined] as const) expect(permissionsFor(role).editBranding, String(role)).toBe(false);
+    expect(canOpen("staff", "/clinica")).toBe(false);
     expect(NAV.filter((n) => canOpen("doctor", n.path))).toEqual([]);
     expect(canOpen("admin", "/no-existe")).toBe(false);
   });
@@ -132,5 +137,42 @@ describe("paginación", () => {
     expect(pageCountOf(7, 5)).toBe(2);
     expect(pageCountOf(Number.NaN)).toBe(1);                       // un total que no es número no rompe la cuenta
     expect(pageCountOf(undefined as unknown as number)).toBe(1);
+  });
+});
+
+describe("enlace de contraseña del doctor", () => {
+  const NOW = Date.parse("2026-11-12T15:00:00Z");
+  const link = (hours: number) => ({ url: "https://clinica.example.com/doctor/#/contrasena?t=abc", expiresAtUtc: new Date(NOW + hours * 3_600_000).toISOString() });
+
+  it("el mensaje lleva nombre, código y enlace en tres líneas cortas, y dice cuánto vale", () => {
+    const text = passwordLinkMessage({ name: "Dra. Ana del Carmen Argüelles", code: "1007" }, link(72), NOW);
+    expect(text).toBe("Dra. Ana del Carmen Argüelles · Código 1007\nCrea o cambia tu contraseña aquí (vale 3 días):\nhttps://clinica.example.com/doctor/#/contrasena?t=abc");
+    expect(text.length).toBeLessThan(200);
+  });
+
+  it("validity: días, horas o poco tiempo", () => {
+    expect(validity(link(72).expiresAtUtc, NOW)).toBe("vale 3 días");
+    expect(validity(link(48).expiresAtUtc, NOW)).toBe("vale 2 días");
+    expect(validity(link(20).expiresAtUtc, NOW)).toBe("vale 20 horas");
+    expect(validity(link(1).expiresAtUtc, NOW)).toBe("vale poco tiempo");
+    expect(validity("no-es-fecha", NOW)).toBe("vale poco tiempo");
+  });
+
+  it("copyText usa el portapapeles; si no hay o falla, prueba el método antiguo y dice si pudo", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    expect(await copyText("hola")).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("hola");
+
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error("negado")) } });
+    expect(await copyText("hola")).toBe(false); // jsdom no trae execCommand: no se pudo
+    const exec = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+    expect(await copyText("hola")).toBe(true); // el método antiguo sí pudo
+    expect(exec).toHaveBeenCalledWith("copy");
+    expect(document.querySelector("textarea")).toBeNull(); // y no deja el campo oculto
+
+    Reflect.deleteProperty(navigator, "clipboard");
+    Reflect.deleteProperty(document, "execCommand");
   });
 });

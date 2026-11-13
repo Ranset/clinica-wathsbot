@@ -23,7 +23,7 @@ def test_login_correcto_devuelve_usuario_y_csrf_y_pone_la_cookie(client, users):
     assert_schema("SessionInfo", j)
     cookie = r.headers["Set-Cookie"]
     assert "clinica_session=" in cookie and "HttpOnly" in cookie and "SameSite=Lax" in cookie and "Path=/" in cookie
-    assert "password" not in str(j).lower() and "hash" not in str(j).lower()
+    assert set(j["user"]) == {"id", "email", "name", "role", "doctorId", "active", "passwordSet"} and "hash" not in str(j).lower()
     me = client.get("/api/me").get_json()
     assert me["user"] == j["user"] and me["csrfToken"] == j["csrfToken"]          # el token CSRF es estable en la sesion
 

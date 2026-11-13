@@ -31,10 +31,10 @@ días hábiles), una ausencia, una solicitud de cambio de horario y un caso de a
 | Qué | Dónde | Usuario |
 |---|---|---|
 | Web de administración | http://127.0.0.1:5180 | `admin@dev.test` o `recepcion@dev.test` |
-| PWA del doctor | http://127.0.0.1:5181 | `doctor@dev.test` |
+| PWA del doctor | http://127.0.0.1:5181 | el código `1001`, `1002` o `1003` (se elige en una lista; sin correo) |
 | Servidor (API) | http://127.0.0.1:5000/api/health | — |
 
-La contraseña de los tres es `clave-de-desarrollo-1`. Es **solo de desarrollo**: está en el código y los scripts se niegan a usarla
+La contraseña de todos es `clave-de-desarrollo-1`. Es **solo de desarrollo**: está en el código y los scripts se niegan a usarla
 con cualquier base que no sea `server/instance/dev.db`. **Ctrl+C** detiene los tres programas.
 
 > Las dos webs comparten la sesión (las cookies no se separan por puerto en `127.0.0.1`). Si entras como personal en una y luego
@@ -54,7 +54,9 @@ con cualquier base que no sea `server/instance/dev.db`. **Ctrl+C** detiene los t
 **Como administrador (`admin@dev.test`)**: lo anterior, más *Usuarios* (crear, desactivar, restablecer contraseña) y editar el horario
 de la clínica y los doctores.
 
-**Como doctor (`doctor@dev.test`) en la PWA**
+**Como doctor (código `1001`) en la PWA**
+- *Crear tu contraseña*: en la web de administración (`recepcion@dev.test`) da de alta un doctor en *Doctores* (su cuenta nace sola, sin contraseña), abre su pestaña *Datos* y pulsa **Generar enlace y copiar**. El texto copiado (nombre, código y enlace, listo para WhatsApp) trae un enlace a `http://127.0.0.1:5181/#/contrasena?t=…`: ábrelo, crea la contraseña y quedas dentro; el mismo botón sirve para recuperar una contraseña olvidada. (El servidor de desarrollo pone `DOCTOR_APP_URL` solo.)
+- *Entrar*: no pide correo. El campo «Usuario» es una lista con **código y nombre** de cada doctor que tiene cuenta (aquí `1001` Cervantes, `1002` Pérez Lago, `1003` Bordas); escribe parte del código o del nombre y se reduce, y la contraseña la escribes tú.
 - *Hoy* y *Semana*: solo ves **tus** citas y nunca el teléfono del paciente.
 - *Ausencias*: registra una que cubra citas (te dice cuántas son) y luego mira en la web de administración, en *Atención*, el aviso.
 - *Horario*: pide un cambio permanente y apruébalo desde la web de administración.

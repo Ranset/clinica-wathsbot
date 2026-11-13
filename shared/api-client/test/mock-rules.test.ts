@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { zonedWallClockToUtc } from "@clinica/calendar/src/lib/slots";
-import { ApiError, createApiClient, type ApiClient, type Role } from "../src";
+import { ApiError, LOGO_MAX_BYTES, createApiClient, type ApiClient, type Role } from "../src";
+import { gif, jpeg, padTo, png, svg, webpExtended, webpLossless, webpLossy } from "./images";
 import { DEMO_ACCOUNTS, LOGIN_MAX_FAILURES, createMockApi, type MockApi } from "../src/mock";
 import { contractFetch } from "./spec";
 
@@ -14,6 +15,8 @@ const at = (day: string, hhmm: string) => zonedWallClockToUtc(day, hhmm, "Americ
 const D = { cervantes: "d1", perez: "d2", bordas: "d3", torrealba: "d4", geydi: "d6" };
 
 let mock: MockApi;
+/** El «ahora» del simulador: se puede adelantar dentro de una prueba (se restablece antes de cada una). */
+let clock = NOW;
 let api: ApiClient;
 /** Mismo servidor y misma sesion, pero SIN validar la peticion contra el contrato: para mandar a proposito lo invalido. */
 let lax: ApiClient;
@@ -38,7 +41,8 @@ const code = async (p: Promise<unknown>) => {
 };
 
 beforeEach(async () => {
-  mock = createMockApi({ now: () => NOW });
+  clock = NOW;
+  mock = createMockApi({ now: () => clock });
   mock.db.bookings.length = 0;
   mock.db.absences.length = 0;
   mock.db.personalEvents.length = 0;
@@ -488,15 +492,17 @@ describe("usuarios (administrador)", () => {
     await login("admin");
   });
 
-  it("valida correo, contrasena de 10+, duplicados y que un doctor lleve doctorId", async () => {
+  it("valida correo, contrasena de 10+, duplicados y que aqui no se creen doctores (solo personal y administrador)", async () => {
     const base = { email: "nueva@clinica.test", name: "Persona Nueva", role: "staff" as const, password: "contrasena-larga-1" };
     expect(await code(lax.users.create({ ...base, email: "no-es-correo" }))).toBe("422 validacion");
     expect(await code(lax.users.create({ ...base, password: "corta" }))).toBe("422 validacion");
-    expect(await code(api.users.create({ ...base, role: "doctor" }))).toBe("422 validacion");
-    expect(await code(api.users.create({ ...base, role: "doctor", doctorId: "d99" }))).toBe("422 validacion");
-    expect(await code(api.users.create({ ...base, doctorId: "d1" }))).toBe("422 validacion");
+    // la cuenta de un doctor nace con el doctor: desde Usuarios no se crea (ni con doctorId)
+    expect(await code(lax.users.create({ ...base, role: "doctor" } as never))).toBe("422 validacion");
+    expect(await code(lax.users.create({ ...base, role: "doctor", doctorId: "d3" } as never))).toBe("422 validacion");
+    expect(await code(lax.users.create({ ...base, doctorId: "d1" } as never))).toBe("422 validacion");
+    expect(mock.db.users.some((x) => x.email === "nueva@clinica.test")).toBe(false);
     const u = await api.users.create(base);
-    expect(u).toMatchObject({ email: "nueva@clinica.test", role: "staff", doctorId: null, active: true });
+    expect(u).toMatchObject({ email: "nueva@clinica.test", role: "staff", doctorId: null, active: true, passwordSet: true });
     expect(JSON.stringify(u)).not.toContain("contrasena");
     expect(await code(api.users.create({ ...base, email: "NUEVA@clinica.test" }))).toBe("422 validacion");
   });
@@ -723,6 +729,300 @@ describe("eventos personales del doctor", () => {
     mock.db.personalEvents.push({ id: "pe-x", doctorId: doc.id, title: "Algo", notes: null, startUtc: at("2026-11-12", "10:00"), endUtc: at("2026-11-12", "11:00") });
     await api.doctors.remove(doc.id);
     expect(mock.db.personalEvents).toEqual([]);
+  });
+});
+
+describe("marca de la clínica (nombre y logotipo)", () => {
+  const png128 = png(128);
+  const asAdmin = async () => {
+    await api.auth.logout();
+    await login("admin");
+  };
+
+  it("sin sesión ya se ve la marca por defecto (la usa el login); sin logotipo, el logotipo es 404", async () => {
+    await api.auth.logout();
+    expect(await api.branding.get()).toEqual({ name: "Clínica CUBAMEX", logoUrl: null });
+    const res = await mock.fetch("/api/branding/logo");
+    expect(res.status).toBe(404);
+    expect(await api.branding.logo("/api/branding/logo")).toBeNull();
+  });
+
+  it("solo el administrador cambia el nombre y el logotipo (personal y doctor: 403; sin sesión: 401)", async () => {
+    expect(await code(api.branding.setName("Hackeada"))).toBe("403 sin_permiso");                    // soy el personal
+    expect(await code(api.branding.uploadLogo(png128, "image/png"))).toBe("403 sin_permiso");
+    expect(await code(api.branding.removeLogo())).toBe("403 sin_permiso");
+    await api.auth.logout();
+    await login("doctor");
+    expect(await code(api.branding.setName("Hackeada"))).toBe("403 sin_permiso");
+    await api.auth.logout();
+    expect(await code(lax.branding.setName("Hackeada"))).toBe("401 no_autenticado");
+    expect((await api.branding.get()).name).toBe("Clínica CUBAMEX");                                   // nada cambió
+  });
+
+  it("el administrador cambia el nombre (espacios normalizados) y todos lo ven, incluso sin sesión", async () => {
+    await asAdmin();
+    expect(await api.branding.setName("  Clínica   Santa  María \n")).toEqual({ name: "Clínica Santa María", logoUrl: null });
+    await api.auth.logout();
+    expect((await api.branding.get()).name).toBe("Clínica Santa María");
+  });
+
+  it("nombre inválido: vacío, solo espacios, no texto o de más de 80 caracteres (422)", async () => {
+    await asAdmin();
+    for (const body of [{}, { name: "" }, { name: "   " }, { name: 5 }, { name: null }, { name: "x".repeat(81) }]) {
+      expect(await code(lax.branding.setName((body as { name?: string }).name as string)), JSON.stringify(body)).toBe("422 validacion");
+    }
+    expect((await api.branding.setName("x".repeat(80))).name).toHaveLength(80);
+  });
+
+  it("sube un logotipo cuadrado: se sirve igual, con su tipo y su huella, y también se ve sin sesión", async () => {
+    await asAdmin();
+    const b = await api.branding.uploadLogo(png128, "image/png");
+    expect(b.logoUrl).toMatch(/^\/api\/branding\/logo\?v=[0-9a-f]{8}$/);
+    await api.auth.logout();
+    const pub = await api.branding.get();
+    expect(pub.logoUrl).toBe(b.logoUrl);
+    const img = await api.branding.logo(pub.logoUrl!);
+    expect(img!.contentType).toBe("image/png");
+    expect([...img!.bytes]).toEqual([...png128]);
+    // ETag: lo mismo = 304
+    const res = await mock.fetch(pub.logoUrl!);
+    const again = await mock.fetch(pub.logoUrl!, { headers: { "If-None-Match": res.headers.get("ETag")! } });
+    expect(again.status).toBe(304);
+  });
+
+  it("acepta JPG y WebP, y el tipo sale de los bytes (no de lo que diga el cliente)", async () => {
+    await asAdmin();
+    for (const [bytes, tipo] of [[jpeg(300), "image/jpeg"], [webpLossless(300), "image/webp"], [webpLossy(300), "image/webp"], [webpExtended(300), "image/webp"]] as const) {
+      await api.branding.uploadLogo(bytes, "image/png");                                             // dice PNG
+      expect((await api.branding.logo((await api.branding.get()).logoUrl!))!.contentType).toBe(tipo);
+    }
+  });
+
+  it("un logotipo nuevo cambia la dirección (otra huella) y reemplaza al anterior", async () => {
+    await asAdmin();
+    const a = (await api.branding.uploadLogo(png(128), "image/png")).logoUrl;
+    const b = (await api.branding.uploadLogo(png(192), "image/png")).logoUrl;
+    expect(a).not.toBe(b);
+    expect((await api.branding.logo(b!))!.bytes).toHaveLength(png(192).length);
+  });
+
+  it("lo que no sirve es 422 con el motivo y no cambia nada: no cuadrada, chica, enorme, SVG, vacío, de más de 1 MB", async () => {
+    await asAdmin();
+    const bueno = await api.branding.uploadLogo(png128, "image/png");
+    const motivo = async (bytes: Uint8Array) => {
+      const e = await api.branding.uploadLogo(bytes, "image/png").then(() => null, (x: ApiError) => x);
+      expect(e, "debía rechazarse").toBeInstanceOf(ApiError);
+      expect(`${e!.status} ${e!.code}`).toBe("422 validacion");
+      return e!.detail;
+    };
+    expect(await motivo(png(800, 600))).toBe("La imagen debe ser cuadrada (1:1); esta mide 800 × 600 px.");
+    expect(await motivo(png(32))).toMatch(/muy pequeña/);
+    expect(await motivo(png(4096))).toMatch(/muy grande/);
+    expect(await motivo(svg())).toBe("Sube una imagen PNG, JPG o WebP.");
+    expect(await motivo(gif())).toBe("Sube una imagen PNG, JPG o WebP.");
+    expect(await motivo(new Uint8Array())).toBe("No llegó ningún archivo.");
+    expect(await motivo(padTo(png(128), LOGO_MAX_BYTES + 1))).toBe("La imagen pesa más de 1 MB.");
+    expect((await api.branding.get()).logoUrl).toBe(bueno.logoUrl);                                   // sigue el anterior
+    await api.branding.uploadLogo(padTo(png(128), LOGO_MAX_BYTES), "image/png");                      // 1 MB justo, sí
+  });
+
+  it("quitar el logotipo vuelve al icono por defecto; repetirlo no falla; el nombre es independiente", async () => {
+    await asAdmin();
+    await api.branding.uploadLogo(png128, "image/png");
+    await api.branding.setName("Otra Clínica");
+    expect((await api.branding.get()).name).toBe("Otra Clínica");                                     // cambiar el nombre no quita el logotipo
+    expect((await api.branding.get()).logoUrl).not.toBeNull();
+    expect(await api.branding.removeLogo()).toEqual({ name: "Otra Clínica", logoUrl: null });          // quitar el logotipo no cambia el nombre
+    expect((await api.branding.removeLogo()).logoUrl).toBeNull();
+    expect((await mock.fetch("/api/branding/logo")).status).toBe(404);
+  });
+});
+
+describe("entrada del doctor con su código", () => {
+  const doctorAcc = () => DEMO_ACCOUNTS.find((a) => a.role === "doctor")!;
+
+  beforeEach(async () => {
+    await api.auth.logout(); // la lista y el login por código son para quien aún no tiene sesión
+  });
+
+  it("la lista es pública y trae solo código y nombre de quienes tienen cuenta activa, por código", async () => {
+    expect(await api.auth.loginDoctors()).toEqual([{ code: "1001", name: "Dr. Cervantes Peláez" }]);
+    // otro doctor con cuenta: aparece en su lugar; uno sin cuenta, no
+    mock.db.users.push({ id: "u90", email: "bordas@clinica.test", name: "Dra. Bordas", role: "doctor", doctorId: "d3", active: true, password: "demo-bordas-2026" });
+    mock.db.users.push({ id: "u91", email: "perez@clinica.test", name: "Dr. Perez", role: "doctor", doctorId: "d2", active: true, password: "demo-perez-2026" });
+    const list = await api.auth.loginDoctors();
+    expect(list.map((d) => d.code)).toEqual(["1001", "1002", "1003"]);
+    expect(list.every((d) => Object.keys(d).sort().join() === "code,name")).toBe(true);
+    expect(JSON.stringify(list)).not.toMatch(/@|demo-/); // nada de la cuenta
+    // la baja de la cuenta la saca de la lista; un doctor con dos cuentas sale una sola vez
+    mock.db.users.find((u) => u.id === "u91")!.active = false;
+    mock.db.users.push({ id: "u92", email: "bordas2@clinica.test", name: "Otra cuenta", role: "doctor", doctorId: "d3", active: true, password: "demo-bordas-2026" });
+    expect((await api.auth.loginDoctors()).map((d) => d.code)).toEqual(["1001", "1003"]);
+  });
+
+  it("entra con código y contraseña (sin correo): sesión de doctor, token CSRF y /me", async () => {
+    const acc = doctorAcc();
+    const info = await api.auth.loginDoctor(acc.doctorCode!, acc.password);
+    expect(info.user).toMatchObject({ role: "doctor", doctorId: "d1", email: acc.email });
+    expect(info.csrfToken).toBeTruthy();
+    expect(api.csrfToken).toBe(info.csrfToken);
+    expect((await api.auth.me()).user.id).toBe(info.user.id);
+    expect((await api.doctorSelf.hours()).code).toBe("1001"); // y es SU agenda
+  });
+
+  it("un código que no existe, un doctor sin cuenta, un código mal formado y una contraseña mala son el mismo 401", async () => {
+    const acc = doctorAcc();
+    expect(await code(api.auth.loginDoctor("1001", "mal"))).toBe("401 credenciales_invalidas");
+    expect(await code(api.auth.loginDoctor("9999", acc.password))).toBe("401 credenciales_invalidas");
+    expect(await code(api.auth.loginDoctor("1005", acc.password))).toBe("401 credenciales_invalidas"); // doctor sin cuenta
+    expect(await code(lax.auth.loginDoctor("abcd", acc.password))).toBe("401 credenciales_invalidas");
+    expect(await code(api.auth.loginDoctor("1001", DEMO_ACCOUNTS.find((a) => a.role === "staff")!.password))).toBe("401 credenciales_invalidas"); // la del personal
+  });
+
+  it("la cuenta dada de baja no entra", async () => {
+    mock.db.users.find((u) => u.role === "doctor")!.active = false;
+    expect(await code(api.auth.loginDoctor("1001", doctorAcc().password))).toBe("401 credenciales_invalidas");
+    expect(await api.auth.loginDoctors()).toEqual([]);
+  });
+
+  it("falta el código o la contraseña = 422; 5 contraseñas malas bloquean la cuenta (también para el correo)", async () => {
+    expect(await code(lax.auth.loginDoctor("", "x"))).toBe("422 validacion");
+    const acc = doctorAcc();
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) expect(await code(api.auth.loginDoctor(acc.doctorCode!, "mal"))).toBe("401 credenciales_invalidas");
+    expect(await code(api.auth.loginDoctor(acc.doctorCode!, acc.password))).toBe("429 demasiados_intentos"); // ni con la buena
+    expect(await code(api.auth.login(acc.email, acc.password))).toBe("429 demasiados_intentos"); // el contador es de la cuenta
+  });
+
+  it("un doctor nuevo recibe el menor código libre y el código no se edita", async () => {
+    await login("admin");
+    const nuevo = await api.doctors.create({ name: "Dr. Nuevo", specialty: "Cardiología" });
+    expect(nuevo.code).toBe("1008");
+    const editado = await lax.doctors.update(nuevo.id, { specialty: "Cardiología clínica", code: "9999" } as never);
+    expect(editado).toMatchObject({ code: "1008", specialty: "Cardiología clínica" });
+    expect((await api.doctors.list()).map((d) => d.code)).toEqual(["1001", "1002", "1003", "1004", "1005", "1006", "1007", "1008"]);
+  });
+});
+
+describe("cuenta del doctor y enlace para su contraseña", () => {
+  const NEW = "mi-contrasena-nueva-1";
+  const tokenOf = (url: string) => url.split("?t=")[1]!;
+  const accountOf = (doctorId: string) => mock.db.users.filter((u) => u.doctorId === doctorId);
+
+  it("al dar de alta un doctor se crea su cuenta SIN correo y SIN contraseña, y no puede entrar ni sale en la lista de la entrada", async () => {
+    const d = await api.doctors.create({ name: "Dr. Nuevo", specialty: "Cardiología" });
+    expect(accountOf(d.id).map((u) => ({ email: u.email, password: u.password, active: u.active, name: u.name, role: u.role }))).toEqual([
+      { email: null, password: null, active: true, name: "Dr. Nuevo", role: "doctor" },
+    ]);
+    await login("admin");
+    const listed = (await api.users.list()).find((u) => u.doctorId === d.id)!;
+    expect(listed).toMatchObject({ email: null, role: "doctor", passwordSet: false });
+    await api.auth.logout();
+    for (let i = 0; i < LOGIN_MAX_FAILURES + 2; i++) expect(await code(api.auth.loginDoctor(d.code, `intento-numero-${i}`))).toBe("401 credenciales_invalidas"); // nunca 429
+    expect((await api.auth.loginDoctors()).map((x) => x.code)).not.toContain(d.code);
+  });
+
+  it("renombrar al doctor renombra su cuenta", async () => {
+    const d = await api.doctors.create({ name: "Dr. Viejo", specialty: "X" });
+    await api.doctors.update(d.id, { name: "Dr. Renombrado" });
+    expect(accountOf(d.id).map((u) => u.name)).toEqual(["Dr. Renombrado"]);
+  });
+
+  it("el personal genera el enlace; el doctor lo abre, ve de quién es y establece su contraseña: queda dentro y puede entrar con su código", async () => {
+    const d = await api.doctors.create({ name: "Dra. Con Enlace", specialty: "Pediatría" });
+    const link = await api.doctors.createPasswordLink(d.id);
+    expect(link.url).toMatch(/^https:\/\/clinica\.test\/doctor\/#\/contrasena\?t=[A-Za-z0-9]{32}$/);
+    expect(new Date(link.expiresAtUtc).getTime()).toBe(NOW.getTime() + 72 * 3600_000);
+    const token = tokenOf(link.url);
+
+    await api.auth.logout(); // ahora es el doctor, sin sesión
+    expect(await api.auth.checkPasswordLink(token)).toEqual({ doctorCode: d.code, doctorName: "Dra. Con Enlace", expiresAtUtc: link.expiresAtUtc });
+    expect(await api.auth.checkPasswordLink(token)).toBeTruthy(); // revisarlo no lo gasta
+    const info = await api.auth.usePasswordLink(token, NEW);
+    expect(info.user).toMatchObject({ role: "doctor", doctorId: d.id, email: null, passwordSet: true });
+    expect(api.csrfToken).toBe(info.csrfToken);
+    expect((await api.auth.me()).user.id).toBe(info.user.id);
+
+    expect(await code(api.auth.checkPasswordLink(token))).toBe("404 enlace_invalido"); // un solo uso
+    expect(await code(api.auth.usePasswordLink(token, "otra-contrasena-larga-2"))).toBe("404 enlace_invalido");
+    await api.auth.logout();
+    expect((await api.auth.loginDoctor(d.code, NEW)).user.doctorId).toBe(d.id); // entra con su código
+    await api.auth.logout();
+    expect((await api.auth.loginDoctors()).map((x) => x.code)).toContain(d.code);
+  });
+
+  it("una contraseña que no cumple es 422 y no gasta el enlace; un enlace nuevo reemplaza al anterior; uno desconocido es 404", async () => {
+    const d = await api.doctors.create({ name: "Dr. Reemplazo", specialty: "X" });
+    const t1 = tokenOf((await api.doctors.createPasswordLink(d.id)).url);
+    const t2 = tokenOf((await api.doctors.createPasswordLink(d.id)).url);
+    expect(t1).not.toBe(t2);
+    await api.auth.logout();
+    expect(await code(api.auth.checkPasswordLink(t1))).toBe("404 enlace_invalido");
+    expect(await code(lax.auth.usePasswordLink(t2, "corta"))).toBe("422 validacion");
+    expect(await code(lax.auth.usePasswordLink("", NEW))).toBe("422 validacion");
+    expect(await code(api.auth.checkPasswordLink("x".repeat(32)))).toBe("404 enlace_invalido");
+    expect((await api.auth.usePasswordLink(t2, NEW)).user.doctorId).toBe(d.id); // el enlace seguía vigente
+  });
+
+  it("el enlace vence a las 72 horas", async () => {
+    const d = await api.doctors.create({ name: "Dr. Tarde", specialty: "X" });
+    const token = tokenOf((await api.doctors.createPasswordLink(d.id)).url);
+    await api.auth.logout();
+    clock = new Date(NOW.getTime() + 72 * 3600_000 - 1000);
+    expect((await api.auth.checkPasswordLink(token)).doctorCode).toBe(d.code);
+    clock = new Date(NOW.getTime() + 72 * 3600_000 + 1000);
+    expect(await code(api.auth.checkPasswordLink(token))).toBe("404 enlace_invalido");
+    expect(await code(api.auth.usePasswordLink(token, NEW))).toBe("404 enlace_invalido");
+  });
+
+  it("recuperar una contraseña olvidada: el enlace pone otra, cierra la sesión anterior, quita el bloqueo y la vieja ya no sirve", async () => {
+    const acc = DEMO_ACCOUNTS.find((a) => a.role === "doctor")!;
+    const token = tokenOf((await api.doctors.createPasswordLink("d1")).url); // el doctor de ejemplo ya tenía cuenta y contraseña
+    expect(accountOf("d1")).toHaveLength(1); // no se crea otra
+    await api.auth.logout();
+    await api.auth.loginDoctor(acc.doctorCode!, acc.password); // el doctor tiene una sesión abierta
+    const sesionesAntes = [...mock.db.sessions.entries()].filter(([, s]) => s.userId === accountOf("d1")[0]!.id).map(([sid]) => sid);
+    expect(sesionesAntes).toHaveLength(1);
+    await api.auth.logout();
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) await code(api.auth.loginDoctor(acc.doctorCode!, "no-es")); // se le olvida: se bloquea
+    expect(await code(api.auth.loginDoctor(acc.doctorCode!, acc.password))).toBe("429 demasiados_intentos");
+
+    await api.auth.usePasswordLink(token, NEW);
+    const sesionesDespues = [...mock.db.sessions.entries()].filter(([, s]) => s.userId === accountOf("d1")[0]!.id).map(([sid]) => sid);
+    expect(sesionesDespues).toHaveLength(1);
+    expect(sesionesDespues[0]).not.toBe(sesionesAntes[0]); // la sesión anterior se cerró y quedó solo la nueva
+    await api.auth.logout();
+    expect(await code(api.auth.loginDoctor(acc.doctorCode!, acc.password))).toBe("401 credenciales_invalidas"); // la vieja ya no sirve
+    expect((await api.auth.loginDoctor(acc.doctorCode!, NEW)).user.doctorId).toBe("d1"); // y el bloqueo se quitó
+  });
+
+  it("un doctor anterior sin cuenta la recibe al generar el enlace; con la cuenta desactivada es 422; un doctor no genera enlaces", async () => {
+    expect(accountOf("d5")).toHaveLength(0);
+    await api.doctors.createPasswordLink("d5");
+    expect(accountOf("d5").map((u) => [u.email, u.password])).toEqual([[null, null]]);
+    accountOf("d5")[0]!.active = false;
+    expect(await code(api.doctors.createPasswordLink("d5"))).toBe("422 validacion");
+    expect(await code(api.doctors.createPasswordLink("d99"))).toBe("404 no_encontrado");
+    await api.auth.logout();
+    await api.auth.loginDoctor("1001", DEMO_ACCOUNTS.find((a) => a.role === "doctor")!.password);
+    lax.csrfToken = api.csrfToken;
+    expect(await code(lax.doctors.createPasswordLink("d1"))).toBe("403 sin_permiso");
+  });
+
+  it("eliminar un doctor: su cuenta recién creada (sin contraseña) se va con él; con contraseña ya no se deja", async () => {
+    await login("admin");
+    const d1 = await api.doctors.create({ name: "Dr. Por Error", specialty: "X" });
+    await api.doctors.remove(d1.id);
+    expect(accountOf(d1.id)).toHaveLength(0);
+    expect(mock.db.doctors.some((x) => x.id === d1.id)).toBe(false);
+
+    const d2 = await api.doctors.create({ name: "Dr. Con Clave", specialty: "X" });
+    const token = tokenOf((await api.doctors.createPasswordLink(d2.id)).url);
+    await api.auth.logout();
+    await api.auth.usePasswordLink(token, NEW); // el doctor establece su contraseña
+    await api.auth.logout();
+    await login("admin");
+    expect(await code(api.doctors.remove(d2.id))).toBe("409 doctor_con_usuario");
+    expect(accountOf(d2.id)).toHaveLength(1);
   });
 });
 

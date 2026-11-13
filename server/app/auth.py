@@ -7,6 +7,9 @@
   El token CSRF es estable durante toda la sesion.
 - **Bloqueo**: `max_failures` contrasenas erroneas seguidas bloquean al usuario `lock_minutes` (429). El contador se CONFIRMA
   antes de rechazar (por eso el rechazo se lanza despues de la transaccion).
+- **Cuentas de doctor**: se crean SOLAS al dar de alta al doctor, sin correo y SIN contrasena (`create_doctor_account`). El personal genera
+  un enlace de un solo uso (`create_password_link`) y el doctor lo abre para establecer su contrasena por primera vez o para cambiarla si la
+  olvido. Del enlace solo se guarda su SHA-256 (como la cookie de sesion); un enlace nuevo reemplaza al anterior y al usarlo se borra.
 """
 from __future__ import annotations
 
@@ -27,10 +30,12 @@ from .agenda.errors import NO_ENCONTRADO, VALIDACION, AgendaError
 from .agenda.rules import Rules
 from .agenda.uow import Unit
 from .db import is_unique_violation, to_db
+from .doctor_codes import CODE_RE
 from .models import ROLES, Doctor, User, UserSession
 
 EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 MIN_PASSWORD, MAX_PASSWORD = 10, 128
+SETUP_LINK_HOURS = 72                       # cuanto dura el enlace para establecer la contrasena
 TOUCH_EVERY = timedelta(minutes=5)          # cada cuanto se actualiza `last_seen_at` (evita una escritura por peticion)
 
 
@@ -45,11 +50,13 @@ class AuthError(Exception):
 @dataclass(frozen=True)
 class UserView:
     id: int
-    email: str
+    email: str | None
     name: str
     role: str
     doctor_id: int | None
     active: bool
+    #: False = la cuenta todavia no tiene contrasena (un doctor recien dado de alta); nadie entra a ella hasta que la establezca
+    password_set: bool = True
 
 
 @dataclass(frozen=True)
@@ -69,7 +76,7 @@ class Principal:
 
 
 def _view(u: User) -> UserView:
-    return UserView(u.id, u.email, u.name, u.role, u.doctor_id, bool(u.active))
+    return UserView(u.id, u.email, u.name, u.role, u.doctor_id, bool(u.active), u.password_hash is not None)
 
 
 def _sha(token: str) -> str:
@@ -88,11 +95,23 @@ def check_password_policy(password, email: str = "") -> str:
     return password
 
 
+def create_doctor_account(s: Session, doctor: Doctor, actor: Actor = SYSTEM) -> User:
+    """La cuenta del doctor, SIN correo y SIN contrasena (la establece el doctor con un enlace). Se crea junto con el doctor, en la
+    misma transaccion de quien la llama: o existen los dos, o ninguno."""
+    u = User(email=None, name=doctor.name, role="doctor", doctor_id=doctor.id, password_hash=None, active=True)
+    s.add(u)
+    s.flush()
+    audit(s, actor, "user.create", "user", u.id, {"role": "doctor", "doctorId": doctor.id})
+    return u
+
+
 class AuthService(Unit):
     def __init__(self, session_factory: sessionmaker[Session], rules: Rules | None = None,
                  clock: Callable[[], datetime] | None = None, *, idle_minutes: int = 480, max_days: int = 7,
-                 max_failures: int = 5, lock_minutes: int = 15, hash_method: str = ""):
+                 max_failures: int = 5, lock_minutes: int = 15, hash_method: str = "", doctor_app_url: str = ""):
         super().__init__(session_factory, rules, clock)
+        #: donde vive la app del doctor (termina en "/"): los enlaces de contrasena apuntan ahi. Vacio = no se pueden generar.
+        self.doctor_app_url = (doctor_app_url.strip().rstrip("/") + "/") if doctor_app_url and doctor_app_url.strip() else ""
         self.idle = timedelta(minutes=idle_minutes)
         self.max_age = timedelta(days=max_days)
         self.max_failures = max_failures
@@ -117,12 +136,28 @@ class AuthService(Unit):
     def login(self, email, password) -> tuple[UserView, str, str]:
         """-> (usuario, token de la cookie, token CSRF). Lanza `AuthError`."""
         email = email.strip().lower() if isinstance(email, str) else ""
+        return self._login(lambda s: s.scalars(select(User).where(User.email == email)).first() if email else None, password)
+
+    def login_doctor(self, code, password) -> tuple[UserView, str, str]:
+        """Como `login`, pero el doctor se identifica con su codigo de 4 digitos (sin correo). Solo entran cuentas con rol
+        `doctor`: un codigo que no existe, o de un doctor sin cuenta activa, es el mismo `credenciales_invalidas`."""
+        code = code.strip() if isinstance(code, str) else ""
+
+        def find(s: Session):
+            if not CODE_RE.fullmatch(code):
+                return None
+            return s.scalars(select(User).join(Doctor, Doctor.id == User.doctor_id)
+                             .where(Doctor.code == code, User.role == "doctor", User.active.is_(True))
+                             .order_by(User.id)).first()
+        return self._login(find, password, via="codigo")
+
+    def _login(self, find_user: Callable[[Session], User | None], password, via: str | None = None) -> tuple[UserView, str, str]:
         password = password if isinstance(password, str) else ""
 
         def work(repo, s):
             now = self._utc()
-            user = s.scalars(select(User).where(User.email == email)).first() if email else None
-            if user is None or not user.active:
+            user = find_user(s)
+            if user is None or not user.active or user.password_hash is None:
                 return ("invalid", None)
             if user.locked_until is not None:
                 if user.locked_until > now:
@@ -136,12 +171,8 @@ class AuthService(Unit):
                     return ("locked", int(self.lock.total_seconds()))
                 return ("invalid", None)
             user.failed_logins, user.locked_until, user.last_login_at = 0, None, now
-            s.execute(delete(UserSession).where(or_(UserSession.expires_at <= now,
-                                                    UserSession.last_seen_at <= now - self.idle)))
-            token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            s.add(UserSession(token_hash=_sha(token), user_id=user.id, csrf_token=csrf, created_at=now,
-                              last_seen_at=now, expires_at=now + self.max_age))
-            audit(s, Actor.user(user.id), "auth.login", "user", user.id)
+            token, csrf = self._open_session(s, user, now)
+            audit(s, Actor.user(user.id), "auth.login", "user", user.id, {"via": via} if via else None)
             return ("ok", (_view(user), token, csrf))
         kind, value = self._write(work)
         if kind == "ok":
@@ -150,6 +181,94 @@ class AuthService(Unit):
             raise AuthError("demasiados_intentos", 429, retry_after=value)
         self._burn(password)
         raise AuthError("credenciales_invalidas", 401)
+
+    def _open_session(self, s: Session, user: User, now: datetime) -> tuple[str, str]:
+        """Abre una sesion para `user` (y barre las vencidas). -> (token de la cookie, token CSRF)."""
+        s.execute(delete(UserSession).where(or_(UserSession.expires_at <= now, UserSession.last_seen_at <= now - self.idle)))
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        s.add(UserSession(token_hash=_sha(token), user_id=user.id, csrf_token=csrf, created_at=now, last_seen_at=now,
+                          expires_at=now + self.max_age))
+        return token, csrf
+
+    # ------------------------------------------------------------------ enlace para establecer la contrasena (cuentas de doctor)
+    def create_password_link(self, doctor_id, actor: Actor = SYSTEM) -> tuple[str, datetime]:
+        """El personal genera el enlace de UN solo uso con el que el doctor establece su contrasena (la primera vez, o una nueva si
+        olvido la suya). Si ese doctor aun no tiene cuenta (uno anterior a este cambio) se crea aqui. Un enlace nuevo REEMPLAZA al
+        anterior. -> (url completa, vencimiento UTC). Si la cuenta esta desactivada, 422: reactivarla es decision del administrador."""
+        if not self.doctor_app_url:
+            raise AuthError("no_configurado", 503)
+
+        def work(repo, s):
+            doc = s.get(Doctor, int(doctor_id), with_for_update=True) if str(doctor_id).isdigit() else None
+            if doc is None:
+                raise AgendaError(NO_ENCONTRADO)
+            user = s.scalars(select(User).where(User.role == "doctor", User.doctor_id == doc.id)
+                             .order_by(User.active.desc(), User.id).limit(1).with_for_update()).first()
+            if user is None:
+                user = create_doctor_account(s, doc, actor)
+            elif not user.active:
+                raise AgendaError(VALIDACION, "La cuenta de este doctor esta desactivada: un administrador debe reactivarla en Usuarios.")
+            token = secrets.token_urlsafe(24)
+            expires = self._utc() + timedelta(hours=SETUP_LINK_HOURS)
+            user.setup_token_hash, user.setup_expires_at = _sha(token), expires
+            s.flush()
+            audit(s, actor, "user.password_link", "user", user.id, {"doctorId": doc.id})   # nunca el enlace
+            return token, expires
+        token, expires = self._write(work)
+        return f"{self.doctor_app_url}#/contrasena?t={token}", expires
+
+    @staticmethod
+    def _user_for_link(s: Session, token, now: datetime, *, lock: bool = False) -> User | None:
+        """La cuenta de doctor a la que pertenece ese enlace, si sigue vigente (no vencio, no se uso, cuenta activa); si no, None. Un
+        enlace desconocido, vencido o ya usado no se distingue: es lo mismo."""
+        if not isinstance(token, str) or not 20 <= len(token) <= 100:
+            return None
+        q = select(User).where(User.setup_token_hash == _sha(token))
+        u = s.scalars(q.with_for_update() if lock else q).first()
+        if u is None or u.role != "doctor" or not u.active or u.setup_expires_at is None or u.setup_expires_at <= now:
+            return None
+        return u
+
+    def check_password_link(self, token) -> tuple[str, str, datetime]:
+        """Para la pagina del enlace: -> (codigo, nombre del doctor, vencimiento). `enlace_invalido` (404) si ya no sirve."""
+        with self._read() as repo:
+            u = self._user_for_link(repo.s, token, self._utc())
+            doc = repo.s.get(Doctor, u.doctor_id) if u is not None else None
+            if u is None or doc is None:
+                raise AuthError("enlace_invalido", 404)
+            return doc.code, doc.name, u.setup_expires_at
+
+    def use_password_link(self, token, password) -> tuple[UserView, str, str]:
+        """El doctor establece su contrasena con el enlace: se guarda, el enlace se gasta, se cierran las demas sesiones de la cuenta,
+        se quita cualquier bloqueo y entra de una vez. -> (usuario, token de la cookie, token CSRF)."""
+        check_password_policy(password)
+        pw_hash = self.hash_password(password)
+
+        def work(repo, s):
+            now = self._utc()
+            u = self._user_for_link(s, token, now, lock=True)
+            if u is None:
+                return None
+            u.password_hash, u.setup_token_hash, u.setup_expires_at = pw_hash, None, None
+            u.failed_logins, u.locked_until, u.last_login_at = 0, None, now
+            s.execute(delete(UserSession).where(UserSession.user_id == u.id))            # la contrasena cambio: nada anterior sirve
+            cookie, csrf = self._open_session(s, u, now)
+            audit(s, Actor.user(u.id), "auth.password_set", "user", u.id, {"via": "enlace"})
+            return _view(u), cookie, csrf
+        out = self._write(work)
+        if out is None:
+            raise AuthError("enlace_invalido", 404)
+        return out
+
+    def login_doctors(self) -> list[tuple[str, str]]:
+        """`(codigo, nombre)` de cada doctor con una cuenta ACTIVA y con contrasena, por codigo: la lista que el doctor ve al entrar. Es
+        exactamente quien podria iniciar sesion con su codigo (un doctor sin cuenta, con la cuenta dada de baja o que aun no establece su
+        contrasena, no aparece). Solo codigo y nombre: nada del correo ni de la cuenta."""
+        with self._read() as repo:
+            rows = repo.s.execute(select(Doctor.code, Doctor.name).join(User, User.doctor_id == Doctor.id)
+                                  .where(User.role == "doctor", User.active.is_(True), User.password_hash.is_not(None))
+                                  .distinct().order_by(Doctor.code))
+            return [(code, name) for code, name in rows]
 
     def resolve(self, token) -> Principal | None:
         """Sesion vigente de esa cookie, o None. Una sesion vencida se borra."""
@@ -282,7 +401,7 @@ class AuthService(Unit):
             u = s.get(User, int(user_id), with_for_update=True) if str(user_id).isdigit() else None
             if u is None:
                 raise AgendaError(NO_ENCONTRADO)
-            if pw_hash is not None and patch["password"].strip().lower() == u.email:
+            if pw_hash is not None and u.email and patch["password"].strip().lower() == u.email:
                 raise AgendaError(VALIDACION, "la contrasena no puede ser el correo")
             role = patch.get("role", u.role)
             doctor_id = patch.get("doctor_id", u.doctor_id) if role == "doctor" else patch.get("doctor_id")

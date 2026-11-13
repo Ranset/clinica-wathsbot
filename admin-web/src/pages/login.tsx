@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { FlaskConical } from "lucide-react";
 import { useAuth } from "../auth";
+import { BrandMark, useBrand } from "../brand";
 import { messageFor } from "../lib/errors";
 import { BusyButton, Field, FormError, Notice, TextInput } from "../ui/controls";
 
@@ -9,6 +10,7 @@ export type DemoAccount = { label: string; email: string; password: string };
 /** Pantalla de entrada. En modo simulado ofrece cuentas de ejemplo; en producción no hay nada de eso. */
 export function LoginPage({ notice, demoAccounts }: { notice?: string; demoAccounts?: DemoAccount[] }) {
   const { login } = useAuth();
+  const { name } = useBrand();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -31,12 +33,8 @@ export function LoginPage({ notice, demoAccounts }: { notice?: string; demoAccou
     <div className="flex min-h-dvh items-center justify-center bg-subtle px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <span aria-hidden className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand text-brand-fg">
-            <svg viewBox="0 0 32 32" className="h-7 w-7" fill="currentColor">
-              <path d="M14 7h4v7h7v4h-7v7h-4v-7H7v-4h7z" />
-            </svg>
-          </span>
-          <h1 className="text-xl font-bold tracking-tight">Clínica CUBAMEX</h1>
+          <BrandMark className="h-36 w-36 rounded-2xl" />
+          <h1 className="text-xl font-bold tracking-tight">{name}</h1>
           <p className="text-sm text-text-3">Administración y personal</p>
         </div>
 

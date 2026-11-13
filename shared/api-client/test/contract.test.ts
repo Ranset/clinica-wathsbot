@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { OPERATIONS, createApiClient } from "../src";
 import { DEMO_ACCOUNTS, createMockApi } from "../src/mock";
 import { contractFetch, operations, spec } from "./spec";
+import { png } from "./images";
 
 /**
  * El cliente y el simulador contra `docs/openapi.yaml`. No se edita el contrato:
@@ -121,6 +122,16 @@ describe("un recorrido completo por el cliente cumple el contrato en cada interc
     await api.doctors.update(doc.id, { active: false });
     const hours = await api.clinicHours.get();
     await api.clinicHours.set(hours);
+
+    // marca de la clinica: nombre y logotipo (cada intercambio se valida contra el contrato, incluida la imagen publica)
+    await api.branding.setName("Clínica de Prueba");
+    const marca = await api.branding.uploadLogo(png(128), "image/png");
+    expect(marca).toMatchObject({ name: "Clínica de Prueba", logoUrl: expect.stringContaining("/api/branding/logo?v=") });
+    expect((await api.branding.get()).logoUrl).toBe(marca.logoUrl);
+    expect((await api.branding.logo(marca.logoUrl!))?.contentType).toBe("image/png");
+    await expect(api.branding.uploadLogo(png(800, 600), "image/png")).rejects.toMatchObject({ status: 422, code: "validacion" });
+    expect((await api.branding.removeLogo()).logoUrl).toBeNull();
+    expect(await api.branding.logo("/api/branding/logo")).toBeNull();
 
     await expect(api.users.create({ email: "nuevo@clinica.test", name: "Repetido", role: "staff", password: "contrasena-larga-1" })).rejects.toMatchObject({ status: 422 });
     await expect(api.users.update(users[0]!.id, { active: false })).rejects.toMatchObject({ status: 422 }); // a si mismo

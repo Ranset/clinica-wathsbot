@@ -270,11 +270,102 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Inicia sesion (personal, doctor, administrador).
+         * Inicia sesion con correo y contrasena (personal y administrador; la app del doctor usa `doctorLogin`).
          * @description Cookie `clinica_session` (HttpOnly, SameSite=Lax, Secure en produccion); caduca tras 8 h sin actividad o 7 dias
          *     en total. 5 contrasenas erroneas seguidas bloquean al usuario 15 min (`demasiados_intentos`, 429).
          */
         post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/doctors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Los doctores que pueden entrar con su codigo (la lista de la pantalla de entrada de la app del doctor).
+         * @description PUBLICO (aun no hay sesion). Devuelve `{code, name}` de cada doctor que tiene una cuenta ACTIVA y con contrasena, ordenados
+         *     por codigo: exactamente quienes pueden iniciar sesion con `doctorLogin`. Un doctor sin cuenta, con la cuenta dada de baja o
+         *     que todavia no establece su contrasena (`passwordSet: false`), no aparece. Solo codigo y nombre (los mismos que ya conoce cualquier paciente): nada del correo ni de la cuenta. Sin cache
+         *     (`Cache-Control: no-store`) para que un doctor nuevo o dado de baja se note de inmediato.
+         */
+        get: operations["listLoginDoctors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/doctor-login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inicia sesion un doctor con su codigo de 4 digitos y su contrasena (sin correo).
+         * @description Es la entrada de la app del doctor: el doctor elige su codigo/nombre en la lista de `listLoginDoctors` y escribe su
+         *     contrasena. Solo entran cuentas con rol `doctor`; un codigo que no existe, de un doctor sin cuenta activa o una
+         *     contrasena equivocada son el mismo `credenciales_invalidas` (no se distingue cual fallo). Misma cookie de sesion, mismo
+         *     bloqueo (5 contrasenas erroneas seguidas = 15 min, `demasiados_intentos`) y mismo `Origin` propio que `login`. El
+         *     codigo NO es secreto (la lista es publica): lo que protege la cuenta es la contrasena.
+         */
+        post: operations["doctorLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password-link/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * De quien es un enlace para establecer la contrasena y hasta cuando vale (pagina del enlace).
+         * @description PUBLICO. La app del doctor lo llama al abrir el enlace para decirle "Hola Dr. X, tu codigo es 1001" antes de pedirle la
+         *     contrasena. Un enlace desconocido, vencido o ya usado es el MISMO 404 `enlace_invalido` (no se distingue cual). El enlace
+         *     viaja en el cuerpo, no en la URL. No cambia nada.
+         */
+        post: operations["checkPasswordLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password-link/use": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * El doctor establece su contrasena con el enlace y entra de una vez.
+         * @description PUBLICO, de un solo uso: guarda la contrasena (de 10 a 128 caracteres), gasta el enlace, cierra las demas sesiones de esa
+         *     cuenta, quita cualquier bloqueo por intentos y abre la sesion (misma cookie que `login`). Sirve tanto la primera vez como
+         *     para poner una contrasena nueva si el doctor olvido la suya. Solo `Origin` propio, sin CSRF (aun no hay sesion).
+         */
+        post: operations["usePasswordLink"];
         delete?: never;
         options?: never;
         head?: never;
@@ -435,8 +526,9 @@ export interface paths {
         post?: never;
         /**
          * Elimina definitivamente un doctor que nunca tuvo citas (solo administrador).
-         * @description Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y no hay una
-         *     cuenta de usuario ligada a el (`doctor_con_usuario`); ambos son 409. Sus horarios, ausencias y solicitudes de
+         * @description Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y su cuenta de usuario
+         *     nunca se uso (`doctor_con_usuario`); ambos son 409. La cuenta que se crea sola al dar de alta (sin contrasena) se
+         *     elimina con el; una que ya tiene contrasena, o que alguna vez entro, lo impide. Sus horarios, ausencias y solicitudes de
          *     cambio de horario se eliminan con el. Para quitarlo de la agenda sin perder historial se usa `PATCH`
          *     con `active: false` (administrador y personal).
          */
@@ -445,6 +537,32 @@ export interface paths {
         head?: never;
         /** Edita nombre, especialidad, alias o desactiva al doctor (no se borra). Administrador y personal de la clinica. */
         patch: operations["updateDoctor"];
+        trace?: never;
+    };
+    "/api/doctors/{doctorId}/password-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doctorId: components["parameters"]["DoctorId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Genera el enlace con el que un doctor establece su contrasena (la primera vez, o una nueva si la olvido).
+         * @description La cuenta de un doctor se crea SOLA al darlo de alta, sin correo y sin contrasena; este enlace es como el doctor la
+         *     establece. Sirve igual para recuperarla: se genera otro y se le manda. Es de UN solo uso, vence en 72 horas y el enlace
+         *     nuevo REEMPLAZA al anterior. Si el doctor aun no tiene cuenta (uno anterior a este cambio) se crea aqui. `url` apunta a la
+         *     app del doctor (`DOCTOR_APP_URL` del servidor; sin ella, 503 `no_configurado`). Con la cuenta desactivada, 422: reactivarla
+         *     es decision del administrador. El enlace no se guarda en claro ni queda en la bitacora (solo quien lo genero y para que doctor).
+         */
+        post: operations["createPasswordLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/doctors/{doctorId}/weekly-hours": {
@@ -622,6 +740,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Nombre y logotipo de la clinica (PUBLICO: lo muestra hasta el login).
+         * @description No son datos privados: es la marca de la clinica. `logoUrl` es la direccion de la imagen (con `?v=` = su huella, asi al
+         *     cambiar el logotipo cambia la direccion) o `null` si no hay logotipo (se usa el icono por defecto). Sin logotipo
+         *     propio el nombre es «Clínica CUBAMEX».
+         */
+        get: operations["getBranding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * La imagen del logotipo (PUBLICO).
+         * @description Los bytes de la imagen tal como se subio (PNG, JPG o WebP, cuadrada). Con `ETag` y `If-None-Match` (304) y cache de un dia:
+         *     la direccion lleva `?v=huella`, asi que un logotipo nuevo no se confunde con el anterior. 404 si no hay logotipo.
+         */
+        get: operations["getBrandingLogo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Cambia el nombre de la clinica (solo administrador).
+         * @description Texto de 1 a 80 caracteres (se normalizan los espacios). Queda en la bitacora.
+         */
+        put: operations["setBranding"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Sube (o reemplaza) el logotipo de la clinica (solo administrador).
+         * @description El cuerpo son los BYTES de la imagen (`Content-Type: image/png`, `image/jpeg` o `image/webp`). Se valida por sus bytes, no por
+         *     el tipo que diga el cliente: PNG, JPG o WebP (SVG no), **cuadrada (1:1)**, de 64 a 2048 px por lado y de hasta 1 MB. Si no
+         *     cumple, 422 `validacion` con el motivo en `detail` (por ejemplo «La imagen debe ser cuadrada (1:1); esta mide 800 × 600 px.»).
+         *     En la bitacora quedan las medidas y una huella, nunca la imagen.
+         */
+        put: operations["uploadBrandingLogo"];
+        post?: never;
+        /** Quita el logotipo propio (vuelve el icono por defecto). Solo administrador. */
+        delete: operations["deleteBrandingLogo"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/attention": {
         parameters: {
             query?: never;
@@ -671,7 +876,11 @@ export interface paths {
         /** Usuarios del sistema. */
         get: operations["listUsers"];
         put?: never;
-        /** Crea un usuario (un `doctor` debe ligarse a un `doctorId`). */
+        /**
+         * Crea un usuario de personal o administrador (la cuenta de un doctor nace con el doctor).
+         * @description Solo roles `staff` y `admin`, con correo y contrasena. Un `doctor` se rechaza (422 `validacion`): su cuenta se crea sola al dar
+         *     de alta al doctor, sin correo y sin contrasena, y su contrasena se establece con el enlace de `createPasswordLink`.
+         */
         post: operations["createUser"];
         delete?: never;
         options?: never;
@@ -894,11 +1103,12 @@ export interface components {
          *     `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
          *     (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
          *     `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada) y
-         *     `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya).
+         *     `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya) y `enlace_invalido`
+         *     (404; el enlace para establecer la contrasena no existe, ya vencio o ya se uso).
          *     Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
          * @enum {string}
          */
-        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno" | "doctor_con_citas" | "doctor_con_usuario" | "evento_con_cita";
+        ErrorCode: "horario_ocupado" | "horario_pasado_o_muy_cercano" | "fuera_de_rango" | "fuera_de_horario" | "falta_nombre_completo" | "especialidad_no_encontrada" | "cita_no_encontrada" | "doctor_no_disponible" | "transicion_invalida" | "rango_invalido" | "validacion" | "no_autenticado" | "sin_permiso" | "no_encontrado" | "credenciales_invalidas" | "demasiados_intentos" | "firma_invalida" | "no_configurado" | "error_interno" | "doctor_con_citas" | "doctor_con_usuario" | "evento_con_cita" | "enlace_invalido";
         /** @description Puede traer campos extra segun el error (`especialidades`, `horarios`, `maximo_agendable`, `nota`). */
         ErrorBody: {
             error: components["schemas"]["ErrorCode"];
@@ -1109,6 +1319,12 @@ export interface components {
         };
         Doctor: {
             id: string;
+            /**
+             * @description Codigo de acceso de 4 digitos: el «usuario» con el que el doctor entra a su app (`doctorLogin`). Lo asigna el
+             *     servidor al dar de alta al doctor (desde 1001, el menor libre) y no se edita. No es un secreto.
+             * @example 1001
+             */
+            code: string;
             /** @example Dr. Cervantes Pelaez */
             name: string;
             /** @example Proctologia */
@@ -1221,20 +1437,28 @@ export interface components {
         Role: "admin" | "staff" | "doctor";
         User: {
             id: string;
-            /** Format: email */
-            email: string;
+            /**
+             * Format: email
+             * @description `null` en la cuenta de un doctor: entra con su codigo, no con correo.
+             */
+            email: string | null;
             name: string;
             role: components["schemas"]["Role"];
             /** @description Solo para `role: doctor`. */
             doctorId: string | null;
             active: boolean;
+            /** @description `false` = la cuenta aun no tiene contrasena (un doctor recien dado de alta): nadie entra a ella hasta que se establezca con el enlace. */
+            passwordSet: boolean;
         };
         UserCreate: {
             /** Format: email */
             email: string;
             name: string;
-            role: components["schemas"]["Role"];
-            doctorId?: string;
+            /**
+             * @description Solo personal y administrador. La cuenta de un doctor se crea sola al darlo de alta.
+             * @enum {string}
+             */
+            role: "admin" | "staff";
             /** Format: password */
             password: string;
         };
@@ -1249,6 +1473,36 @@ export interface components {
         SessionInfo: {
             user: components["schemas"]["User"];
             csrfToken: string;
+        };
+        PasswordLink: {
+            /** @description El enlace completo para el doctor, p. ej. `https://clinica.example.com/doctor/#/contrasena?t=...`. De un solo uso. */
+            url: string;
+            /** Format: date-time */
+            expiresAtUtc: string;
+        };
+        PasswordLinkInfo: {
+            /** @example 1001 */
+            doctorCode: string;
+            /** @example Dr. Cervantes Pelaez */
+            doctorName: string;
+            /** Format: date-time */
+            expiresAtUtc: string;
+        };
+        /** @description Un doctor que puede entrar con su codigo (publico, solo codigo y nombre). */
+        LoginDoctor: {
+            /** @example 1001 */
+            code: string;
+            /** @example Dr. Cervantes Pelaez */
+            name: string;
+        };
+        LoginDoctorList: {
+            items: components["schemas"]["LoginDoctor"][];
+        };
+        /** @description La marca de la clinica (publica). */
+        Branding: {
+            name: string;
+            /** @description Direccion de la imagen (`/api/branding/logo?v=huella`) o `null` si no hay logotipo propio. */
+            logoUrl: string | null;
         };
         AttentionList: {
             items: components["schemas"]["AttentionItem"][];
@@ -1857,6 +2111,149 @@ export interface operations {
             };
         };
     };
+    listLoginDoctors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La lista (puede estar vacia). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginDoctorList"];
+                };
+            };
+        };
+    };
+    doctorLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @example 1001 */
+                    doctorCode: string;
+                    /** Format: password */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Sesion creada (cookie `clinica_session`). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description `credenciales_invalidas`. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["RuleError"];
+            /** @description `demasiados_intentos`. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    checkPasswordLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description El valor `t` del enlace (lo que va despues de `?t=`). */
+                    token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description El enlace vale. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordLinkInfo"];
+                };
+            };
+            /** @description `enlace_invalido`: no existe, ya vencio o ya se uso. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["RuleError"];
+        };
+    };
+    usePasswordLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                    /** Format: password */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Contrasena guardada y sesion creada (cookie `clinica_session`). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description `enlace_invalido`: no existe, ya vencio o ya se uso. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["RuleError"];
+        };
+    };
     logout: {
         parameters: {
             query?: never;
@@ -2196,6 +2593,41 @@ export interface operations {
             422: components["responses"]["RuleError"];
         };
     };
+    createPasswordLink: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                doctorId: components["parameters"]["DoctorId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description El enlace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordLink"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["RuleError"];
+            /** @description `no_configurado`: el servidor no sabe donde vive la app del doctor (`DOCTOR_APP_URL`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     setDoctorWeeklyHours: {
         parameters: {
             query?: never;
@@ -2508,6 +2940,142 @@ export interface operations {
             401: components["responses"]["Unauthenticated"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["RuleError"];
+        };
+    };
+    getBranding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La marca vigente. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branding"];
+                };
+            };
+        };
+    };
+    getBrandingLogo: {
+        parameters: {
+            query?: {
+                /** @description La huella que viene en `logoUrl` (solo para el cache). */
+                v?: string;
+            };
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La imagen. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/jpeg": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description Sin cambios. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    setBranding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description La marca vigente. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branding"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
+        };
+    };
+    uploadBrandingLogo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/png": string;
+                "image/jpeg": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description La marca vigente, ya con el logotipo nuevo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branding"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
+        };
+    };
+    deleteBrandingLogo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description La marca vigente, sin logotipo. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Branding"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
         };
     };
     listAttention: {

@@ -12,6 +12,7 @@ import { AbsencesTab } from "./absences-tab";
 import { AffectedList } from "./affected-list";
 import { ColorField } from "./color-field";
 import { HoursEditor } from "./hours-editor";
+import { PasswordLinkSection } from "./password-link-section";
 
 type Tab = "horario" | "ausencias" | "datos";
 
@@ -121,7 +122,7 @@ export function DoctorDataForm({
     try {
       const input = { name: name.trim(), specialty: specialty.trim(), aliases: splitAliases(aliases), active, color };
       const saved = doctor ? await api.doctors.update(doctor.id, input) : await api.doctors.create(input);
-      toast.show(doctor ? "Datos del doctor guardados." : `${saved.name} se dio de alta.`);
+      toast.show(doctor ? "Datos del doctor guardados." : `${saved.name} se dio de alta. Su cuenta ya existe: genera su enlace de contraseña en «Datos».`);
       onSaved(saved);
     } catch (err) {
       setError(messageFor(err));
@@ -136,6 +137,22 @@ export function DoctorDataForm({
       <Field label="Nombre">
         <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Dr. Nombre Apellido" />
       </Field>
+      {doctor ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-[13px] font-semibold text-text-2">Código de acceso</span>
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <output aria-label="Código de acceso del doctor" className="rounded-md bg-secondary px-2.5 py-1 font-mono text-sm font-bold tabular-nums">
+              {doctor.code}
+            </output>
+            <span className="text-xs text-text-3">Es el «usuario» con el que el doctor entra a su app: lo elige en una lista, junto a su nombre. Lo asigna el sistema y no cambia.</span>
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs text-text-3">
+          Al darlo de alta, el sistema le asigna un código de 4 dígitos y le crea su cuenta (sin contraseña). Luego, en «Datos», generas el enlace para que el doctor cree su
+          contraseña.
+        </p>
+      )}
       <Field label="Especialidad">
         <TextInput value={specialty} onChange={(e) => setSpecialty(e.target.value)} />
       </Field>
@@ -190,8 +207,8 @@ function DeleteDoctor({ doctor, onDeleted }: { doctor: Doctor; onDeleted: () => 
         Eliminar doctor
       </h3>
       <p className="mt-1 text-sm text-text-2">
-        Solo sirve si se dio de alta por error: se borra para siempre, con su horario y sus ausencias. Si ya tuvo citas o tiene una cuenta de usuario no se
-        puede; en ese caso desmarca «Activo» arriba para darlo de baja.
+        Solo sirve si se dio de alta por error: se borra para siempre, con su horario, sus ausencias y su cuenta sin usar. Si ya tuvo citas o su cuenta ya tiene
+        contraseña no se puede; en ese caso desmarca «Activo» arriba para darlo de baja.
       </p>
       {!asking ? (
         <Button variant="outline" className="mt-3" onClick={() => setAsking(true)}>
@@ -265,6 +282,7 @@ export function DoctorDialog({
         {tab === "datos" && (
           <div className="flex flex-col gap-6">
             <DoctorDataForm doctor={doctor} others={doctors} onSaved={onChanged} />
+            <PasswordLinkSection key={doctor.id} doctor={doctor} />
             {permissions.deleteDoctors && <DeleteDoctor doctor={doctor} onDeleted={() => { onChanged(); onClose(); }} />}
           </div>
         )}

@@ -17,7 +17,7 @@ from app.settings import get_bot_settings, set_bot_active
 
 TABLAS = {"users", "doctors", "rooms", "clinic_hours", "doctor_hours", "doctor_absences", "appointments",
           "appointment_blocks", "settings", "webhook_events", "audit_log", "attention_cases", "sessions", "schedule_change_requests", "push_subscriptions",
-          "doctor_personal_events"}
+          "doctor_personal_events", "clinic_logo"}
 
 
 def diff_with_models(url):
@@ -105,6 +105,124 @@ def test_migracion_0005_crea_la_tabla_de_eventos_personales_sin_tocar_los_datos_
     assert "doctor_personal_events" not in inspect(engine).get_table_names()
     with engine.connect() as c:
         assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+
+
+def test_migracion_0006_crea_la_tabla_del_logotipo_sin_tocar_los_datos_y_se_deshace(tmp_path):
+    """Una base en 0005 con un doctor sube a 0006: aparece `clinic_logo` (vacia, una fila a lo mucho) y el doctor sigue igual."""
+    from sqlalchemy import text
+    url = "sqlite:///" + (tmp_path / "vieja.db").as_posix()
+    upgrade(url, "0005")
+    engine = create_engine(url)
+    assert "clinic_logo" not in inspect(engine).get_table_names()
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO doctors (name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                       "VALUES ('Dr. Existente', 'Proctologia', '[]', 1, 1, '2026-11-10 10:00:00')"))
+    engine.dispose()
+
+    upgrade(url)
+    engine = create_engine(url)
+    cols = {c["name"]: c for c in inspect(engine).get_columns("clinic_logo")}
+    assert set(cols) == {"id", "content_type", "data", "width", "height", "sha256", "updated_at", "updated_by_id"}
+    assert {n for n, c in cols.items() if c["nullable"]} == {"updated_by_id"}
+    with engine.begin() as c:                                                 # se puede guardar una imagen binaria y leerla igual
+        c.execute(text("INSERT INTO clinic_logo (id, content_type, data, width, height, sha256, updated_at) "
+                       "VALUES (1, 'image/png', :d, 64, 64, 'abc', '2026-11-12 10:00:00')"), {"d": bytes(range(256)) * 8})
+    with engine.connect() as c:
+        assert bytes(c.execute(text("SELECT data FROM clinic_logo")).scalar_one()) == bytes(range(256)) * 8
+        assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+    assert diff_with_models(url) == []
+
+    downgrade(url, "0005")
+    engine = create_engine(url)
+    assert "clinic_logo" not in inspect(engine).get_table_names()
+    with engine.connect() as c:
+        assert c.execute(text("SELECT name FROM doctors")).scalar_one() == "Dr. Existente"
+    engine.dispose()
+
+
+def test_migracion_0007_da_codigo_a_los_doctores_existentes_en_orden_de_id_y_se_deshace(tmp_path):
+    """Una base en 0006 con tres doctores sube a 0007: cada uno recibe 1001, 1002, 1003 por su id, el codigo queda unico y obligatorio."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+    url = "sqlite:///" + (tmp_path / "vieja.db").as_posix()
+    upgrade(url, "0006")
+    engine = create_engine(url)
+    assert "code" not in {c["name"] for c in inspect(engine).get_columns("doctors")}
+    with engine.begin() as c:
+        for name in ("Dr. Uno", "Dra. Dos", "Dr. Tres"):
+            c.execute(text("INSERT INTO doctors (name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                           "VALUES (:n, 'X', '[]', 1, 1, '2026-11-10 10:00:00')"), {"n": name})
+    engine.dispose()
+
+    upgrade(url)
+    engine = create_engine(url)
+    cols = {c["name"]: c for c in inspect(engine).get_columns("doctors")}
+    assert cols["code"]["nullable"] is False
+    with engine.connect() as c:
+        assert c.execute(text("SELECT name, code FROM doctors ORDER BY id")).all() == [("Dr. Uno", "1001"), ("Dra. Dos", "1002"), ("Dr. Tres", "1003")]
+    with pytest.raises(IntegrityError), engine.begin() as c:                                  # y el codigo es unico
+        c.execute(text("INSERT INTO doctors (code, name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                       "VALUES ('1001', 'Dr. Repetido', 'X', '[]', 1, 1, '2026-11-10 10:00:00')"))
+    engine.dispose()
+    assert diff_with_models(url) == []
+
+    downgrade(url, "0006")
+    engine = create_engine(url)
+    assert "code" not in {c["name"] for c in inspect(engine).get_columns("doctors")}
+    with engine.connect() as c:
+        assert c.execute(text("SELECT name FROM doctors ORDER BY id")).scalars().all() == ["Dr. Uno", "Dra. Dos", "Dr. Tres"]
+    engine.dispose()
+
+
+def test_migracion_0008_deja_correo_y_contrasena_opcionales_sin_perder_datos_ni_restricciones_y_se_deshace(tmp_path):
+    """Una base en 0007 con una cuenta de doctor sube a 0008: la cuenta sigue igual, caben cuentas SIN correo ni contrasena (varias),
+    el CHECK de rol/doctor sigue vigente (SQLite reescribe la tabla) y se agregan las columnas del enlace. Al bajar, esas cuentas reciben
+    valores que no sirven para entrar."""
+    import sqlite3
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+    path = tmp_path / "vieja.db"
+    url = "sqlite:///" + path.as_posix()
+    upgrade(url, "0007")
+    engine = create_engine(url)
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO doctors (code, name, specialty, aliases, active, uses_clinic_hours, created_at) "
+                       "VALUES ('1001', 'Dr. Uno', 'X', '[]', 1, 1, '2026-11-10 10:00:00')"))
+        c.execute(text("INSERT INTO users (email, name, role, doctor_id, password_hash, active, failed_logins, created_at, updated_at) "
+                       "VALUES ('uno@clinica.test', 'Dr. Uno', 'doctor', 1, 'hash-viejo', 1, 0, '2026-11-10 10:00:00', '2026-11-10 10:00:00')"))
+    engine.dispose()
+
+    upgrade(url)
+    engine = create_engine(url)
+    cols = {c["name"]: c for c in inspect(engine).get_columns("users")}
+    assert cols["email"]["nullable"] and cols["password_hash"]["nullable"] and {"setup_token_hash", "setup_expires_at"} <= set(cols)
+    with engine.begin() as c:
+        assert c.execute(text("SELECT email, password_hash FROM users")).all() == [("uno@clinica.test", "hash-viejo")]      # intacta
+        for nombre in ("Dr. Dos", "Dr. Tres"):                                                                               # sin correo ni contrasena, varias
+            c.execute(text("INSERT INTO users (email, name, role, doctor_id, password_hash, active, failed_logins, created_at, updated_at) "
+                           "VALUES (NULL, :n, 'doctor', 1, NULL, 1, 0, '2026-11-10 10:00:00', '2026-11-10 10:00:00')"), {"n": nombre})
+    with pytest.raises(IntegrityError), engine.begin() as c:                                                                 # el CHECK sigue
+        c.execute(text("INSERT INTO users (email, name, role, doctor_id, password_hash, active, failed_logins, created_at, updated_at) "
+                       "VALUES ('x@clinica.test', 'Mal', 'doctor', NULL, 'h', 1, 0, '2026-11-10 10:00:00', '2026-11-10 10:00:00')"))
+    with pytest.raises(IntegrityError), engine.begin() as c:                                                                 # el correo sigue siendo unico
+        c.execute(text("INSERT INTO users (email, name, role, doctor_id, password_hash, active, failed_logins, created_at, updated_at) "
+                       "VALUES ('uno@clinica.test', 'Repetido', 'staff', NULL, 'h', 1, 0, '2026-11-10 10:00:00', '2026-11-10 10:00:00')"))
+    engine.dispose()
+    assert diff_with_models(url) == []
+    con = sqlite3.connect(path)
+    sql = con.execute("select sql from sqlite_master where name = 'users'").fetchone()[0]
+    con.close()
+    assert sql.count("CHECK") == 2                                                              # ni se pierden ni se duplican al reescribir
+
+    downgrade(url, "0007")
+    engine = create_engine(url)
+    with engine.connect() as c:
+        rows = c.execute(text("SELECT email, password_hash FROM users ORDER BY id")).all()
+    assert rows[0] == ("uno@clinica.test", "hash-viejo")
+    assert all(r[0].endswith("@invalido.invalid") and r[1] == "!" for r in rows[1:])
+    assert not inspect(engine).get_columns("users")[1]["nullable"]
     engine.dispose()
 
 

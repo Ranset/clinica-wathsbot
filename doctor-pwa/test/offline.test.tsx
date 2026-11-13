@@ -82,7 +82,7 @@ describe("la app abre sin conexión (solo lectura con lo último guardado)", () 
   it("la sesión recordada de alguien que NO es doctor no abre nada sin conexión", async () => {
     const server = makeServer();
     const staff = server.mock.db.users.find((u) => u.role === "staff")!;
-    writeStoredSession(safeLocalStorage(), { user: { id: staff.id, email: staff.email, name: staff.name, role: "staff", doctorId: null, active: true }, savedAt: new Date().toISOString() });
+    writeStoredSession(safeLocalStorage(), { user: { id: staff.id, email: staff.email, name: staff.name, role: "staff", doctorId: null, active: true, passwordSet: true }, savedAt: new Date().toISOString() });
     server.mock.controls.setOffline(true);
     await mountApp({ server, as: null });
     expect(await screen.findByText("No se pudo conectar")).toBeInTheDocument();

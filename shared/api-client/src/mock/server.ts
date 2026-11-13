@@ -1,4 +1,5 @@
 import { todayInTz } from "@clinica/calendar/src/lib/slots";
+import { readBytes } from "../image";
 import type { Booking } from "../types";
 import { buildRoutes } from "./handlers";
 import { HttpError, forbidden, invalid, matchRoute, unauthorized, type Result, type Route } from "./http";
@@ -85,7 +86,7 @@ export function createMockApi(options: MockApiOptions = {}) {
     });
   }
 
-  async function dispatch(method: string, url: URL, headers: Headers, bodyText: string): Promise<Result> {
+  async function dispatch(method: string, url: URL, headers: Headers, bodyText: string, rawBody: Uint8Array | null): Promise<Result> {
     const match = matchRoute(routes, method, url.pathname);
     if (!match) throw new HttpError(404, "no_encontrado", `El simulador no implementa ${method} ${url.pathname}.`);
     const { route, params } = match;
@@ -111,12 +112,16 @@ export function createMockApi(options: MockApiOptions = {}) {
       }
     }
 
-    return route.handler({ params, query: url.searchParams, body, headers, user: user as StoredUser, sessionId, now: clock() });
+    return route.handler({ params, query: url.searchParams, body, rawBody, headers, user: user as StoredUser, sessionId, now: clock() });
   }
 
   function toResponse(r: Result): Response {
     const headers = new Headers(r.headers);
     if (r.status === 204 || r.status === 304) return new Response(null, { status: r.status, headers });
+    if (r.binary) {
+      headers.set("Content-Type", r.binary.contentType);
+      return new Response(r.binary.bytes as BodyInit, { status: r.status, headers });
+    }
     headers.set("Content-Type", "application/json; charset=utf-8");
     return new Response(JSON.stringify(r.body ?? null), { status: r.status, headers });
   }
@@ -129,6 +134,11 @@ export function createMockApi(options: MockApiOptions = {}) {
     const headers = new Headers(init.headers ?? req?.headers);
     const signal = init.signal ?? req?.signal ?? null;
     const bodyText = typeof init.body === "string" ? init.body : "";
+    // una imagen subida llega como bytes (no es JSON)
+    let rawBody: Uint8Array | null = null;
+    if (init.body instanceof Uint8Array) rawBody = init.body;
+    else if (init.body instanceof ArrayBuffer) rawBody = new Uint8Array(init.body);
+    else if (typeof Blob !== "undefined" && init.body instanceof Blob) rawBody = await readBytes(init.body);
 
     requests++;
     await wait(latencyMs, signal);
@@ -139,7 +149,7 @@ export function createMockApi(options: MockApiOptions = {}) {
     }
 
     try {
-      const result = await dispatch(method, url, headers, bodyText);
+      const result = await dispatch(method, url, headers, bodyText, rawBody);
       if (result.setSession !== undefined) {
         if (result.setSession === null) {
           if (sessionId) db.sessions.delete(sessionId);

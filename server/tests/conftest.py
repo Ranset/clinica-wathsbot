@@ -148,7 +148,8 @@ def make_app(db_url):
     def _make(clock=None, **extra):
         app = create_app({"DATABASE_URL": db_url, "TESTING": True, "POOL_SIZE": pool,
                           "BOT_TOKEN": TEST_BOT_TOKEN, "ZERNIO_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET,
-                          "PASSWORD_HASH_METHOD": "pbkdf2:sha256:1000", "AUTH_COOKIE_SECURE": False, **extra},
+                          "PASSWORD_HASH_METHOD": "pbkdf2:sha256:1000", "AUTH_COOKIE_SECURE": False,
+                          "DOCTOR_APP_URL": "https://clinica.test/doctor/", **extra},
                          clock=clock)
         apps.append(app)
         return app

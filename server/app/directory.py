@@ -21,8 +21,10 @@ from .agenda.errors import (DOCTOR_CON_CITAS, DOCTOR_CON_USUARIO, NO_ENCONTRADO,
 from .agenda.repo import Repo
 from .agenda.rules import Rules
 from .agenda.uow import Unit
+from .auth import create_doctor_account
 from .colors import HEX, is_readable_on_white
 from .db import is_unique_violation, to_db
+from .doctor_codes import next_code
 from .models import (ATTENTION_STATUSES, REQUEST_STATUSES, Appointment, AppointmentBlock, AttentionCase, Doctor,
                      DoctorAbsence, PersonalEvent, PushSubscription, Room, ScheduleChangeRequest, User)
 
@@ -39,6 +41,8 @@ class DoctorView:
     weekly: dict
     uses_clinic_hours: bool
     color: str | None = None
+    #: codigo de acceso de 4 digitos (ver `app/doctor_codes.py`)
+    code: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,7 +117,7 @@ class Directory(Unit):
     @staticmethod
     def _doctor_view(repo: Repo, doc: Doctor, clinic) -> DoctorView:
         return DoctorView(doc.id, doc.name, doc.specialty, list(doc.aliases or []), bool(doc.active),
-                          repo.doctor_schedule(doc, clinic).to_weekly(), bool(doc.uses_clinic_hours), doc.color)
+                          repo.doctor_schedule(doc, clinic).to_weekly(), bool(doc.uses_clinic_hours), doc.color, doc.code)
 
     def doctors(self, only_id: int | None = None) -> list[DoctorView]:
         """Todos los doctores (activos o no) con su horario efectivo; `only_id` limita a uno."""
@@ -136,12 +140,24 @@ class Directory(Unit):
         color = _color(data.get("color"))
 
         def work(repo, s):
-            doc = Doctor(name=name, specialty=specialty, aliases=aliases, active=active, color=color, uses_clinic_hours=True)
+            # El nombre se revisa aqui (con la misma comparacion de la base) para que un choque de UNIQUE al insertar solo pueda ser
+            # el del codigo: dos altas simultaneas calcularon el mismo codigo libre, y basta repetir.
+            if s.scalar(select(Doctor.id).where(Doctor.name == name)) is not None:
+                raise _bad("ya existe un doctor con ese nombre")
+            code = next_code(s.scalars(select(Doctor.code)))
+            doc = Doctor(code=code, name=name, specialty=specialty, aliases=aliases, active=active, color=color, uses_clinic_hours=True)
             s.add(doc)
             s.flush()
-            audit(s, actor, "doctor.create", "doctor", doc.id)
+            audit(s, actor, "doctor.create", "doctor", doc.id, {"code": code})
+            create_doctor_account(s, doc, actor)          # su cuenta: sin correo y sin contrasena (la establece con un enlace)
             return self._doctor_view(repo, doc, repo.clinic_schedule())
-        return self._unique_name(work)
+        for _ in range(5):                       # una carrera por el mismo codigo se corrige sola al repetir
+            try:
+                return self._write(work)
+            except IntegrityError as e:
+                if not is_unique_violation(e):
+                    raise
+        raise _bad("no se pudo asignar un codigo al doctor; intenta de nuevo")
 
     def update_doctor(self, doctor_id, data: dict, actor: Actor = SYSTEM) -> DoctorView:
         if not data:
@@ -166,15 +182,19 @@ class Directory(Unit):
                 raise AgendaError(NO_ENCONTRADO)
             for k, v in changes.items():
                 setattr(doc, k, v)
+            if "name" in changes:                          # el nombre de su cuenta sigue al del doctor
+                for u in s.scalars(select(User).where(User.role == "doctor", User.doctor_id == doc.id)):
+                    u.name = changes["name"]
             s.flush()
             audit(s, actor, "doctor.update", "doctor", doc.id, {"changed": sorted(changes)})
             return self._doctor_view(repo, doc, repo.clinic_schedule())
         return self._unique_name(work)
 
     def delete_doctor(self, doctor_id, actor: Actor = SYSTEM) -> None:
-        """Elimina DEFINITIVAMENTE un doctor. Solo si nunca tuvo citas (ni bloques de agenda) y no hay una cuenta de
-        usuario ligada a el: asi no quedan citas huerfanas ni se pierde historial. En cualquier otro caso se da de baja
-        (`active=false`). Sus horarios, ausencias y solicitudes de cambio de horario se van con el. Queda en la bitacora."""
+        """Elimina DEFINITIVAMENTE un doctor. Solo si nunca tuvo citas (ni bloques de agenda) y su cuenta de usuario nunca se uso: la cuenta
+        que se crea sola al dar de alta (sin contrasena) se elimina con el, pero una que ya tiene contrasena (o entro alguna vez) impide
+        borrarlo, para no perder historial. En cualquier otro caso se da de baja (`active=false`). Sus horarios, ausencias y solicitudes de
+        cambio de horario se van con el. Queda en la bitacora."""
         def work(repo, s):
             doc = repo.doctor(doctor_id)
             if doc is None:
@@ -184,9 +204,14 @@ class Directory(Unit):
             if citas:
                 raise AgendaError(DOCTOR_CON_CITAS,
                                   "Este doctor tiene citas en el historial: no se puede eliminar. Dalo de baja para que deje de ofrecerse.")
-            if s.scalar(select(func.count()).select_from(User).where(User.doctor_id == doc.id)):
+            accounts = list(s.scalars(select(User).where(User.doctor_id == doc.id)))
+            if any(u.password_hash is not None or u.last_login_at is not None for u in accounts):
                 raise AgendaError(DOCTOR_CON_USUARIO,
-                                  "Hay una cuenta de usuario ligada a este doctor: elimínala o cámbiala primero en Usuarios.")
+                                  "Este doctor ya tiene una cuenta con contraseña en uso: no se puede eliminar. Dalo de baja (o desactiva su cuenta en Usuarios).")
+            for u in accounts:                              # la cuenta recien creada, que nadie ha usado
+                audit(s, actor, "user.delete", "user", u.id, {"doctorId": doc.id})
+                s.delete(u)
+            s.flush()
             audit(s, actor, "doctor.delete", "doctor", doc.id, {"name": doc.name, "specialty": doc.specialty})
             s.execute(delete(DoctorAbsence).where(DoctorAbsence.doctor_id == doc.id))
             s.execute(delete(PersonalEvent).where(PersonalEvent.doctor_id == doc.id))

@@ -86,8 +86,8 @@ setTimeout(() => {
 ==================================================================
   Listo. Abre en el navegador:
     Web de administracion  http://127.0.0.1:5180   (entra como admin@dev.test o recepcion@dev.test)
-    PWA del doctor         http://127.0.0.1:5181   (entra como doctor@dev.test)
-    Contrasena de los tres: clave-de-desarrollo-1
+    PWA del doctor         http://127.0.0.1:5181   (elige el codigo 1001, 1002 o 1003 en la lista)
+    Contrasena de todos: clave-de-desarrollo-1
   Ctrl+C detiene todo.   Guia: docs/desarrollo-local.md
   Ojo: las dos webs comparten la sesion (mismo 127.0.0.1): cierra sesion en una antes de entrar a la otra con otro usuario.
 ==================================================================`);

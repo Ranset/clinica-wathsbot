@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { CalendarCheck, CalendarDays, CalendarOff, CloudOff, Clock, UserRound } from "lucide-react";
 import { cn } from "@clinica/calendar";
+import { BrandMark, useBrand } from "../brand";
 import { useConnection } from "../lib/connection";
 import { Link, useRoute } from "../router";
 import { StatusBanners } from "./status";
@@ -13,17 +14,15 @@ export const NAV = [
   { path: "/cuenta", label: "Cuenta", icon: UserRound },
 ] as const;
 
+/** La marca de la clínica (logotipo y nombre; los personaliza el administrador en la web). */
 function Brand() {
+  const { name } = useBrand();
   return (
-    <a href="#/hoy" aria-label="Clínica CUBAMEX, ir a Hoy" className="flex items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft">
-      <span aria-hidden className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-brand-fg">
-        <svg viewBox="0 0 32 32" className="h-5 w-5" fill="currentColor">
-          <path d="M14 7h4v7h7v4h-7v7h-4v-7H7v-4h7z" />
-        </svg>
-      </span>
-      <span className="leading-tight">
+    <a href="#/hoy" aria-label={`${name}, ir a Hoy`} className="flex items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft">
+      <BrandMark className="h-8 w-8" />
+      <span className="min-w-0 max-w-[13rem] leading-tight sm:max-w-[18rem]">
         <span className="block text-[15px] font-bold tracking-tight">Mi agenda</span>
-        <span className="kicker block">Clínica CUBAMEX</span>
+        <span className="kicker block truncate">{name}</span>
       </span>
     </a>
   );

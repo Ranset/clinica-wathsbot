@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 
-from sqlalchemy import (JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, MetaData, String, Time,
-                        UniqueConstraint)
+from sqlalchemy import (JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, MetaData, String,
+                        Time, UniqueConstraint)
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .db import utcnow
@@ -43,6 +44,9 @@ class Doctor(Base):
     __tablename__ = "doctors"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    #: Codigo de acceso de 4 digitos ("1003"), asignado al darlo de alta (`app/doctor_codes.py`). Es el «usuario» con el que el
+    #: doctor entra a su app; no se edita.
+    code: Mapped[str] = mapped_column(String(4), unique=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     #: etiqueta/especialidad tal como se muestra ("Proctologia"); tambien se usa para reconocer la peticion del paciente.
     specialty: Mapped[str] = mapped_column(String(120))
@@ -80,11 +84,17 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    #: NULL en la cuenta de un doctor: entra con su codigo, no con correo (varios NULL no chocan en el UNIQUE).
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(16))
     doctor_id: Mapped[int | None] = mapped_column(ForeignKey("doctors.id"))
-    password_hash: Mapped[str] = mapped_column(String(255))
+    #: NULL = todavia sin contrasena (la cuenta de un doctor nace asi: la establece con un enlace). Nadie entra sin ella.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: SHA-256 del enlace vigente para establecer/cambiar la contrasena (el enlace en si nunca se guarda) y cuando vence.
+    #: Un enlace nuevo reemplaza al anterior; al usarlo se borran los dos.
+    setup_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    setup_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime)
@@ -224,6 +234,22 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ClinicLogo(Base):
+    """El logotipo de la clinica (una sola fila, `id = 1`): la imagen CUADRADA que subio el administrador, tal cual. Se guarda en
+    la BD (no en archivos) para que viaje con los respaldos. `sha256` identifica la version (cache y `ETag`). MEDIUMBLOB en MySQL:
+    el BLOB normal solo admite 64 KB. El nombre de la clinica vive en `settings` (`clinic_name`)."""
+    __tablename__ = "clinic_logo"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_type: Mapped[str] = mapped_column(String(20))
+    data: Mapped[bytes] = mapped_column(LargeBinary().with_variant(mysql.MEDIUMBLOB(), "mysql"))
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 

@@ -5,7 +5,8 @@ import type { Role } from "@clinica/api-client";
  * contrato): esto solo esconde lo que el servidor rechazaría con 403, para no
  * ofrecer botones que no sirven.
  *
- * - `admin` (técnico): todo, incluida la administración de usuarios y eliminar doctores sin historial (lo único que no hace el personal).
+ * - `admin` (técnico): todo, incluida la administración de usuarios, eliminar doctores sin historial y personalizar el logotipo y el
+ *   nombre de la clínica (lo único que no hace el personal).
  * - `staff` (personal / recepción): agenda, horario de la clínica, doctores (alta, edición y baja), sus horarios y
  *   ausencias, bot y casos.
  * - `doctor`: usa la PWA del doctor; en esta web no tiene pantallas.
@@ -21,6 +22,8 @@ export type Permissions = {
   deleteDoctors: boolean;
   editClinicHours: boolean;
   manageUsers: boolean;
+  /** Cambiar el logotipo y el nombre de la clínica (pantalla «Clínica»). */
+  editBranding: boolean;
   toggleBot: boolean;
   handleAttention: boolean;
 };
@@ -36,6 +39,7 @@ export function permissionsFor(role: Role | null | undefined): Permissions {
     deleteDoctors: admin,
     editClinicHours: staff,
     manageUsers: admin,
+    editBranding: admin,
     toggleBot: staff,
     handleAttention: staff,
   };
@@ -48,6 +52,7 @@ export const NAV: NavItem[] = [
   { path: "/doctores", label: "Doctores", needs: "manageDoctorSchedules" },
   { path: "/atencion", label: "Atención", needs: "handleAttention" },
   { path: "/usuarios", label: "Usuarios", needs: "manageUsers" },
+  { path: "/clinica", label: "Clínica", needs: "editBranding" },
 ];
 
 export const canOpen = (role: Role | null | undefined, path: string): boolean => {

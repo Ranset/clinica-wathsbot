@@ -52,6 +52,8 @@ def main() -> int:
     from app.migrate import upgrade
     upgrade(DEV_URL)
     os.environ.setdefault("AUTH_COOKIE_SECURE", "0")
+    # donde vive la PWA del doctor en desarrollo (`npm run dev:local`): a ella apuntan los enlaces para establecer la contrasena
+    os.environ.setdefault("DOCTOR_APP_URL", "http://127.0.0.1:5181/")
     custom_token = bool(os.environ.get("BOT_TOKEN")) and os.environ["BOT_TOKEN"] != DEV_BOT_TOKEN
     os.environ.setdefault("BOT_TOKEN", DEV_BOT_TOKEN)
     os.environ.setdefault("ZERNIO_WEBHOOK_SECRET", DEV_WEBHOOK_SECRET)

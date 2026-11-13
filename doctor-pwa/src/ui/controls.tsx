@@ -1,11 +1,12 @@
-import { cloneElement, isValidElement, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { cloneElement, isValidElement, useId, type ComponentProps, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { Loader2 } from "lucide-react";
 import { Button, cn } from "@clinica/calendar";
 
 export const inputClass =
   "h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground placeholder:text-text-4 focus-visible:border-brand focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-soft disabled:cursor-not-allowed disabled:bg-subtle disabled:text-text-3 aria-[invalid=true]:border-danger";
 
-export function TextInput({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+/** `ComponentProps` (no `InputHTMLAttributes`) para admitir `ref`, que en React 19 es una propiedad más. */
+export function TextInput({ className, ...props }: ComponentProps<"input">) {
   return <input {...props} className={cn(inputClass, className)} />;
 }
 

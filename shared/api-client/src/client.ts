@@ -12,9 +12,13 @@ import type {
   BookingPatch,
   BookingStatus,
   BotSettings,
+  Branding,
   BusyTime,
   Doctor,
   DoctorInput,
+  LoginDoctor,
+  PasswordLink,
+  PasswordLinkInfo,
   PersonalEvent,
   PersonalEventInput,
   PersonalEventPatch,
@@ -66,6 +70,8 @@ type SendOptions = {
   path?: Record<string, string>;
   query?: Query;
   body?: unknown;
+  /** El cuerpo es esta imagen tal cual (no JSON): se manda con su propio `Content-Type`. */
+  image?: { bytes: Uint8Array; contentType: string };
   headers?: Record<string, string>;
   signal?: AbortSignal;
   /** `false`: un 401 no es "se acabo la sesion" (login, /api/me al arrancar). */
@@ -118,8 +124,11 @@ export function createApiClient(options: ApiClientOptions = {}) {
     const url = baseUrl + fillPath(template, o.path) + queryString(o.query);
 
     const headers = new Headers({ Accept: "application/json", ...o.headers });
-    let body: string | undefined;
-    if (o.body !== undefined) {
+    let body: string | Uint8Array | undefined;
+    if (o.image) {
+      headers.set("Content-Type", o.image.contentType || "application/octet-stream");
+      body = o.image.bytes;
+    } else if (o.body !== undefined) {
       headers.set("Content-Type", "application/json");
       body = JSON.stringify(o.body);
     }
@@ -127,7 +136,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
     let res: Response;
     try {
-      res = await doFetch(url, { method: verb, headers, body, credentials, signal: o.signal });
+      res = await doFetch(url, { method: verb, headers, body: body as BodyInit | undefined, credentials, signal: o.signal });
     } catch (e) {
       if (isAbortError(e)) throw e;
       throw new ApiError({ status: 0, code: "red", detail: "No hay conexión con el servidor." });
@@ -151,6 +160,20 @@ export function createApiClient(options: ApiClientOptions = {}) {
       });
     }
     return { status: res.status, data: parsed, headers: res.headers };
+  }
+
+  /** GET de una imagen: sus bytes y su tipo, o `null` si no existe (404). `url` es la direccion tal cual (con su `?v=`). */
+  async function imageAt(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    let res: Response;
+    try {
+      res = await doFetch(baseUrl + url, { method: "GET", headers: new Headers({ Accept: "image/*" }), credentials, signal });
+    } catch (e) {
+      if (isAbortError(e)) throw e;
+      throw new ApiError({ status: 0, code: "red", detail: "No hay conexión con el servidor." });
+    }
+    if (res.status === 404) return null;
+    if (!res.ok) throw errorFromResponse(res.status, await readBody(res));
+    return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: res.headers.get("Content-Type")?.split(";")[0]?.trim() ?? "application/octet-stream" };
   }
 
   async function json<T>(op: OperationId, o?: SendOptions): Promise<T> {
@@ -190,6 +213,32 @@ export function createApiClient(options: ApiClientOptions = {}) {
     auth: {
       async login(email: string, password: string, o?: RequestOptions): Promise<SessionInfo> {
         const info = await json<SessionInfo>("login", { body: { email, password }, notifyUnauthenticated: false, ...o });
+        csrfToken = info.csrfToken;
+        return info;
+      },
+      /**
+       * La lista de la pantalla de entrada del doctor (PUBLICA, sin sesion): codigo y nombre de cada doctor que tiene una cuenta
+       * activa, por codigo. Es exactamente quien puede entrar con `loginDoctor`.
+       */
+      loginDoctors: (o?: RequestOptions) => items<LoginDoctor>("listLoginDoctors", { notifyUnauthenticated: false, ...o }),
+      /** Entrada del doctor con su codigo de 4 digitos y su contrasena (sin correo). Guarda el token CSRF, como `login()`. */
+      async loginDoctor(doctorCode: string, password: string, o?: RequestOptions): Promise<SessionInfo> {
+        const info = await json<SessionInfo>("doctorLogin", { body: { doctorCode, password }, notifyUnauthenticated: false, ...o });
+        csrfToken = info.csrfToken;
+        return info;
+      },
+      /**
+       * Para la página del enlace (PÚBLICO): de quién es (código y nombre del doctor) y hasta cuándo vale. 404 `enlace_invalido` si no
+       * existe, ya venció o ya se usó (no se distingue cuál). No cambia nada.
+       */
+      checkPasswordLink: (token: string, o?: RequestOptions) =>
+        json<PasswordLinkInfo>("checkPasswordLink", { body: { token }, notifyUnauthenticated: false, ...o }),
+      /**
+       * El doctor establece su contraseña con el enlace (de un solo uso; sirve igual para una nueva si olvidó la suya) y queda dentro: guarda
+       * el token CSRF como `login()`. 422 si la contraseña no cumple (el enlace no se gasta), 404 `enlace_invalido` si ya no sirve.
+       */
+      async usePasswordLink(token: string, password: string, o?: RequestOptions): Promise<SessionInfo> {
+        const info = await json<SessionInfo>("usePasswordLink", { body: { token, password }, notifyUnauthenticated: false, ...o });
         csrfToken = info.csrfToken;
         return info;
       },
@@ -242,7 +291,12 @@ export function createApiClient(options: ApiClientOptions = {}) {
       create: (input: DoctorInput, o?: RequestOptions) => json<Doctor>("createDoctor", { body: input, ...o }),
       update: (id: string, input: DoctorInput, o?: RequestOptions) =>
         json<Doctor>("updateDoctor", { path: { doctorId: id }, body: input, ...o }),
-      /** Elimina DEFINITIVAMENTE un doctor (solo administrador). 409 `doctor_con_citas` / `doctor_con_usuario` si tiene historial o cuenta. */
+      /**
+       * Genera el enlace para que el doctor establezca su contraseña (la primera vez, o una nueva si la olvidó): de un solo uso, vence en 72 h y
+       * reemplaza al anterior. Crea la cuenta si el doctor aún no la tiene. Lo usan el personal y el administrador.
+       */
+      createPasswordLink: (id: string, o?: RequestOptions) => json<PasswordLink>("createPasswordLink", { path: { doctorId: id }, ...o }),
+      /** Elimina DEFINITIVAMENTE un doctor (solo administrador). 409 `doctor_con_citas` / `doctor_con_usuario` si tiene historial o cuenta con contraseña. */
       remove: async (id: string, o?: RequestOptions): Promise<void> => {
         await send("deleteDoctor", { path: { doctorId: id }, ...o });
       },
@@ -272,6 +326,21 @@ export function createApiClient(options: ApiClientOptions = {}) {
     bot: {
       get: (o?: RequestOptions) => json<BotSettings>("getBotSettings", o),
       set: (active: boolean, o?: RequestOptions) => json<BotSettings>("setBotSettings", { body: { active }, ...o }),
+    },
+
+    /**
+     * La marca de la clinica (nombre y logotipo). Leerla es PUBLICO (el login ya la muestra); cambiarla es solo del administrador.
+     * El logotipo es una imagen CUADRADA (PNG, JPG o WebP, 64 a 2048 px, hasta 1 MB): el servidor valida por los bytes.
+     */
+    branding: {
+      get: (o?: RequestOptions) => json<Branding>("getBranding", { notifyUnauthenticated: false, ...o }),
+      /** Los bytes y el tipo del logotipo (`logoUrl` de `get()`, con su `?v=` para el cache), o `null` si no hay. */
+      logo: (logoUrl: string, o?: RequestOptions) => imageAt(logoUrl, o?.signal),
+      setName: (name: string, o?: RequestOptions) => json<Branding>("setBranding", { body: { name }, ...o }),
+      /** `bytes` de la imagen tal cual y su tipo (`image/png`, `image/jpeg` o `image/webp`). */
+      uploadLogo: (bytes: Uint8Array, contentType: string, o?: RequestOptions) =>
+        json<Branding>("uploadBrandingLogo", { image: { bytes, contentType }, ...o }),
+      removeLogo: (o?: RequestOptions) => json<Branding>("deleteBrandingLogo", o),
     },
 
     attention: {

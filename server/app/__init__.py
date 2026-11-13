@@ -38,7 +38,7 @@ def create_app(config: dict | None = None, *, clock=None) -> Flask:
     app.extensions["auth"] = AuthService(
         sf, rules, clock, idle_minutes=int(cfg["SESSION_IDLE_MINUTES"]), max_days=int(cfg["SESSION_MAX_DAYS"]),
         max_failures=int(cfg["LOGIN_MAX_FAILURES"]), lock_minutes=int(cfg["LOGIN_LOCK_MINUTES"]),
-        hash_method=cfg["PASSWORD_HASH_METHOD"])
+        hash_method=cfg["PASSWORD_HASH_METHOD"], doctor_app_url=cfg["DOCTOR_APP_URL"])
     app.extensions["directory"] = Directory(sf, rules, clock, availability=app.extensions["availability"])
     app.extensions["events"] = EventQueue(sf, rules, clock, max_attempts=int(cfg["EVENT_MAX_ATTEMPTS"]),
                                           backoff_seconds=int(cfg["EVENT_RETRY_BACKOFF_SECONDS"]))

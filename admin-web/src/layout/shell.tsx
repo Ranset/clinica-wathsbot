@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { CalendarDays, ChevronDown, Inbox, LogOut, Stethoscope, Users } from "lucide-react";
+import { Building2, CalendarDays, ChevronDown, Inbox, LogOut, Stethoscope, Users } from "lucide-react";
 import { cn } from "@clinica/calendar";
 import { isAbortError } from "@clinica/api-client";
 import { useApi } from "../api-context";
 import { useAuth } from "../auth";
+import { BrandMark, useBrand } from "../brand";
 import { ROLE_LABEL } from "../lib/fmt";
 import { usePolling } from "../lib/use-polling";
 import { NAV, canOpen } from "../permissions";
 import { Link, useRoute } from "../router";
 import { BotToggle } from "./bot-toggle";
 
-const ICON = { "/calendario": CalendarDays, "/doctores": Stethoscope, "/atencion": Inbox, "/usuarios": Users } as const;
+const ICON = { "/calendario": CalendarDays, "/doctores": Stethoscope, "/atencion": Inbox, "/usuarios": Users, "/clinica": Building2 } as const;
 
 /** Cuántos casos esperan a una persona (la insignia de «Atención»). */
 function useOpenCases(enabled: boolean): number | null {
@@ -33,16 +34,15 @@ function useOpenCases(enabled: boolean): number | null {
   return count;
 }
 
+/** La marca de la clínica: su logotipo (o la cruz por defecto) y su nombre, que personaliza el administrador en «Clínica». */
 function Brand() {
+  const { name } = useBrand();
   return (
-    <a href="#/calendario" aria-label="Clínica CUBAMEX, ir al calendario" className="flex items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft">
-      <span aria-hidden className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-brand-fg">
-        <svg viewBox="0 0 32 32" className="h-5 w-5" fill="currentColor">
-          <path d="M14 7h4v7h7v4h-7v7h-4v-7H7v-4h7z" />
-        </svg>
-      </span>
-      <span className="hidden leading-tight sm:block">
-        <span className="block text-[15px] font-bold tracking-tight">Clínica CUBAMEX</span>
+    <a href="#/calendario" aria-label={`${name}, ir al calendario`} className="flex min-w-0 items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft">
+      <BrandMark className="h-8 w-8" />
+      {/* el nombre lo pone el administrador (hasta 80 caracteres): se recorta para no empujar el menú fuera de la pantalla */}
+      <span className="hidden min-w-0 max-w-[9rem] leading-tight sm:block xl:max-w-[16rem]">
+        <span className="block truncate text-[15px] font-bold tracking-tight">{name}</span>
         <span className="kicker hidden sm:block">Administración</span>
       </span>
     </a>
@@ -118,7 +118,7 @@ export function Shell({ children }: { children: ReactNode }) {
         {/* Un solo <nav>: en el celular es la barra de abajo; en escritorio, las pestañas del encabezado. */}
         <nav
           aria-label="Secciones"
-          className="fixed inset-x-0 bottom-0 z-30 flex border-t bg-background pb-[env(safe-area-inset-bottom)] sm:static sm:z-auto sm:ml-4 sm:gap-1 sm:border-0 sm:bg-transparent sm:pb-0"
+          className="fixed inset-x-0 bottom-0 z-30 flex border-t bg-background pb-[env(safe-area-inset-bottom)] sm:static sm:z-auto sm:ml-2 sm:gap-1 sm:border-0 xl:ml-4 sm:bg-transparent sm:pb-0"
         >
           {items.map((n) => {
             const Icon = ICON[n.path as keyof typeof ICON];
@@ -129,7 +129,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 to={n.path}
                 aria-current={current ? "page" : undefined}
                 className={cn(
-                  "flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft sm:h-9 sm:flex-none sm:flex-row sm:gap-1.5 sm:rounded-full sm:px-3.5 sm:py-0 sm:text-[13px]",
+                  "flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft sm:h-9 sm:flex-none sm:flex-row sm:gap-1.5 sm:rounded-full sm:px-2.5 sm:py-0 sm:text-[13px] xl:px-3.5",
                   current ? "text-brand-text sm:bg-brand-tint" : "text-text-2 hover:text-foreground sm:hover:bg-accent"
                 )}
               >

@@ -24,7 +24,9 @@ DEV_URL = "sqlite:///" + DEV_DB.as_posix()
 DEV_PASSWORD = "clave-de-desarrollo-1"
 USERS = [("admin@dev.test", "Admin Desarrollo", "admin", None),
          ("recepcion@dev.test", "Recepcion Desarrollo", "staff", None),
-         ("doctor@dev.test", "Dr. Cervantes (desarrollo)", "doctor", 1)]
+         ("doctor@dev.test", "Dr. Cervantes (desarrollo)", "doctor", 1),
+         ("doctor2@dev.test", "Dr. Perez Lago (desarrollo)", "doctor", 2),
+         ("doctor3@dev.test", "Dra. Bordas (desarrollo)", "doctor", 3)]
 
 
 def main() -> int:
@@ -93,9 +95,10 @@ def main() -> int:
     events.handoff("conv-dev-1", "pidio_persona", "5219981119999", "La paciente pidio hablar con una persona")
 
     print(f"Base de desarrollo lista: {DEV_DB}\n")
-    print("Usuarios (misma contrasena para los tres):")
-    for e, n, r, _ in USERS:
-        print(f"  {r:7} {e}")
+    print("Usuarios (la misma contrasena para todos). Los doctores entran a su app con su CODIGO de 4 digitos, no con el correo:")
+    for e, n, r, d in USERS:
+        code = directory.get_doctor(d).code if d else None
+        print(f"  {r:7} {e}" + (f"   codigo {code}" if code else ""))
     print(f"  contrasena: {DEV_PASSWORD}\n")
     print("Siguiente paso, desde la raiz del repo:  npm run dev:local")
     return 0

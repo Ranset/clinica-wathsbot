@@ -14,7 +14,8 @@ const BY_CODE: Partial<Record<ClientErrorCode, string>> = {
   no_autenticado: "Tu sesión terminó. Inicia sesión de nuevo.",
   sin_permiso: "Tu rol no permite esta operación.",
   no_encontrado: "Ya no existe; es posible que alguien más lo haya cambiado.",
-  credenciales_invalidas: "Correo o contraseña incorrectos.",
+  credenciales_invalidas: "Usuario o contraseña incorrectos.",
+  enlace_invalido: "Este enlace ya no sirve. Pide uno nuevo a la clínica.",
   demasiados_intentos: "Demasiados intentos. Espera un minuto e inténtalo de nuevo.",
 };
 

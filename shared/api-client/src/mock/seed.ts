@@ -1,6 +1,6 @@
 import { addDaysISO, todayInTz, zonedWallClockToUtc } from "@clinica/calendar/src/lib/slots";
 import { weekdayIndex } from "@clinica/calendar/src/lib/calendar";
-import type { Booking, WeeklyHours } from "../types";
+import type { Booking, Role, WeeklyHours } from "../types";
 import { TZ, placeInSchedule } from "./rules";
 import { doctorRef, nextId, type DB, type StoredDoctor } from "./state";
 
@@ -8,10 +8,20 @@ import { doctorRef, nextId, type DB, type StoredDoctor } from "./state";
  * Cuentas de la API simulada. Son datos de ejemplo para desarrollar; no existen
  * en el servidor real ni se usan fuera del simulador.
  */
-export const DEMO_ACCOUNTS = [
-  { email: "admin@clinica.test", password: "demo-admin-2026", name: "Administrador Técnico", role: "admin" as const },
-  { email: "recepcion@clinica.test", password: "demo-recepcion-2026", name: "Recepción Clínica", role: "staff" as const },
-  { email: "cervantes@clinica.test", password: "demo-doctor-2026", name: "Dr. Cervantes Peláez", role: "doctor" as const, doctorId: "d1" },
+export type DemoAccount = {
+  email: string;
+  password: string;
+  name: string;
+  role: Role;
+  /** Solo de un doctor: el doctor al que esta ligada su cuenta y su codigo de 4 digitos (con el que entra a su app). */
+  doctorId?: string;
+  doctorCode?: string;
+};
+
+export const DEMO_ACCOUNTS: DemoAccount[] = [
+  { email: "admin@clinica.test", password: "demo-admin-2026", name: "Administrador Técnico", role: "admin" },
+  { email: "recepcion@clinica.test", password: "demo-recepcion-2026", name: "Recepción Clínica", role: "staff" },
+  { email: "cervantes@clinica.test", password: "demo-doctor-2026", name: "Dr. Cervantes Peláez", role: "doctor", doctorId: "d1", doctorCode: "1001" },
 ];
 
 const WEEKDAY_HOURS = [{ start: "09:00", end: "18:00" }];
@@ -26,20 +36,21 @@ export const CLINIC_HOURS: WeeklyHours = {
 
 /** Los 7 doctores de la clinica. Los horarios propios de Pérez Lago y Geydi son de ejemplo (PENDIENTE real). */
 export const DOCTORS: StoredDoctor[] = [
-  { id: "d1", name: "Dr. Cervantes Peláez", specialty: "Proctología", aliases: ["proctologo", "proctólogo", "colon", "recto"], active: true, ownHours: null },
+  { id: "d1", code: "1001", name: "Dr. Cervantes Peláez", specialty: "Proctología", aliases: ["proctologo", "proctólogo", "colon", "recto"], active: true, ownHours: null },
   {
     id: "d2",
+    code: "1002",
     name: "Dr. Pérez Lago",
     specialty: "Ginecología",
     aliases: ["ginecologo", "ginecólogo", "gine"],
     active: true,
     ownHours: { tue: [{ start: "10:00", end: "14:00" }], thu: [{ start: "10:00", end: "14:00" }] },
   },
-  { id: "d3", name: "Dra. Bordas Rodríguez", specialty: "Ortopedia y Traumatología", aliases: ["ortopedista", "traumatologo", "traumatólogo", "huesos"], active: true, ownHours: null },
-  { id: "d4", name: "Dr. Gustavo Torrealba", specialty: "Ultrasonidos", aliases: ["usg", "ultrasonido", "sonografia"], active: true, ownHours: null },
-  { id: "d5", name: "Dr. Molina López", specialty: "Otorrinolaringología", aliases: ["otorrino", "oido", "nariz", "garganta"], active: true, ownHours: null },
-  { id: "d6", name: "Dra. Geydi", specialty: "Anestesiología", aliases: ["anestesiologo", "anestesiólogo"], active: true, ownHours: { sat: [{ start: "09:00", end: "13:00" }] } },
-  { id: "d7", name: "Dra. Ana del Carmen Argüelles", specialty: "Reumatología", aliases: ["reumatologo", "reumatólogo"], active: true, ownHours: null },
+  { id: "d3", code: "1003", name: "Dra. Bordas Rodríguez", specialty: "Ortopedia y Traumatología", aliases: ["ortopedista", "traumatologo", "traumatólogo", "huesos"], active: true, ownHours: null },
+  { id: "d4", code: "1004", name: "Dr. Gustavo Torrealba", specialty: "Ultrasonidos", aliases: ["usg", "ultrasonido", "sonografia"], active: true, ownHours: null },
+  { id: "d5", code: "1005", name: "Dr. Molina López", specialty: "Otorrinolaringología", aliases: ["otorrino", "oido", "nariz", "garganta"], active: true, ownHours: null },
+  { id: "d6", code: "1006", name: "Dra. Geydi", specialty: "Anestesiología", aliases: ["anestesiologo", "anestesiólogo"], active: true, ownHours: { sat: [{ start: "09:00", end: "13:00" }] } },
+  { id: "d7", code: "1007", name: "Dra. Ana del Carmen Argüelles", specialty: "Reumatología", aliases: ["reumatologo", "reumatólogo"], active: true, ownHours: null },
 ];
 
 /** Nombres de ejemplo. 12 y 11 son primos entre si: las parejas (n % 12, n % 11) no se repiten en 132 citas. */
@@ -74,6 +85,7 @@ export function createSeededDb(now: Date): DB {
     clinicHours: structuredClone(CLINIC_HOURS),
     bookings: [],
     absences: [],
+    branding: { name: "Clínica CUBAMEX", logo: null },
     personalEvents: [],
     requests: [],
     bot: { active: true, updatedAt: now.toISOString(), updatedBy: null },
@@ -85,7 +97,7 @@ export function createSeededDb(now: Date): DB {
   };
 
   for (const a of DEMO_ACCOUNTS) {
-    db.users.push({ id: nextId(db, "u"), email: a.email, name: a.name, role: a.role, doctorId: ("doctorId" in a ? a.doctorId : null) ?? null, active: true, password: a.password });
+    db.users.push({ id: nextId(db, "u"), email: a.email, name: a.name, role: a.role, doctorId: a.doctorId ?? null, active: true, password: a.password });
   }
   db.users.push({ id: nextId(db, "u"), email: "exrecepcion@clinica.test", name: "Ex Recepción", role: "staff", doctorId: null, active: false, password: "demo-baja-2026-x" });
 

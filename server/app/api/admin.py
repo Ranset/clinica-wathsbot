@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, g, jsonify, request
 
 from ..agenda import Actor
+from ..db import iso_utc
 from ..settings import get_bot_settings, set_bot_active
 from .inputs import bad, body, opt_bool, query_int
 from .security import require
@@ -40,6 +41,15 @@ def create_doctor():
 @require(*STAFF)  # ...y los edita o da de baja (active=false)
 def update_doctor(doctor_id):
     return jsonify(doctor_json(_x("directory").update_doctor(doctor_id, body(), _actor())))
+
+
+@bp.post("/api/doctors/<doctor_id>/password-link")
+@require(*STAFF)  # recepcion tambien lo genera: el doctor nuevo no tiene como entrar hasta que lo reciba
+def create_password_link(doctor_id):
+    """Genera el enlace (de un solo uso, vence en 72 h) con el que el doctor establece su contrasena: la primera vez, o una nueva si
+    olvido la suya. Crea la cuenta si ese doctor aun no la tiene. El enlace nuevo reemplaza al anterior."""
+    url, expires = _x("auth").create_password_link(doctor_id, _actor())
+    return jsonify(url=url, expiresAtUtc=iso_utc(expires))
 
 
 @bp.delete("/api/doctors/<doctor_id>")
@@ -96,6 +106,9 @@ def list_users():
 @require("admin")
 def create_user():
     b = body()
+    if b.get("role") == "doctor":     # la cuenta de un doctor nace con el doctor (sin correo ni contrasena): aqui solo personal y administrador
+        raise bad("Aquí solo se crean usuarios de personal y administrador. La cuenta de un doctor se crea sola al darlo de alta; "
+                  "en «Datos» del doctor se genera el enlace para que establezca su contraseña.")
     u = _x("auth").create_user(email=b.get("email"), name=b.get("name"), role=b.get("role"), password=b.get("password"),
                                doctor_id=b.get("doctorId"), actor=_actor())
     return jsonify(user_json(u)), 201

@@ -3,9 +3,11 @@ import type { ApiClient } from "@clinica/api-client";
 import { Button } from "@clinica/calendar";
 import { ApiProvider } from "./api-context";
 import { AuthProvider, useAuth } from "./auth";
+import { BrandProvider } from "./brand";
 import { Shell } from "./layout/shell";
 import { canOpen } from "./permissions";
 import { AttentionPage } from "./pages/attention/page";
+import { ClinicPage } from "./pages/clinic/page";
 import { CalendarPage } from "./pages/calendar/page";
 import { DoctorsPage } from "./pages/doctors/page";
 import { LoginPage, type DemoAccount } from "./pages/login";
@@ -19,7 +21,7 @@ function Routes() {
   const route = useRoute();
 
   // "/" (o una ruta que no existe) va al calendario.
-  const known = ["/calendario", "/doctores", "/atencion", "/usuarios"].includes(route.path);
+  const known = ["/calendario", "/doctores", "/atencion", "/usuarios", "/clinica"].includes(route.path);
   useEffect(() => {
     if (!known) navigate("/calendario", undefined, { replace: true });
   }, [known]);
@@ -50,6 +52,8 @@ function Routes() {
       return <AttentionPage />;
     case "/usuarios":
       return <UsersPage />;
+    case "/clinica":
+      return <ClinicPage />;
     default:
       return <CalendarPage />;
   }
@@ -100,9 +104,11 @@ export function App({ api, demoAccounts }: { api: ApiClient; demoAccounts?: Demo
   return (
     <ApiProvider api={api}>
       <ToastProvider>
-        <AuthProvider>
-          <Gate demoAccounts={demoAccounts} />
-        </AuthProvider>
+        <BrandProvider>
+          <AuthProvider>
+            <Gate demoAccounts={demoAccounts} />
+          </AuthProvider>
+        </BrandProvider>
       </ToastProvider>
     </ApiProvider>
   );

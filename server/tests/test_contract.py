@@ -8,7 +8,8 @@ from openapi_spec_validator import validate
 
 ROOT = Path(__file__).resolve().parents[2]
 METHODS = ("get", "post", "put", "patch", "delete")
-PUBLIC = {"/api/health", "/api/auth/login", "/webhooks/zernio"}
+PUBLIC = {"/api/health", "/api/auth/login", "/api/auth/doctors", "/api/auth/doctor-login", "/api/auth/password-link/check",
+          "/api/auth/password-link/use", "/webhooks/zernio", "/api/branding", "/api/branding/logo"}
 
 
 @pytest.fixture(scope="module")

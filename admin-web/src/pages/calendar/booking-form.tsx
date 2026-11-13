@@ -61,7 +61,21 @@ export function BookingFormDialog({
   const doctor = activeDoctors.find((d) => d.id === doctorId);
   const startUtc = isIsoDate(day) ? utcOf(day, time) : null;
 
-  // Avisos que no bloquean (el servidor decide), para que nadie se entere solo tras el error.
+  // El doctor elegido no atiende en ese horario (todo el tramo de la cita tiene que caer dentro de su horario, hueco por hueco de
+  // 30 min, como lo comprueba el servidor). Si pasa se avisa Y NO se deja agendar: el servidor lo rechazaría siempre
+  // (ni «cita de mostrador» lo permite: esa solo omite la antelación de 60 min).
+  const doctorOutOfHours = useMemo(() => {
+    if (block || !doctor || !isIsoDate(day) || !startUtc) return false;
+    const [h, m] = time.split(":").map(Number) as [number, number];
+    const t = h * 60 + m;
+    const bands = workingBands(doctor.weeklyHours, day);
+    for (let slot = t; slot < t + duration; slot += 30) {
+      if (!bands.some((b) => slot >= b.startMin && slot + 30 <= b.endMin)) return true;
+    }
+    return false;
+  }, [block, doctor, day, startUtc, time, duration]);
+
+  // Avisos (el servidor decide); solo el del doctor fuera de su horario además bloquea el botón de agendar.
   const warnings = useMemo(() => {
     const out: string[] = [];
     if (!startUtc) return out;
@@ -70,18 +84,13 @@ export function BookingFormDialog({
       if (start < now.getTime()) out.push("Ese horario ya pasó.");
       else if (start < now.getTime() + 60 * 60_000 && !shortNotice) out.push("Faltan menos de 60 minutos: marca «cita de mostrador» si el paciente ya está en la clínica.");
     }
-    if (doctor && isIsoDate(day)) {
-      const [h, m] = time.split(":").map(Number) as [number, number];
-      const t = h * 60 + m;
-      const fits = workingBands(doctor.weeklyHours, day).some((b) => t >= b.startMin && t + duration <= b.endMin);
-      if (!fits) out.push(`${doctor.name} no atiende ${fmtDay(day)} a esa hora (${summarizeHours(doctor.weeklyHours)}).`);
-    }
+    if (doctorOutOfHours && doctor) out.push(`${doctor.name} no atiende ${fmtDay(day)} a esa hora (${summarizeHours(doctor.weeklyHours)}).`);
     return out;
-  }, [startUtc, block, now, shortNotice, doctor, day, time, duration]);
+  }, [startUtc, block, now, shortNotice, doctor, doctorOutOfHours, day]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || doctorOutOfHours) return;                  // (Enter en un campo también envía el formulario: se frena aquí)
     const errors: typeof fieldErrors = {};
     const name = patientName.trim().replace(/\s+/g, " ");
     const digits = phone.replace(/\D/g, "");
@@ -131,7 +140,13 @@ export function BookingFormDialog({
           <Button variant="outline" onClick={onClose}>
             Cancelar
           </Button>
-          <BusyButton type="submit" form={formId} busy={busy}>
+          <BusyButton
+            type="submit"
+            form={formId}
+            busy={busy}
+            disabled={doctorOutOfHours}
+            title={doctorOutOfHours ? "El doctor no atiende en ese horario: elige otra fecha u hora, u otro doctor." : undefined}
+          >
             {block ? "Bloquear" : "Agendar cita"}
           </BusyButton>
         </>

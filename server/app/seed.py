@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import SERVER_DIR
+from .doctor_codes import next_code
 from .models import ClinicHours, Doctor, Room, Setting
 
 DEFAULT_CONFIG = SERVER_DIR.parent / "bot" / "agenda_config.json"
@@ -33,10 +34,13 @@ def seed(s: Session, config: dict | None = None, *, bot_active: bool = False) ->
             s.add(Room(name=name, position=pos))
             made["rooms"] += 1
 
-    # doctores: la etiqueta es la especialidad; las claves del JSON y `match` ya no hacen falta
+    # doctores: la etiqueta es la especialidad; las claves del JSON y `match` ya no hacen falta. Cada uno recibe su codigo de 4 digitos.
+    codes = set(s.scalars(select(Doctor.code)))
     for d in cfg["doctors"].values():
         if s.scalar(select(Doctor).where(Doctor.name == d["name"])) is None:
-            s.add(Doctor(name=d["name"], specialty=d["label"], aliases=list(d.get("aliases", [])), active=True,
+            code = next_code(codes)
+            codes.add(code)
+            s.add(Doctor(code=code, name=d["name"], specialty=d["label"], aliases=list(d.get("aliases", [])), active=True,
                          uses_clinic_hours=True))
             made["doctors"] += 1
 

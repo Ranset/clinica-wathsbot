@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { PREFIX } from "../src/lib/storage";
-import { account, bookingButton, freezeClock, localDay, makeServer, mountApp, pickBooking, storedKeys } from "./helpers";
+import { account, bookingButton, doctorCredentials, freezeClock, localDay, makeServer, mountApp, pickBooking, signIn, storedKeys } from "./helpers";
 
 beforeEach(freezeClock);
 
@@ -9,11 +9,11 @@ const heading = () => screen.findByRole("heading", { level: 1 });
 const agendaRequests = (log: ReturnType<typeof makeServer>["log"]) => log.filter((r) => r.path === "/api/doctor/appointments");
 
 describe("entrada", () => {
-  it("sin sesión pide correo y contraseña; un doctor entra a Hoy con su nombre y SUS citas", async () => {
+  it("sin sesión pide usuario (código o nombre del doctor) y contraseña; un doctor entra a Hoy con su nombre y SUS citas", async () => {
     const t = await mountApp({ as: null });
-    await t.user.type(await screen.findByLabelText("Correo"), account("doctor").email);
-    await t.user.type(screen.getByLabelText("Contraseña"), account("doctor").password);
-    await t.user.click(screen.getByRole("button", { name: "Entrar" }));
+    expect(await screen.findByRole("combobox", { name: "Usuario" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Correo")).toBeNull(); // ya no se pide correo
+    await signIn(t.user);
 
     expect(await heading()).toHaveTextContent("Martes, 10 de noviembre de 2026");
     expect(await screen.findByText("Dr. Cervantes Peláez")).toBeInTheDocument(); // el carril es MI agenda
@@ -25,10 +25,8 @@ describe("entrada", () => {
 
   it("una contraseña incorrecta se queda en el formulario con el aviso", async () => {
     const t = await mountApp({ as: null });
-    await t.user.type(await screen.findByLabelText("Correo"), account("doctor").email);
-    await t.user.type(screen.getByLabelText("Contraseña"), "no-es-la-clave");
-    await t.user.click(screen.getByRole("button", { name: "Entrar" }));
-    expect(await screen.findByText("Correo o contraseña incorrectos.")).toBeInTheDocument();
+    await signIn(t.user, { code: doctorCredentials().code, password: "no-es-la-clave" });
+    expect(await screen.findByText("Usuario o contraseña incorrectos.")).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Secciones" })).toBeNull();
   });
 
@@ -263,9 +261,7 @@ describe("cuenta y cierre de sesión", () => {
     // lo que quedó de otro usuario en este dispositivo
     window.localStorage.setItem(`${PREFIX}u99:agenda:x`, JSON.stringify({ savedAt: "2026-11-09T15:00:00.000Z", data: [] }));
     window.localStorage.setItem(`${PREFIX}u99:profile`, JSON.stringify({ savedAt: "2026-11-09T15:00:00.000Z", data: {} }));
-    await t.user.type(await screen.findByLabelText("Correo"), account("doctor").email);
-    await t.user.type(screen.getByLabelText("Contraseña"), account("doctor").password);
-    await t.user.click(screen.getByRole("button", { name: "Entrar" }));
+    await signIn(t.user);
     await heading();
     expect(storedKeys().filter((k) => k.includes(":u99:"))).toEqual([]);
     expect(storedKeys().length).toBeGreaterThan(0);

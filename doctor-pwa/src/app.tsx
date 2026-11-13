@@ -3,6 +3,7 @@ import type { ApiClient } from "@clinica/api-client";
 import { Button } from "@clinica/calendar";
 import { ApiProvider } from "./api-context";
 import { AuthProvider, useAuth } from "./auth";
+import { BrandProvider } from "./brand";
 import { Shell } from "./layout/shell";
 import { ConnectionProvider } from "./lib/connection";
 import { AbsencesPage } from "./pages/absences/page";
@@ -10,6 +11,7 @@ import { AccountPage } from "./pages/account/page";
 import { AgendaPage } from "./pages/agenda/page";
 import { LoginPage, type DemoAccount } from "./pages/login";
 import { SchedulePage } from "./pages/schedule/page";
+import { SetPasswordPage } from "./pages/set-password";
 import { ProfileProvider } from "./profile";
 import { navigate, useRoute } from "./router";
 import { ToastProvider } from "./toast";
@@ -42,6 +44,10 @@ function Routes() {
 
 function Gate({ demoAccounts }: { demoAccounts?: DemoAccount[] }) {
   const { state, retry, logout } = useAuth();
+  const route = useRoute();
+
+  // El enlace que le manda la clínica al doctor para crear (o cambiar) su contraseña: se abre con o sin sesión.
+  if (route.path === "/contrasena") return <SetPasswordPage token={route.query.get("t")} />;
 
   if (state.status === "loading") {
     return (
@@ -91,9 +97,11 @@ export function App({ api, demoAccounts }: { api: ApiClient; demoAccounts?: Demo
     <ApiProvider api={api}>
       <ToastProvider>
         <ConnectionProvider>
-          <AuthProvider>
-            <Gate demoAccounts={demoAccounts} />
-          </AuthProvider>
+          <BrandProvider>
+            <AuthProvider>
+              <Gate demoAccounts={demoAccounts} />
+            </AuthProvider>
+          </BrandProvider>
         </ConnectionProvider>
       </ToastProvider>
     </ApiProvider>

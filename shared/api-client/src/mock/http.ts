@@ -28,6 +28,8 @@ export const conflict = (detail = "Ese horario ya no está libre.") => new HttpE
 export type Result = {
   status: number;
   body?: unknown;
+  /** Una respuesta que NO es JSON: los bytes de una imagen. */
+  binary?: { bytes: Uint8Array; contentType: string };
   headers?: Record<string, string>;
   /** Equivale al `Set-Cookie` de `clinica_session`: un id abre la sesion, `null` la cierra. */
   setSession?: string | null;
@@ -37,6 +39,8 @@ export type Ctx<TUser = unknown> = {
   params: Record<string, string>;
   query: URLSearchParams;
   body: unknown;
+  /** El cuerpo en bruto cuando no es JSON (una imagen subida); `null` si no hay. */
+  rawBody: Uint8Array | null;
   headers: Headers;
   /** Quien tiene la sesion (las rutas publicas no lo traen). */
   user: TUser;

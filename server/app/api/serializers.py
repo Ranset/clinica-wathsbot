@@ -30,7 +30,7 @@ def booking_json(a: Appointment, role: str) -> dict:
 
 
 def doctor_json(d: DoctorView) -> dict:
-    return {"id": str(d.id), "name": d.name, "specialty": d.specialty, "aliases": d.aliases, "active": d.active,
+    return {"id": str(d.id), "code": d.code, "name": d.name, "specialty": d.specialty, "aliases": d.aliases, "active": d.active,
             "weeklyHours": d.weekly, "usesClinicHours": d.uses_clinic_hours, "color": d.color}
 
 
@@ -58,7 +58,7 @@ def busy_json(row) -> dict:
 
 def user_json(u: UserView) -> dict:
     return {"id": str(u.id), "email": u.email, "name": u.name, "role": u.role,
-            "doctorId": str(u.doctor_id) if u.doctor_id is not None else None, "active": u.active}
+            "doctorId": str(u.doctor_id) if u.doctor_id is not None else None, "active": u.active, "passwordSet": u.password_set}
 
 
 def request_json(r: RequestView) -> dict:

@@ -21,6 +21,7 @@ const BY_CODE: Partial<Record<ClientErrorCode, string>> = {
 export function messageFor(err: unknown, fallback = "Ocurrió un error inesperado. Inténtalo de nuevo."): string {
   if (!isApiError(err)) return fallback;
   if (err.code === "red") return "No hay conexión con el servidor. Revisa tu internet e inténtalo de nuevo.";
+  if (err.code === "no_configurado") return "El servidor todavía no sabe dónde vive la app del doctor (falta DOCTOR_APP_URL). Avisa a quien administra el sistema.";
   if (err.status >= 500) return "El servidor tuvo un problema. Inténtalo de nuevo en un momento.";
   return err.detail ?? BY_CODE[err.code] ?? fallback;
 }

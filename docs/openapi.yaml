@@ -452,7 +452,7 @@ paths:
     post:
       operationId: login
       tags: [auth]
-      summary: Inicia sesion (personal, doctor, administrador).
+      summary: Inicia sesion con correo y contrasena (personal y administrador; la app del doctor usa `doctorLogin`).
       description: |
         Cookie `clinica_session` (HttpOnly, SameSite=Lax, Secure en produccion); caduca tras 8 h sin actividad o 7 dias
         en total. 5 contrasenas erroneas seguidas bloquean al usuario 15 min (`demasiados_intentos`, 429).
@@ -484,6 +484,125 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
+  /api/auth/doctors:
+    get:
+      operationId: listLoginDoctors
+      tags: [auth]
+      summary: Los doctores que pueden entrar con su codigo (la lista de la pantalla de entrada de la app del doctor).
+      description: |
+        PUBLICO (aun no hay sesion). Devuelve `{code, name}` de cada doctor que tiene una cuenta ACTIVA y con contrasena, ordenados
+        por codigo: exactamente quienes pueden iniciar sesion con `doctorLogin`. Un doctor sin cuenta, con la cuenta dada de baja o
+        que todavia no establece su contrasena (`passwordSet: false`), no aparece. Solo codigo y nombre (los mismos que ya conoce cualquier paciente): nada del correo ni de la cuenta. Sin cache
+        (`Cache-Control: no-store`) para que un doctor nuevo o dado de baja se note de inmediato.
+      security: []
+      responses:
+        "200":
+          description: La lista (puede estar vacia).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginDoctorList" }
+  /api/auth/doctor-login:
+    post:
+      operationId: doctorLogin
+      tags: [auth]
+      summary: Inicia sesion un doctor con su codigo de 4 digitos y su contrasena (sin correo).
+      description: |
+        Es la entrada de la app del doctor: el doctor elige su codigo/nombre en la lista de `listLoginDoctors` y escribe su
+        contrasena. Solo entran cuentas con rol `doctor`; un codigo que no existe, de un doctor sin cuenta activa o una
+        contrasena equivocada son el mismo `credenciales_invalidas` (no se distingue cual fallo). Misma cookie de sesion, mismo
+        bloqueo (5 contrasenas erroneas seguidas = 15 min, `demasiados_intentos`) y mismo `Origin` propio que `login`. El
+        codigo NO es secreto (la lista es publica): lo que protege la cuenta es la contrasena.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doctorCode, password]
+              properties:
+                doctorCode: { type: string, pattern: "^[0-9]{4}$", examples: ["1001"] }
+                password: { type: string, format: password }
+      responses:
+        "422": { $ref: "#/components/responses/RuleError" }
+        "200":
+          description: Sesion creada (cookie `clinica_session`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "401":
+          description: "`credenciales_invalidas`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "429":
+          description: "`demasiados_intentos`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+  /api/auth/password-link/check:
+    post:
+      operationId: checkPasswordLink
+      tags: [auth]
+      summary: De quien es un enlace para establecer la contrasena y hasta cuando vale (pagina del enlace).
+      description: |
+        PUBLICO. La app del doctor lo llama al abrir el enlace para decirle "Hola Dr. X, tu codigo es 1001" antes de pedirle la
+        contrasena. Un enlace desconocido, vencido o ya usado es el MISMO 404 `enlace_invalido` (no se distingue cual). El enlace
+        viaja en el cuerpo, no en la URL. No cambia nada.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: "El valor `t` del enlace (lo que va despues de `?t=`)." }
+      responses:
+        "200":
+          description: El enlace vale.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordLinkInfo" }
+        "404":
+          description: "`enlace_invalido`: no existe, ya vencio o ya se uso."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/auth/password-link/use:
+    post:
+      operationId: usePasswordLink
+      tags: [auth]
+      summary: El doctor establece su contrasena con el enlace y entra de una vez.
+      description: |
+        PUBLICO, de un solo uso: guarda la contrasena (de 10 a 128 caracteres), gasta el enlace, cierra las demas sesiones de esa
+        cuenta, quita cualquier bloqueo por intentos y abre la sesion (misma cookie que `login`). Sirve tanto la primera vez como
+        para poner una contrasena nueva si el doctor olvido la suya. Solo `Origin` propio, sin CSRF (aun no hay sesion).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, format: password, minLength: 10, maxLength: 128 }
+      responses:
+        "200":
+          description: Contrasena guardada y sesion creada (cookie `clinica_session`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "404":
+          description: "`enlace_invalido`: no existe, ya vencio o ya se uso."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/auth/logout:
     post:
       operationId: logout
@@ -726,8 +845,9 @@ paths:
       tags: [admin]
       summary: Elimina definitivamente un doctor que nunca tuvo citas (solo administrador).
       description: |
-        Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y no hay una
-        cuenta de usuario ligada a el (`doctor_con_usuario`); ambos son 409. Sus horarios, ausencias y solicitudes de
+        Irreversible. Solo si el doctor no tiene ni tuvo citas o bloques de agenda (`doctor_con_citas`) y su cuenta de usuario
+        nunca se uso (`doctor_con_usuario`); ambos son 409. La cuenta que se crea sola al dar de alta (sin contrasena) se
+        elimina con el; una que ya tiene contrasena, o que alguna vez entro, lo impide. Sus horarios, ausencias y solicitudes de
         cambio de horario se eliminan con el. Para quitarlo de la agenda sin perder historial se usa `PATCH`
         con `active: false` (administrador y personal).
       x-roles: [admin]
@@ -738,6 +858,36 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+  /api/doctors/{doctorId}/password-link:
+    parameters:
+      - { $ref: "#/components/parameters/DoctorId" }
+    post:
+      operationId: createPasswordLink
+      tags: [admin]
+      summary: Genera el enlace con el que un doctor establece su contrasena (la primera vez, o una nueva si la olvido).
+      description: |
+        La cuenta de un doctor se crea SOLA al darlo de alta, sin correo y sin contrasena; este enlace es como el doctor la
+        establece. Sirve igual para recuperarla: se genera otro y se le manda. Es de UN solo uso, vence en 72 horas y el enlace
+        nuevo REEMPLAZA al anterior. Si el doctor aun no tiene cuenta (uno anterior a este cambio) se crea aqui. `url` apunta a la
+        app del doctor (`DOCTOR_APP_URL` del servidor; sin ella, 503 `no_configurado`). Con la cuenta desactivada, 422: reactivarla
+        es decision del administrador. El enlace no se guarda en claro ni queda en la bitacora (solo quien lo genero y para que doctor).
+      x-roles: [admin, staff]
+      security: [{ session: [], csrf: [] }]
+      responses:
+        "200":
+          description: El enlace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordLink" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/RuleError" }
+        "503":
+          description: "`no_configurado`: el servidor no sabe donde vive la app del doctor (`DOCTOR_APP_URL`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
   /api/doctors/{doctorId}/weekly-hours:
     parameters:
       - { $ref: "#/components/parameters/DoctorId" }
@@ -1007,6 +1157,112 @@ paths:
               schema: { $ref: "#/components/schemas/BotSettings" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /api/branding:
+    get:
+      operationId: getBranding
+      tags: [auth]
+      summary: "Nombre y logotipo de la clinica (PUBLICO: lo muestra hasta el login)."
+      description: |
+        No son datos privados: es la marca de la clinica. `logoUrl` es la direccion de la imagen (con `?v=` = su huella, asi al
+        cambiar el logotipo cambia la direccion) o `null` si no hay logotipo (se usa el icono por defecto). Sin logotipo
+        propio el nombre es «Clínica CUBAMEX».
+      security: []
+      responses:
+        "200":
+          description: La marca vigente.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+  /api/branding/logo:
+    get:
+      operationId: getBrandingLogo
+      tags: [auth]
+      summary: La imagen del logotipo (PUBLICO).
+      description: |
+        Los bytes de la imagen tal como se subio (PNG, JPG o WebP, cuadrada). Con `ETag` y `If-None-Match` (304) y cache de un dia:
+        la direccion lleva `?v=huella`, asi que un logotipo nuevo no se confunde con el anterior. 404 si no hay logotipo.
+      security: []
+      parameters:
+        - { name: v, in: query, description: "La huella que viene en `logoUrl` (solo para el cache).", schema: { type: string } }
+        - { name: If-None-Match, in: header, schema: { type: string } }
+      responses:
+        "200":
+          description: La imagen.
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "304": { description: "Sin cambios." }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/settings/branding:
+    put:
+      operationId: setBranding
+      tags: [admin]
+      summary: Cambia el nombre de la clinica (solo administrador).
+      description: Texto de 1 a 80 caracteres (se normalizan los espacios). Queda en la bitacora.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 80 }
+      responses:
+        "200":
+          description: La marca vigente.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+  /api/settings/branding/logo:
+    put:
+      operationId: uploadBrandingLogo
+      tags: [admin]
+      summary: Sube (o reemplaza) el logotipo de la clinica (solo administrador).
+      description: |
+        El cuerpo son los BYTES de la imagen (`Content-Type: image/png`, `image/jpeg` o `image/webp`). Se valida por sus bytes, no por
+        el tipo que diga el cliente: PNG, JPG o WebP (SVG no), **cuadrada (1:1)**, de 64 a 2048 px por lado y de hasta 1 MB. Si no
+        cumple, 422 `validacion` con el motivo en `detail` (por ejemplo «La imagen debe ser cuadrada (1:1); esta mide 800 × 600 px.»).
+        En la bitacora quedan las medidas y una huella, nunca la imagen.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        "200":
+          description: La marca vigente, ya con el logotipo nuevo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
+    delete:
+      operationId: deleteBrandingLogo
+      tags: [admin]
+      summary: Quita el logotipo propio (vuelve el icono por defecto). Solo administrador.
+      x-roles: [admin]
+      security: [{ session: [], csrf: [] }]
+      responses:
+        "200":
+          description: La marca vigente, sin logotipo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /api/attention:
     get:
       operationId: listAttention
@@ -1071,7 +1327,10 @@ paths:
     post:
       operationId: createUser
       tags: [admin]
-      summary: Crea un usuario (un `doctor` debe ligarse a un `doctorId`).
+      summary: Crea un usuario de personal o administrador (la cuenta de un doctor nace con el doctor).
+      description: |
+        Solo roles `staff` y `admin`, con correo y contrasena. Un `doctor` se rechaza (422 `validacion`): su cuenta se crea sola al dar
+        de alta al doctor, sin correo y sin contrasena, y su contrasena se establece con el enlace de `createPasswordLink`.
       x-roles: [admin]
       security: [{ session: [], csrf: [] }]
       requestBody:
@@ -1531,7 +1790,8 @@ components:
         `no_encontrado`, `credenciales_invalidas`, `demasiados_intentos`, `firma_invalida`, `no_configurado`
         (el servidor no tiene un secreto o token configurado), `error_interno` (500), `doctor_con_citas` y
         `doctor_con_usuario` (409; no se puede eliminar un doctor con historial o con cuenta ligada) y
-        `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya).
+        `evento_con_cita` (409; un evento personal del doctor no puede caer sobre una cita agendada suya) y `enlace_invalido`
+        (404; el enlace para establecer la contrasena no existe, ya vencio o ya se uso).
         Solo del lado del cliente del bot: `agenda_no_disponible` (API caida), `accion_desconocida`.
       enum:
         - horario_ocupado
@@ -1556,6 +1816,7 @@ components:
         - doctor_con_citas
         - doctor_con_usuario
         - evento_con_cita
+        - enlace_invalido
     ErrorBody:
       type: object
       required: [error]
@@ -1794,9 +2055,16 @@ components:
         sun: { type: array, items: { $ref: "#/components/schemas/Interval" } }
     Doctor:
       type: object
-      required: [id, name, specialty, aliases, active, weeklyHours, usesClinicHours, color]
+      required: [id, code, name, specialty, aliases, active, weeklyHours, usesClinicHours, color]
       properties:
         id: { type: string }
+        code:
+          type: string
+          pattern: "^[0-9]{4}$"
+          examples: ["1001"]
+          description: |
+            Codigo de acceso de 4 digitos: el «usuario» con el que el doctor entra a su app (`doctorLogin`). Lo asigna el
+            servidor al dar de alta al doctor (desde 1001, el menor libre) y no se edita. No es un secreto.
         name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
         specialty: { type: string, examples: ["Proctologia"] }
         aliases:
@@ -1920,22 +2188,30 @@ components:
       enum: [admin, staff, doctor]
     User:
       type: object
-      required: [id, email, name, role, doctorId, active]
+      required: [id, email, name, role, doctorId, active, passwordSet]
       properties:
         id: { type: string }
-        email: { type: string, format: email }
+        email:
+          type: [string, "null"]
+          format: email
+          description: "`null` en la cuenta de un doctor: entra con su codigo, no con correo."
         name: { type: string }
         role: { $ref: "#/components/schemas/Role" }
         doctorId: { type: [string, "null"], description: "Solo para `role: doctor`." }
         active: { type: boolean }
+        passwordSet:
+          type: boolean
+          description: "`false` = la cuenta aun no tiene contrasena (un doctor recien dado de alta): nadie entra a ella hasta que se establezca con el enlace."
     UserCreate:
       type: object
       required: [email, name, role, password]
       properties:
         email: { type: string, format: email }
         name: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
-        doctorId: { type: string }
+        role:
+          type: string
+          enum: [admin, staff]
+          description: "Solo personal y administrador. La cuenta de un doctor se crea sola al darlo de alta."
         password: { type: string, format: password, minLength: 10 }
     UserPatch:
       type: object
@@ -1952,6 +2228,44 @@ components:
       properties:
         user: { $ref: "#/components/schemas/User" }
         csrfToken: { type: string }
+    PasswordLink:
+      type: object
+      required: [url, expiresAtUtc]
+      properties:
+        url:
+          type: string
+          description: "El enlace completo para el doctor, p. ej. `https://clinica.example.com/doctor/#/contrasena?t=...`. De un solo uso."
+        expiresAtUtc: { type: string, format: date-time }
+    PasswordLinkInfo:
+      type: object
+      required: [doctorCode, doctorName, expiresAtUtc]
+      properties:
+        doctorCode: { type: string, pattern: "^[0-9]{4}$", examples: ["1001"] }
+        doctorName: { type: string, examples: ["Dr. Cervantes Pelaez"] }
+        expiresAtUtc: { type: string, format: date-time }
+    LoginDoctor:
+      type: object
+      description: "Un doctor que puede entrar con su codigo (publico, solo codigo y nombre)."
+      required: [code, name]
+      properties:
+        code: { type: string, pattern: "^[0-9]{4}$", examples: ["1001"] }
+        name: { type: string, examples: ["Dr. Cervantes Pelaez"] }
+    LoginDoctorList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/LoginDoctor" }
+    Branding:
+      type: object
+      description: La marca de la clinica (publica).
+      required: [name, logoUrl]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        logoUrl:
+          type: [string, "null"]
+          description: Direccion de la imagen (`/api/branding/logo?v=huella`) o `null` si no hay logotipo propio.
     AttentionList:
       type: object
       required: [items, total]

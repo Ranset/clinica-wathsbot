@@ -1,4 +1,4 @@
-"""Autorizacion dirigida por el contrato: cada operacion de `docs/openapi.yaml` (menos bot, webhook y login) se prueba sin
+"""Autorizacion dirigida por el contrato: cada operacion de `docs/openapi.yaml` (menos bot, webhook y las publicas) se prueba sin
 sesion (401), con cada rol que NO le toca (403) y con cada rol que SI (nunca 401/403). Si manana alguien agrega una ruta sin
 proteger, o el contrato declara una que no existe, estas pruebas lo dicen."""
 import re
@@ -9,7 +9,7 @@ from helpers import _spec, assert_schema
 
 ROLES = ("admin", "staff", "doctor")
 SKIP_PREFIX = ("/api/bot/", "/webhooks/")
-PUBLIC = {"health", "login"}
+PUBLIC = {"health", "login", "listLoginDoctors", "doctorLogin", "checkPasswordLink", "usePasswordLink", "getBranding", "getBrandingLogo"}
 
 
 def operations():
@@ -37,7 +37,7 @@ def test_cada_operacion_del_contrato_exige_sesion_y_su_rol(app, users, login):
     anonimo = app.test_client()
     fallos = []
     ops = sorted(operations(), key=lambda o: o[2] == "logout")      # `logout` al final: cierra las sesiones que se estan usando
-    assert len(ops) == 43          # 58 operaciones del contrato - 14 del bot/webhook - health - login
+    assert len(ops) == 47          # 68 operaciones del contrato - 13 del bot/webhook - 8 publicas (health, login, lista y login del doctor, enlace: revisar y usar, branding y su logo)
     for method, path, op_id, roles in ops:
         r = call(anonimo, method, path)
         if r.status_code != 401:
@@ -106,7 +106,7 @@ def test_el_validador_de_conformidad_detecta_las_desviaciones():
 
     def resp(status, body=None):
         return SimpleNamespace(status_code=status, get_json=lambda: body)
-    me = {"user": {"id": "1", "email": "a@b.co", "name": "A B", "role": "staff", "doctorId": None, "active": True}, "csrfToken": "t"}
+    me = {"user": {"id": "1", "email": "a@b.co", "name": "A B", "role": "staff", "doctorId": None, "active": True, "passwordSet": True}, "csrfToken": "t"}
     check_contract("GET", "/api/me", resp(200, me))                                      # lo correcto pasa
     check_contract("GET", "/api/me", resp(401, {"error": "no_autenticado"}))
     check_contract("DELETE", "/api/doctor/absences/7", resp(204))

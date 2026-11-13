@@ -150,7 +150,7 @@ describe("copias de lectura en el dispositivo (storage)", () => {
     storage.setItem("otra-app:dato", "1");
     createSnapshotStore(storage, "u3").write("profile", snap({}));
     createSnapshotStore(storage, "u4").write("profile", snap({}));
-    writeStoredSession(storage, { user: { id: "u3", email: "a@b.c", name: "A", role: "doctor", doctorId: "d1", active: true }, savedAt: "2026-11-10T15:00:00.000Z" });
+    writeStoredSession(storage, { user: { id: "u3", email: "a@b.c", name: "A", role: "doctor", doctorId: "d1", active: true, passwordSet: true }, savedAt: "2026-11-10T15:00:00.000Z" });
 
     clearStoredData(storage, { exceptUser: "u3" });
     expect(createSnapshotStore(storage, "u3").read("profile")).not.toBeNull();

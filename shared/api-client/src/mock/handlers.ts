@@ -1,7 +1,8 @@
 import { addDaysISO, todayInTz } from "@clinica/calendar/src/lib/slots";
 import { wallClock } from "@clinica/calendar/src/lib/calendar";
+import { checkLogo } from "../image";
 import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
-import type { Absence, AttentionItem, Booking, BookingStatus, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
+import type { Absence, AttentionItem, Booking, Branding, BookingStatus, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
 import {
   HttpError,
   asObject,
@@ -27,6 +28,9 @@ import {
   doctorRef,
   doctorView,
   fnv1a,
+  hashBytes,
+  accountKey,
+  nextDoctorCode,
   nextId,
   publicUser,
   type DB,
@@ -37,6 +41,10 @@ import {
 
 /** Maximo de rango que acepta `GET /api/appointments` (`MAX_RANGE_DAYS` de shared/calendar). */
 const MAX_RANGE_DAYS = 92;
+/** Donde dice el simulador que vive la app del doctor (en el servidor real es `DOCTOR_APP_URL`). */
+export const MOCK_DOCTOR_APP_URL = "https://clinica.test/doctor/";
+/** Cuánto dura un enlace para establecer la contraseña (como el servidor: 72 h). */
+export const PASSWORD_LINK_HOURS = 72;
 export const LOGIN_MAX_FAILURES = 5;
 export const LOGIN_BLOCK_MS = 60_000;
 
@@ -74,6 +82,60 @@ export function buildRoutes(db: DB): MockRoute[] {
     return doctorById(c.user.doctorId);
   };
   const stamp = (c: C) => ({ decidedBy: c.user.name, decidedAtUtc: c.now.toISOString() });
+
+  /** La marca vigente tal como la sirve la API: `logoUrl` lleva la huella (`?v=`) para que ningun cache confunda versiones. */
+  const brandingView = (): Branding => ({
+    name: db.branding.name,
+    logoUrl: db.branding.logo ? `/api/branding/logo?v=${db.branding.logo.hash}` : null,
+  });
+
+  /** Nombre de la clinica: texto de 1 a 80 caracteres, con los espacios normalizados (igual que el servidor). */
+  function cleanClinicName(value: unknown): string {
+    if (typeof value !== "string") throw invalid("El nombre debe ser texto.");
+    const name = value.split(/\s+/).filter(Boolean).join(" ");
+    if (!name) throw invalid("Escribe el nombre de la clínica.");
+    if (name.length > 80) throw invalid("El nombre admite hasta 80 caracteres.");
+    return name;
+  }
+
+  /**
+   * Abre sesion si `user` existe, esta activo y la contrasena coincide; si no, 401 (el mismo para cualquier fallo). 5 fallos seguidos
+   * bloquean la cuenta (`key`: su correo, o lo que se escribio si no hay cuenta) durante un rato.
+   */
+  function signIn(c: C, key: string, user: StoredUser | undefined, password: string, failMessage: string): Result {
+    const now = c.now.getTime();
+    const fail = db.loginFailures.get(key);
+    if (fail && fail.blockedUntil > now) {
+      throw new HttpError(429, "demasiados_intentos", "Demasiados intentos. Espera un minuto e inténtalo de nuevo.");
+    }
+    // Una cuenta que todavía no tiene contraseña no entra, y esos intentos no cuentan (como en el servidor).
+    if (user && user.active && user.password === null) throw new HttpError(401, "credenciales_invalidas", failMessage);
+    if (!user || !user.active || user.password !== password) {
+      // Un bloqueo ya vencido (blockedUntil != 0) vuelve a contar desde cero.
+      const count = (fail && fail.blockedUntil === 0 ? fail.count : 0) + 1;
+      db.loginFailures.set(key, { count, blockedUntil: count >= LOGIN_MAX_FAILURES ? now + LOGIN_BLOCK_MS : 0 });
+      throw new HttpError(401, "credenciales_invalidas", failMessage);
+    }
+    db.loginFailures.delete(key);
+    return startSession(user);
+  }
+
+  /** Abre la sesión de `user` (cookie y token CSRF nuevos). */
+  function startSession(user: StoredUser): Result {
+    const sid = `${nextId(db, "sess")}-${Math.random().toString(36).slice(2, 10)}`;
+    const csrf = `csrf-${Math.random().toString(36).slice(2, 14)}`;
+    db.sessions.set(sid, { userId: user.id, csrfTokens: new Set([csrf]) });
+    return { ...ok({ user: publicUser(user), csrfToken: csrf }), setSession: sid };
+  }
+
+  /** La cuenta de doctor a la que pertenece ese enlace, si sigue vigente; si no, 404 `enlace_invalido` (no existe, venció o ya se usó: es lo mismo). */
+  function userForLink(token: unknown, now: Date): StoredUser {
+    const user = typeof token === "string" && token ? db.users.find((u) => u.setup?.token === token) : undefined;
+    if (!user || user.role !== "doctor" || !user.active || !user.setup || user.setup.expiresAt <= now.getTime()) {
+      throw new HttpError(404, "enlace_invalido", "Este enlace ya no sirve. Pide uno nuevo a la clínica.");
+    }
+    return user;
+  }
 
   /* ------------------------------------------------------------ citas */
 
@@ -301,27 +363,82 @@ export function buildRoutes(db: DB): MockRoute[] {
   return [
     route<StoredUser>("health", null, () => ok({ status: "ok" })),
 
+    /* ------------------------------------------- marca de la clinica (nombre y logotipo) */
+
+    // Leer es PUBLICO (el login la muestra). Cambiar, solo el administrador.
+    route<StoredUser>("getBranding", null, () => ok(brandingView())),
+
+    route<StoredUser>("getBrandingLogo", null, (c) => {
+      const logo = db.branding.logo;
+      if (!logo) throw notFound("No hay logotipo.");
+      const etag = `"${logo.hash}"`;
+      const headers = { ETag: etag, "Cache-Control": "public, max-age=86400" };
+      if ((c.headers.get("If-None-Match") ?? "").split(",").some((t) => t.trim() === etag)) return { status: 304, headers };
+      return { status: 200, binary: { bytes: logo.bytes, contentType: logo.contentType }, headers };
+    }),
+
+    route<StoredUser>("setBranding", ADMIN, (c) => {
+      db.branding.name = cleanClinicName(asObject(c.body).name);
+      return ok(brandingView());
+    }),
+
+    // Se valida por los BYTES (igual que el servidor): PNG/JPG/WebP, cuadrada (1:1), 64 a 2048 px, hasta 1 MB.
+    route<StoredUser>("uploadBrandingLogo", ADMIN, (c) => {
+      const bytes = c.rawBody ?? new Uint8Array();
+      const check = checkLogo(bytes);
+      if (!check.ok) throw invalid(check.message);
+      db.branding.logo = { contentType: check.info.contentType, bytes: new Uint8Array(bytes), hash: hashBytes(bytes) };
+      return ok(brandingView());
+    }),
+
+    route<StoredUser>("deleteBrandingLogo", ADMIN, () => {
+      db.branding.logo = null;
+      return ok(brandingView());
+    }),
+
     route<StoredUser>("login", null, (c) => {
       const b = asObject(c.body);
       const email = reqString(b, "email", 254).toLowerCase();
       const password = typeof b.password === "string" ? b.password : "";
-      const now = c.now.getTime();
-      const fail = db.loginFailures.get(email);
-      if (fail && fail.blockedUntil > now) {
-        throw new HttpError(429, "demasiados_intentos", "Demasiados intentos. Espera un minuto e inténtalo de nuevo.");
-      }
-      const user = db.users.find((u) => u.email.toLowerCase() === email);
-      if (!user || !user.active || user.password !== password) {
-        // Un bloqueo ya vencido (blockedUntil != 0) vuelve a contar desde cero.
-        const count = (fail && fail.blockedUntil === 0 ? fail.count : 0) + 1;
-        db.loginFailures.set(email, { count, blockedUntil: count >= LOGIN_MAX_FAILURES ? now + LOGIN_BLOCK_MS : 0 });
-        throw new HttpError(401, "credenciales_invalidas", "Correo o contraseña incorrectos.");
-      }
-      db.loginFailures.delete(email);
-      const sid = `${nextId(db, "sess")}-${Math.random().toString(36).slice(2, 10)}`;
-      const csrf = `csrf-${Math.random().toString(36).slice(2, 14)}`;
-      db.sessions.set(sid, { userId: user.id, csrfTokens: new Set([csrf]) });
-      return { ...ok({ user: publicUser(user), csrfToken: csrf }), setSession: sid };
+      return signIn(c, email, db.users.find((u) => u.email?.toLowerCase() === email), password, "Correo o contraseña incorrectos.");
+    }),
+
+    // La lista de la pantalla de entrada del doctor: PUBLICA, solo codigo y nombre de quienes tienen una cuenta activa Y con contrasena, por codigo.
+    route<StoredUser>("listLoginDoctors", null, () => {
+      const withAccount = db.doctors.filter((d) => db.users.some((u) => u.role === "doctor" && u.active && u.password !== null && u.doctorId === d.id));
+      return ok({ items: withAccount.sort((a, b) => a.code.localeCompare(b.code)).map((d) => ({ code: d.code, name: d.name })) });
+    }),
+
+    // Entrada del doctor con su codigo (sin correo). Solo cuentas de doctor; un codigo desconocido y una contrasena mala son el mismo 401.
+    route<StoredUser>("doctorLogin", null, (c) => {
+      const b = asObject(c.body);
+      const code = reqString(b, "doctorCode", 20);
+      const password = typeof b.password === "string" ? b.password : "";
+      const doctor = /^[0-9]{4}$/.test(code) ? db.doctors.find((d) => d.code === code) : undefined;
+      const user = doctor ? db.users.find((u) => u.role === "doctor" && u.active && u.doctorId === doctor.id) : undefined;
+      // El contador es de la CUENTA (como en el servidor): entrar por codigo o por correo suma igual.
+      return signIn(c, user ? accountKey(user) : `codigo:${code}`, user, password, "Usuario o contraseña incorrectos.");
+    }),
+
+    // La pagina del enlace: de quien es y hasta cuando vale. No cambia nada.
+    route<StoredUser>("checkPasswordLink", null, (c) => {
+      const user = userForLink(asObject(c.body).token, c.now);
+      const doctor = doctorById(user.doctorId!);
+      return ok({ doctorCode: doctor.code, doctorName: doctor.name, expiresAtUtc: new Date(user.setup!.expiresAt).toISOString() });
+    }),
+
+    // El doctor establece su contrasena con el enlace (un solo uso) y entra de una vez. Una contrasena que no cumple NO gasta el enlace.
+    route<StoredUser>("usePasswordLink", null, (c) => {
+      const b = asObject(c.body);
+      const token = reqString(b, "token", 200);
+      const password = parsePassword(b);
+      if (!password) throw invalid(`Falta "password".`);
+      const user = userForLink(token, c.now);
+      user.password = password;
+      user.setup = null;
+      db.loginFailures.delete(accountKey(user)); // quita cualquier bloqueo
+      for (const [sid, s] of db.sessions) if (s.userId === user.id) db.sessions.delete(sid); // la contrasena cambio: nada anterior sirve
+      return startSession(user);
     }),
 
     route<StoredUser>("logout", ALL, () => ({ ...noContent(), setSession: null })),
@@ -371,10 +488,12 @@ export function buildRoutes(db: DB): MockRoute[] {
       if (!Array.isArray(aliases) || aliases.some((a) => typeof a !== "string")) throw invalid(`"aliases" debe ser una lista de textos.`);
       const color = b.color === undefined ? null : parseColor(b.color);
       const doc: StoredDoctor = {
-        id: nextId(db, "d"), name: reqString(b, "name", 120), specialty: reqString(b, "specialty", 120),
+        id: nextId(db, "d"), code: nextDoctorCode(db), name: reqString(b, "name", 120), specialty: reqString(b, "specialty", 120),
         aliases: (aliases as string[]).map((a) => a.trim()).filter(Boolean), active: optBool(b, "active") ?? true, ownHours: null, color,
       };
       db.doctors.push(doc);
+      // Su cuenta nace con el doctor: sin correo y SIN contraseña (la establece con el enlace que genera el personal).
+      db.users.push({ id: nextId(db, "u"), email: null, name: doc.name, role: "doctor", doctorId: doc.id, active: true, password: null });
       return ok(doctorView(db, doc), 201);
     }),
 
@@ -394,25 +513,44 @@ export function buildRoutes(db: DB): MockRoute[] {
       if (active !== undefined) doc.active = active;
       if (color !== undefined) doc.color = color;
       if (b.aliases !== undefined) doc.aliases = (b.aliases as string[]).map((a) => a.trim()).filter(Boolean);
-      // Las citas ya agendadas llevan una copia del nombre: se mantiene al dia.
+      // Las citas ya agendadas llevan una copia del nombre: se mantiene al dia. Y el nombre de su cuenta sigue al del doctor.
       for (const x of db.bookings) if (x.doctor?.id === doc.id) x.doctor = doctorRef(doc);
+      if (name !== undefined) for (const u of db.users) if (u.role === "doctor" && u.doctorId === doc.id) u.name = name;
       return ok(doctorView(db, doc));
     }),
 
-    // Eliminar de verdad: solo el administrador y solo si nunca tuvo citas ni cuenta ligada (si no, se da de baja).
+    // Eliminar de verdad: solo el administrador y solo si nunca tuvo citas ni una cuenta con contraseña (la cuenta recien creada, sin usar,
+    // se elimina con el doctor); si no, se da de baja.
     route<StoredUser>("deleteDoctor", ADMIN, (c) => {
       const doc = doctorById(c.params.doctorId!);
       if (db.bookings.some((x) => x.doctor?.id === doc.id)) {
         throw new HttpError(409, "doctor_con_citas", "Este doctor tiene citas en el historial: no se puede eliminar. Dalo de baja para que deje de ofrecerse.");
       }
-      if (db.users.some((u) => u.doctorId === doc.id)) {
-        throw new HttpError(409, "doctor_con_usuario", "Hay una cuenta de usuario ligada a este doctor: elimínala o cámbiala primero en Usuarios.");
+      if (db.users.some((u) => u.doctorId === doc.id && u.password !== null)) {
+        throw new HttpError(409, "doctor_con_usuario", "Este doctor ya tiene una cuenta con contraseña en uso: no se puede eliminar. Dalo de baja (o desactiva su cuenta en Usuarios).");
       }
+      db.users = db.users.filter((u) => u.doctorId !== doc.id);
       db.doctors.splice(db.doctors.indexOf(doc), 1);
       db.absences = db.absences.filter((a) => a.doctorId !== doc.id);
       db.personalEvents = db.personalEvents.filter((ev) => ev.doctorId !== doc.id);
       db.requests = db.requests.filter((r) => r.doctorId !== doc.id);
       return noContent();
+    }),
+
+    // El enlace para que un doctor establezca su contrasena (la primera vez, o una nueva si la olvido): de un solo uso, 72 h, reemplaza al anterior.
+    route<StoredUser>("createPasswordLink", STAFF, (c) => {
+      const doc = doctorById(c.params.doctorId!);
+      let user = db.users.find((u) => u.role === "doctor" && u.doctorId === doc.id);
+      if (!user) {
+        user = { id: nextId(db, "u"), email: null, name: doc.name, role: "doctor", doctorId: doc.id, active: true, password: null };
+        db.users.push(user);
+      } else if (!user.active) {
+        throw invalid("La cuenta de este doctor está desactivada: un administrador debe reactivarla en Usuarios.");
+      }
+      const token = Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 10).padEnd(8, "x")).join("");
+      const expiresAt = c.now.getTime() + PASSWORD_LINK_HOURS * 3600_000;
+      user.setup = { token, expiresAt };
+      return ok({ url: `${MOCK_DOCTOR_APP_URL}#/contrasena?t=${token}`, expiresAtUtc: new Date(expiresAt).toISOString() });
     }),
 
     route<StoredUser>("setDoctorWeeklyHours", STAFF, (c) => {
@@ -525,8 +663,11 @@ export function buildRoutes(db: DB): MockRoute[] {
       const b = asObject(c.body);
       const email = reqString(b, "email", 254).toLowerCase();
       if (!EMAIL.test(email)) throw invalid("El correo no es válido.");
-      if (db.users.some((u) => u.email.toLowerCase() === email)) throw invalid("Ya existe un usuario con ese correo.");
+      if (db.users.some((u) => u.email?.toLowerCase() === email)) throw invalid("Ya existe un usuario con ese correo.");
       const role = parseRole(b.role);
+      if (role === "doctor") {
+        throw invalid("Aquí solo se crean usuarios de personal y administrador. La cuenta de un doctor se crea sola al darlo de alta; en «Datos» del doctor se genera el enlace para que establezca su contraseña.");
+      }
       const password = parsePassword(b);
       if (!password) throw invalid(`Falta "password".`);
       const doctorId = checkUserShape(role, typeof b.doctorId === "string" ? b.doctorId : undefined);

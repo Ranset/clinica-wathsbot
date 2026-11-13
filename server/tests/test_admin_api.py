@@ -15,7 +15,9 @@ def test_listar_usuarios_sin_exponer_contrasenas(login):
         "admin@clinica.test", "recepcion@clinica.test", "dr.cervantes@clinica.test", "dra.perez@clinica.test"]
     for u in items:
         assert_schema("User", u)
-        assert set(u) == {"id", "email", "name", "role", "doctorId", "active"}
+        assert set(u) == {"id", "email", "name", "role", "doctorId", "active", "passwordSet"}   # `passwordSet` es un si/no, nunca la contrasena ni su hash
+        assert u["passwordSet"] is True
+    assert "hash" not in str(items).lower() and "scrypt" not in str(items) and "pbkdf2" not in str(items)
     assert [u["doctorId"] for u in items] == [None, None, "1", "2"]
 
 
@@ -44,11 +46,16 @@ def test_crear_usuario_invalido_es_422(login, cambio):
     assert r.status_code == 422 and r.get_json()["error"] == "validacion", cambio
 
 
-def test_un_usuario_doctor_se_liga_a_su_doctor(login, app):
-    r = login("admin").post("/api/users", {"email": "dr3@clinica.test", "name": "Dra Tres", "role": "doctor", "doctorId": "3",
-                                           "password": "clave-larga-123"})
-    assert r.status_code == 201 and r.get_json()["doctorId"] == "3"
-    assert Session(app, "dr3@clinica.test", "clave-larga-123").get("/api/doctor/hours").get_json()["id"] == "3"
+def test_desde_usuarios_ya_no_se_crean_doctores(login):
+    """La cuenta de un doctor nace con el doctor (sin correo ni contrasena); aqui solo personal y administrador."""
+    admin = login("admin")
+    r = admin.post("/api/users", {"email": "dr3@clinica.test", "name": "Dra Tres", "role": "doctor", "doctorId": "3",
+                                  "password": "clave-larga-123"})
+    assert r.status_code == 422 and r.get_json()["error"] == "validacion" and "doctor" in r.get_json()["detail"]
+    assert "dr3@clinica.test" not in [u["email"] for u in admin.get("/api/users").get_json()["items"]]
+    for rol in ("staff", "admin"):
+        assert admin.post("/api/users", {"email": f"{rol}2@clinica.test", "name": "Persona Nueva", "role": rol,
+                                         "password": "clave-larga-123"}).status_code == 201
 
 
 def test_editar_usuario(login):

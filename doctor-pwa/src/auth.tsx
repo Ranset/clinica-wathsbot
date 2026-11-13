@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { isApiError, type User } from "@clinica/api-client";
+import { isApiError, type SessionInfo, type User } from "@clinica/api-client";
 import { useApi } from "./api-context";
 import { useConnection } from "./lib/connection";
 import { isTransientError, messageFor } from "./lib/errors";
@@ -18,7 +18,10 @@ type AuthContextValue = {
   user: User | null;
   /** El servidor confirmó la sesión (y hay token CSRF): solo así se puede escribir. */
   verified: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  /** Entra con el código de 4 dígitos del doctor (el «usuario») y su contraseña. */
+  login: (doctorCode: string, password: string) => Promise<void>;
+  /** Establece la contraseña con el enlace que mandó la clínica (la primera vez, o una nueva si olvidó la suya) y deja la sesión abierta. */
+  setPassword: (token: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   retry: () => void;
 };
@@ -117,9 +120,9 @@ export function AuthProvider({ children, verifyMs = VERIFY_MS }: { children: Rea
   // Si en pleno uso el servidor responde 401, la sesión venció: de vuelta al login.
   useEffect(() => api.onUnauthenticated(() => setState({ status: "anonymous", notice: EXPIRED })), [api]);
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const info = await api.auth.login(email, password);
+  /** Una sesión nueva (por el login o por el enlace de contraseña): se guarda quién es y se entra. */
+  const enter = useCallback(
+    (info: SessionInfo) => {
       conn.reportSuccess();
       // Otro doctor en el mismo dispositivo: nada de lo del anterior se queda.
       clearStoredData(storage, { exceptUser: info.user.id });
@@ -127,8 +130,12 @@ export function AuthProvider({ children, verifyMs = VERIFY_MS }: { children: Rea
       setState({ status: "authenticated", user: info.user, verified: true });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [api, storage, remember]
+    [storage, remember]
   );
+
+  const login = useCallback(async (doctorCode: string, password: string) => enter(await api.auth.loginDoctor(doctorCode, password)), [api, enter]);
+
+  const setPassword = useCallback(async (token: string, password: string) => enter(await api.auth.usePasswordLink(token, password)), [api, enter]);
 
   const logout = useCallback(async () => {
     // Que este dispositivo deje de recibir avisos de la agenda (con paciente) de quien sale.
@@ -146,7 +153,10 @@ export function AuthProvider({ children, verifyMs = VERIFY_MS }: { children: Rea
 
   const user = state.status === "authenticated" ? state.user : null;
   const verified = state.status === "authenticated" && state.verified;
-  const value = useMemo<AuthContextValue>(() => ({ state, user, verified, login, logout, retry }), [state, user, verified, login, logout, retry]);
+  const value = useMemo<AuthContextValue>(
+    () => ({ state, user, verified, login, setPassword, logout, retry }),
+    [state, user, verified, login, setPassword, logout, retry]
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

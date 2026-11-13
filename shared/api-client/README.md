@@ -9,6 +9,11 @@ import { createApiClient, isApiError } from "@clinica/api-client";
 
 const api = createApiClient();                       // mismo origen: cookie `clinica_session` + `X-CSRF-Token`
 await api.auth.login(email, password);              // guarda el token CSRF (también `me()`)
+await api.auth.loginDoctors();                      // PÚBLICO: [{ code: "1001", name }] de los doctores con cuenta (la lista de la entrada del doctor)
+await api.auth.loginDoctor("1001", password);       // entrada del doctor con su código de 4 dígitos (sin correo); guarda el token CSRF
+await api.doctors.createPasswordLink(doctorId);     // personal/admin: { url, expiresAtUtc } del enlace para que el doctor cree (o cambie) su contraseña
+await api.auth.checkPasswordLink(token);            // PÚBLICO: { doctorCode, doctorName, expiresAtUtc } o 404 `enlace_invalido`
+await api.auth.usePasswordLink(token, password);    // PÚBLICO: guarda la contraseña (un solo uso) y deja la sesión abierta
 const r = await api.appointments.list({ from, to }, { etag });   // { notModified: true, etag } si el servidor dio 304
 await api.appointments.update(id, { status: "realizada" });
 api.onUnauthenticated(() => /* la sesión venció */);

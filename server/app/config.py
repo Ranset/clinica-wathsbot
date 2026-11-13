@@ -17,6 +17,8 @@ Variables de entorno reconocidas:
                        (Zernio reintenta los 5xx; un 4xx mandaria el evento a su cola de eventos muertos).
   SESSION_IDLE_MINUTES (480) / SESSION_MAX_DAYS (7)   caducidad de la sesion por inactividad / absoluta
   LOGIN_MAX_FAILURES (5) / LOGIN_LOCK_MINUTES (15)    bloqueo de un usuario tras contrasenas erroneas seguidas
+  DOCTOR_APP_URL       donde vive la app del doctor (la PWA), p. ej. https://clinica.example.com/doctor/ : los enlaces para establecer la
+                       contrasena de un doctor apuntan ahi. Sin ella, generar el enlace responde 503 `no_configurado`.
   AUTH_COOKIE_SECURE   1 (defecto): la cookie de sesion solo viaja por HTTPS. 0 solo para desarrollo local con http.
   PASSWORD_HASH_METHOD metodo de werkzeug para guardar contrasenas (vacio = scrypt; pbkdf2 si el Python no lo trae)
   EVENT_MAX_ATTEMPTS   intentos de la cola antes de marcar un evento como fallido (5)
@@ -42,6 +44,7 @@ DEFAULTS: dict = {
     "MAX_DURATION_MINUTES": 24 * 60,
     "SQL_ECHO": False,
     "BOT_TOKEN": "",
+    "DOCTOR_APP_URL": "",
     "ZERNIO_WEBHOOK_SECRET": "",
     "EVENT_MAX_ATTEMPTS": 5,
     "EVENT_RETRY_BACKOFF_SECONDS": 30,
@@ -57,7 +60,7 @@ DEFAULTS: dict = {
 _ENV_INT = ("SLOT_MINUTES", "MIN_NOTICE_MINUTES", "HORIZON_DAYS", "MAX_DURATION_MINUTES", "POOL_SIZE",
             "EVENT_MAX_ATTEMPTS", "EVENT_RETRY_BACKOFF_SECONDS", "SESSION_IDLE_MINUTES", "SESSION_MAX_DAYS",
             "LOGIN_MAX_FAILURES", "LOGIN_LOCK_MINUTES")
-_ENV_STR = ("TIMEZONE", "BOT_TOKEN", "ZERNIO_WEBHOOK_SECRET", "PASSWORD_HASH_METHOD")
+_ENV_STR = ("TIMEZONE", "BOT_TOKEN", "ZERNIO_WEBHOOK_SECRET", "PASSWORD_HASH_METHOD", "DOCTOR_APP_URL")
 
 
 def default_database_url() -> str:

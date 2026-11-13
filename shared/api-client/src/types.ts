@@ -34,8 +34,15 @@ export type User = S["User"];
 export type UserCreate = S["UserCreate"];
 export type UserPatch = S["UserPatch"];
 export type SessionInfo = S["SessionInfo"];
+/** Un doctor de la lista de la pantalla de entrada: codigo de 4 digitos y nombre (publico). */
+export type LoginDoctor = S["LoginDoctor"];
+/** El enlace que el personal le manda al doctor para que establezca su contraseña (`url` completa y cuándo vence). */
+export type PasswordLink = S["PasswordLink"];
+/** De quién es un enlace (código y nombre del doctor) y hasta cuándo vale. */
+export type PasswordLinkInfo = S["PasswordLinkInfo"];
 export type AttentionItem = S["AttentionItem"];
 export type AttentionList = S["AttentionList"];
+export type Branding = S["Branding"];
 export type BotSettings = S["BotSettings"];
 
 /** Respuesta de `PUT /api/doctors/{id}/weekly-hours` (y de aprobar una solicitud, por dentro). */

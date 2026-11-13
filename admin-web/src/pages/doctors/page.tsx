@@ -256,6 +256,9 @@ export function DoctorsPage() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[15px] font-bold">{d.name}</p>
                 <p className="text-sm text-text-2">{d.specialty}</p>
+                <p className="text-xs text-text-3">
+                  Código de acceso: <span className="font-mono font-semibold tabular-nums text-text-2">{d.code}</span>
+                </p>
               </div>
               {!d.active && <Pill tone="danger">De baja</Pill>}
             </div>

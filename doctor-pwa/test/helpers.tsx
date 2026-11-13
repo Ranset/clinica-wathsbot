@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { expect, vi } from "vitest";
 import { createApiClient, type Booking, type Role } from "@clinica/api-client";
 import { DEMO_ACCOUNTS, createMockApi, type MockApi } from "@clinica/api-client/mock";
 import { contractFetch } from "../../shared/api-client/test/spec";
@@ -16,6 +16,21 @@ export function freezeClock() {
 
 export const account = (role: Role) => DEMO_ACCOUNTS.find((a) => a.role === role)!;
 
+/** El código de 4 dígitos y la contraseña con los que entra el doctor de ejemplo. */
+export const doctorCredentials = () => {
+  const a = account("doctor");
+  return { code: a.doctorCode!, password: a.password };
+};
+
+/** Llena la pantalla de entrada como lo haría el doctor (espera a que cargue la lista, escribe el código y la contraseña) y pulsa «Entrar». */
+export async function signIn(user: UserEvent, who: { code: string; password: string } = doctorCredentials()) {
+  const combo = await screen.findByRole("combobox", { name: "Usuario" });
+  await waitFor(() => expect(combo).toBeEnabled());
+  await user.type(combo, who.code); // un código completo se elige solo
+  await user.type(screen.getByLabelText("Contraseña"), who.password);
+  await user.click(screen.getByRole("button", { name: "Entrar" }));
+}
+
 export type Logged = { method: string; path: string; body: unknown };
 
 /**
@@ -23,13 +38,14 @@ export type Logged = { method: string; path: string; body: unknown };
  * pantalla manda algo que `docs/openapi.yaml` no permite, o el simulador responde fuera del contrato,
  * `violations` lo dice) y queda en `log`.
  */
-export function makeServer() {
+export function makeServer(opts: { /** Rutas que "no contestan" (la peticion falla como sin red), p. ej. solo `/api/branding`. */ fail?: (path: string) => boolean } = {}) {
   const mock = createMockApi({ now: () => new Date() });
   const cf = contractFetch(mock.fetch);
   const log: Logged[] = [];
   const spy = async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://mock.local");
     log.push({ method: (init?.method ?? "GET").toUpperCase(), path: u.pathname, body: typeof init?.body === "string" && init.body ? JSON.parse(init.body) : undefined });
+    if (opts.fail?.(u.pathname)) throw new TypeError("Failed to fetch");
     return cf.fetch(url, init);
   };
   const api = createApiClient({ fetch: spy });

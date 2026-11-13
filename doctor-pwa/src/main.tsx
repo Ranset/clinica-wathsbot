@@ -24,7 +24,8 @@ async function boot() {
     const mock = createMockApi({ latencyMs: 120, storage });
     window.__clinicaMock = mock;
     api = createApiClient({ fetch: mock.fetch });
-    demoAccounts = DEMO_ACCOUNTS.map((a) => ({ label: a.role === "admin" ? "Administrador" : a.role === "staff" ? "Personal" : "Doctor", email: a.email, password: a.password }));
+    // Esta app es solo de doctores: se ofrecen las cuentas de doctor del simulador, con su código de 4 dígitos.
+    demoAccounts = DEMO_ACCOUNTS.filter((a) => a.role === "doctor" && a.doctorCode).map((a) => ({ label: a.name, code: a.doctorCode!, password: a.password }));
   } else {
     api = createApiClient();
   }

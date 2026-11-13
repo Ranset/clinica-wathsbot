@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { doctorColor } from "@clinica/calendar";
 import type { MockApi } from "@clinica/api-client/mock";
@@ -338,6 +338,72 @@ describe("calendario", () => {
     await user.click(within(dialog).getByRole("checkbox", { name: /Cita de mostrador/ }));
     await user.click(within(dialog).getByRole("button", { name: "Agendar cita" }));
     expect(await screen.findByText("Cita agendada.")).toBeInTheDocument();
+  });
+
+  it("si el doctor elegido no atiende a esa hora sale el aviso y «Agendar cita» queda deshabilitado; al corregirlo se habilita", async () => {
+    const { user, mock, violations: v } = await mountApp();
+    violations = v;
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Nueva cita" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nueva cita" });
+    const agendar = () => within(dialog).getByRole("button", { name: "Agendar cita" });
+    const aviso = () => within(dialog).queryByText(/Dr\. Pérez Lago no atiende/);
+    await user.type(within(dialog).getByLabelText("Paciente"), "Paciente Fuera");
+    expect(agendar()).toBeEnabled();                                                    // sin doctor elegido no hay aviso
+
+    // el Dr. Pérez Lago tiene horario propio: martes y jueves de 10:00 AM a 2:00 PM
+    await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d2");
+    fireEvent.change(within(dialog).getByLabelText("Fecha"), { target: { value: "2026-11-12" } });      // jueves
+    await user.selectOptions(within(dialog).getByLabelText("Hora"), "09:00");                          // antes de que empiece
+    expect(aviso()).toBeInTheDocument();
+    expect(agendar()).toBeDisabled();
+    expect(agendar()).toHaveAttribute("title", expect.stringMatching(/no atiende en ese horario/));
+
+    // «cita de mostrador» solo omite la antelación: no hace que atienda
+    await user.click(within(dialog).getByRole("checkbox", { name: /Cita de mostrador/ }));
+    expect(agendar()).toBeDisabled();
+    await user.click(within(dialog).getByRole("checkbox", { name: /Cita de mostrador/ }));
+
+    // aunque se fuerce el envío (Enter en un campo), no sale nada: ni petición ni cita
+    const antes = mock.db.bookings.length;
+    fireEvent.submit(within(dialog).getByRole("textbox", { name: "Paciente" }).closest("form")!);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mock.db.bookings).toHaveLength(antes);
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+
+    // dentro de su horario: el aviso se va y el botón se habilita
+    await user.selectOptions(within(dialog).getByLabelText("Hora"), "10:00");
+    expect(aviso()).toBeNull();
+    expect(agendar()).toBeEnabled();
+    expect(agendar()).not.toHaveAttribute("title");
+
+    // la duración cuenta: 1:30 PM + 60 min termina a las 2:30 PM, fuera de su horario
+    await user.selectOptions(within(dialog).getByLabelText("Hora"), "13:30");
+    expect(agendar()).toBeEnabled();                                                    // 30 min: cabe (termina 2:00 PM)
+    await user.selectOptions(within(dialog).getByLabelText("Duración"), "60");
+    expect(aviso()).toBeInTheDocument();
+    expect(agendar()).toBeDisabled();
+    await user.selectOptions(within(dialog).getByLabelText("Duración"), "30");
+    expect(agendar()).toBeEnabled();
+
+    // otro día en que no atiende (miércoles) también bloquea; con otro doctor que sí atiende, se habilita
+    fireEvent.change(within(dialog).getByLabelText("Fecha"), { target: { value: "2026-11-11" } });
+    expect(agendar()).toBeDisabled();
+    await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d1");
+    expect(within(dialog).queryByText(/no atiende/)).toBeNull();
+    expect(agendar()).toBeEnabled();
+  });
+
+  it("los otros avisos (ya pasó, menos de 60 minutos) siguen sin bloquear el botón: el servidor decide", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Nueva cita" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nueva cita" });
+    await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d1");
+    await user.selectOptions(within(dialog).getByLabelText("Hora"), "10:30");           // hoy, faltan 30 min
+    expect(within(dialog).getByText(/Faltan menos de 60 minutos/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Agendar cita" })).toBeEnabled();
   });
 
   it("bloquear horario crea un bloqueo de consultorio", async () => {
@@ -940,6 +1006,124 @@ describe("doctores", () => {
     await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dra. Alta Recepción")!.active).toBe(false));
   });
 
+  describe("enlace para que el doctor establezca su contraseña", () => {
+    // OJO: `userEvent.setup()` (dentro de `mountApp`) instala su propio portapapeles: estos dobles se ponen DESPUÉS de montar.
+    const stubClipboard = (writeText = vi.fn().mockResolvedValue(undefined)) => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      return writeText;
+    };
+    afterEach(() => {
+      Reflect.deleteProperty(navigator, "clipboard");
+    });
+    const openDatos = async (user: ReturnType<typeof import("@testing-library/user-event").default.setup>, name: string) => {
+      await user.click(await screen.findByRole("button", { name: `Horario y ausencias de ${name}` }));
+      const dialog = await screen.findByRole("dialog", { name });
+      await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+      return dialog;
+    };
+
+    it("dar de alta a un doctor crea su cuenta sin correo ni contraseña, y el aviso dice dónde generar su enlace; el formulario sigue igual (sin correo)", async () => {
+      const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+      violations = v;
+      await user.click(await screen.findByRole("button", { name: "Nuevo doctor" }));
+      const alta = await screen.findByRole("dialog", { name: "Nuevo doctor" });
+      // el mismo formulario de antes: nombre, especialidad, sinónimos, color y activo (nada de correo ni contraseña)
+      expect(within(alta).queryByLabelText(/correo/i)).toBeNull();
+      expect(within(alta).queryByLabelText(/contraseña/i)).toBeNull();
+      await user.type(within(alta).getByLabelText("Nombre"), "Dr. Con Cuenta");
+      await user.type(within(alta).getByLabelText("Especialidad"), "Cardiología");
+      await user.click(within(alta).getByRole("button", { name: "Dar de alta" }));
+      expect(await screen.findByText(/Su cuenta ya existe: genera su enlace de contraseña en «Datos»/)).toBeInTheDocument();
+      const doctor = mock.db.doctors.find((d) => d.name === "Dr. Con Cuenta")!;
+      expect(mock.db.users.filter((u) => u.doctorId === doctor.id).map((u) => [u.role, u.email, u.password, u.active])).toEqual([["doctor", null, null, true]]);
+    });
+
+    it("«Generar enlace y copiar» copia un mensaje corto con el nombre, el código y el enlace, y lo deja a la vista; otro enlace reemplaza al anterior", async () => {
+      const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+      violations = v;
+      const writeText = stubClipboard();
+      const dialog = await openDatos(user, "Dr. Cervantes Peláez");
+      const section = within(dialog).getByRole("region", { name: "Acceso del doctor a su app" });
+      await user.click(within(section).getByRole("button", { name: "Generar enlace y copiar" }));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      const text = writeText.mock.calls[0]![0] as string;
+      const lines = text.split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toBe("Dr. Cervantes Peláez · Código 1001");
+      expect(lines[1]).toBe("Crea o cambia tu contraseña aquí (vale 3 días):");
+      expect(lines[2]).toMatch(/^https:\/\/clinica\.test\/doctor\/#\/contrasena\?t=[A-Za-z0-9]{32}$/);
+      expect(text.length).toBeLessThan(220); // cabe en un mensaje de WhatsApp
+      expect(await within(section).findByText("Copiado al portapapeles. Pégalo en el mensaje.")).toBeInTheDocument();
+      expect(within(section).getByLabelText("Mensaje para el doctor")).toHaveValue(text);
+      expect(await screen.findByText("Mensaje copiado. Pégalo en WhatsApp o donde prefieras.")).toBeInTheDocument();
+      const token1 = lines[2]!.split("?t=")[1]!;
+      expect(mock.db.users.find((u) => u.doctorId === "d1")!.setup?.token).toBe(token1);
+
+      await user.click(within(section).getByRole("button", { name: "Generar enlace y copiar" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+      const token2 = (writeText.mock.calls[1]![0] as string).split("?t=")[1]!;
+      expect(token2).not.toBe(token1);
+      expect(mock.db.users.find((u) => u.doctorId === "d1")!.setup?.token).toBe(token2); // el anterior ya no sirve
+    });
+
+    it("un doctor anterior sin cuenta la recibe al generar el enlace; sin permiso de copiar el texto queda para copiarlo a mano", async () => {
+      const { user, mock, violations: v } = await mountApp({ as: "admin", hash: "#/doctores" });
+      violations = v;
+      stubClipboard(vi.fn().mockRejectedValue(new Error("permiso negado"))); // el navegador no deja copiar (p. ej. página sin HTTPS)
+      expect(mock.db.users.some((u) => u.doctorId === "d5")).toBe(false);
+      const dialog = await openDatos(user, "Dr. Molina López");
+      await user.click(within(dialog).getByRole("button", { name: "Generar enlace y copiar" }));
+      expect(await within(dialog).findByText("No se pudo copiar solo: selecciona el texto de abajo y cópialo.")).toBeInTheDocument();
+      expect((within(dialog).getByLabelText("Mensaje para el doctor") as HTMLTextAreaElement).value).toContain("Dr. Molina López · Código 1005");
+      expect(await screen.findByText("Enlace generado. No se pudo copiar solo: cópialo del recuadro.")).toBeInTheDocument();
+      expect(mock.db.users.filter((u) => u.doctorId === "d5").map((u) => [u.email, u.password])).toEqual([[null, null]]);
+    });
+
+    it("con la cuenta desactivada avisa con el motivo y no deja nada copiado", async () => {
+      const { user, violations: v } = await mountApp({
+        as: "staff",
+        hash: "#/doctores",
+        prepare: (m) => m.db.users.push({ id: "u91", email: null, name: "Dra. Geydi", role: "doctor", doctorId: "d6", active: false, password: null }),
+      });
+      violations = v;
+      const writeText = stubClipboard();
+      const dialog = await openDatos(user, "Dra. Geydi");
+      await user.click(within(dialog).getByRole("button", { name: "Generar enlace y copiar" }));
+      expect(await within(dialog).findByText(/La cuenta de este doctor está desactivada: un administrador debe reactivarla en Usuarios/)).toBeInTheDocument();
+      expect(writeText).not.toHaveBeenCalled();
+      expect(within(dialog).queryByLabelText("Mensaje para el doctor")).toBeNull();
+    });
+  });
+
+  it("cada doctor muestra su código de acceso de 4 dígitos; el alta lo asigna solo y en «Datos» se ve sin poder editarlo", async () => {
+    const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
+    violations = v;
+    const cards = () => Array.from(document.querySelectorAll<HTMLElement>("ul[aria-label='Doctores'] > li"));
+    const card = (name: string) => cards().find((c) => c.textContent?.includes(name))!;
+    await screen.findByRole("heading", { name: "Doctores" });
+    expect(card("Dr. Cervantes Peláez")).toHaveTextContent("Código de acceso: 1001");
+    expect(card("Dra. Ana del Carmen Argüelles")).toHaveTextContent("Código de acceso: 1007");
+
+    // el alta avisa que se asignará, y el doctor nuevo recibe el siguiente código libre
+    await user.click(screen.getByRole("button", { name: "Nuevo doctor" }));
+    const alta = await screen.findByRole("dialog", { name: "Nuevo doctor" });
+    expect(within(alta).getByText(/el sistema le asigna un código de 4 dígitos/)).toBeInTheDocument();
+    expect(within(alta).queryByLabelText("Código de acceso del doctor")).toBeNull();
+    await user.type(within(alta).getByLabelText("Nombre"), "Dr. Con Código");
+    await user.type(within(alta).getByLabelText("Especialidad"), "Cardiología");
+    await user.click(within(alta).getByRole("button", { name: "Dar de alta" }));
+    await waitFor(() => expect(mock.db.doctors.find((d) => d.name === "Dr. Con Código")?.code).toBe("1008"));
+    await waitFor(() => expect(card("Dr. Con Código")).toHaveTextContent("Código de acceso: 1008"));
+
+    // en «Datos» el código se ve, pero no es un campo que se pueda editar
+    await user.click(screen.getByRole("button", { name: "Horario y ausencias de Dr. Con Código" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dr. Con Código" });
+    await user.click(within(dialog).getByRole("tab", { name: "Datos" }));
+    expect(within(dialog).getByLabelText("Código de acceso del doctor")).toHaveTextContent("1008");
+    expect(within(dialog).queryByRole("textbox", { name: /Código/ })).toBeNull();
+  });
+
   it("los doctores de baja no salen por defecto; el check «Mostrar doctores inactivos» los muestra (y viaja en la dirección)", async () => {
     const { user, mock, violations: v } = await mountApp({ as: "staff", hash: "#/doctores" });
     violations = v;
@@ -1065,13 +1249,25 @@ describe("doctores", () => {
 });
 
 describe("usuarios (administrador)", () => {
+  /** Los renglones de la lista (solo el nombre, sin el «(tú)»). */
+  const names = () =>
+    within(screen.getByRole("list", { name: "Usuarios" }))
+      .queryAllByRole("listitem")
+      .map((li) => li.querySelector("p")!.textContent!.replace("(tú)", "").trim());
+  const roleCounts = () => within(screen.getByRole("group", { name: "Filtrar por rol" })).getAllByRole("button").map((b) => b.textContent);
+  const showInactive = () => screen.getByRole("checkbox", { name: /Mostrar usuarios sin acceso/ });
+
   it("lista, valida y crea un usuario; no deja quitarse el acceso a uno mismo", async () => {
     const { user, mock, violations: v } = await mountApp({ as: "admin", hash: "#/usuarios" });
     violations = v;
     const list = await screen.findByRole("list", { name: "Usuarios" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(4);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);        // la baja no sale por defecto
     expect(within(list).getByText("(tú)")).toBeInTheDocument();
-    expect(within(list).getByText("Sin acceso")).toBeInTheDocument();
+    expect(within(list).queryByText("Sin acceso")).not.toBeInTheDocument();
+    await user.click(showInactive());
+    expect(within(screen.getByRole("list", { name: "Usuarios" })).getByText("Sin acceso")).toBeInTheDocument();
+    expect(names()).toHaveLength(4);
+    await user.click(showInactive());
 
     await user.click(screen.getByRole("button", { name: "Nuevo usuario" }));
     const dialog = await screen.findByRole("dialog", { name: "Nuevo usuario" });
@@ -1081,16 +1277,18 @@ describe("usuarios (administrador)", () => {
     await user.click(within(dialog).getByRole("button", { name: "Crear usuario" }));
     expect(await within(dialog).findByText("La contraseña debe tener al menos 10 caracteres.")).toBeInTheDocument();
 
-    await user.selectOptions(within(dialog).getByLabelText("Rol"), "doctor");
-    await user.click(within(dialog).getByRole("button", { name: "Crear usuario" }));
-    expect(await within(dialog).findByText("Elige a qué doctor corresponde este usuario.")).toBeInTheDocument();
-    await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d3");
+    // aquí solo se crean usuarios de personal y administrador: los doctores nacen con el doctor, en Doctores
+    const rol = within(dialog).getByLabelText("Rol");
+    expect(within(rol).getAllByRole("option").map((o) => o.textContent)).toEqual(["Personal de la clínica", "Administrador técnico"]);
+    expect(within(dialog).queryByLabelText("Doctor")).toBeNull();
+    expect(within(dialog).getByText(/Los doctores no se crean aquí/)).toBeInTheDocument();
+    await user.selectOptions(rol, "admin");
     await user.clear(within(dialog).getByLabelText("Contraseña"));
     await user.type(within(dialog).getByLabelText("Contraseña"), "una-clave-larga-1");
     await user.click(within(dialog).getByRole("button", { name: "Crear usuario" }));
     expect(await screen.findByText("Usuario Persona Nueva creado.")).toBeInTheDocument();
-    expect(mock.db.users.at(-1)).toMatchObject({ email: "nueva@clinica.test", role: "doctor", doctorId: "d3", active: true });
-    await waitFor(() => expect(within(screen.getByRole("list", { name: "Usuarios" })).getAllByRole("listitem")).toHaveLength(5));
+    expect(mock.db.users.at(-1)).toMatchObject({ email: "nueva@clinica.test", role: "admin", doctorId: null, active: true });
+    await waitFor(() => expect(names()).toHaveLength(4));
 
     await user.click(screen.getByRole("button", { name: `Editar a ${account("admin").name}` }));
     const edit = await screen.findByRole("dialog", { name: `Editar a ${account("admin").name}` });
@@ -1098,7 +1296,163 @@ describe("usuarios (administrador)", () => {
     expect(within(edit).getByRole("checkbox", { name: /Activo/ })).toBeDisabled();
   });
 
-  it("da de baja a otra persona", async () => {
+  it("un usuario doctor muestra el código de su doctor; el de uno recién dado de alta, sin correo y «Sin contraseña»; y su formulario no deja cambiar el rol ni el doctor", async () => {
+    const { user, mock, violations: v } = await mountApp({
+      as: "admin",
+      hash: "#/usuarios",
+      // la cuenta que nace sola al dar de alta a un doctor: sin correo y sin contraseña
+      prepare: (m) => m.db.users.push({ id: "u90", email: null, name: "Dra. Bordas Rodríguez", role: "doctor", doctorId: "d3", active: true, password: null }),
+    });
+    violations = v;
+    const list = await screen.findByRole("list", { name: "Usuarios" });
+    expect(within(list).getByText(/Dr\. Cervantes Peláez · código/)).toHaveTextContent("código 1001");
+    const nueva = within(list).getByText("Sin correo: entra con su código").closest("li")!;
+    expect(within(nueva).getByText(/Dra\. Bordas Rodríguez · código/)).toHaveTextContent("código 1003");
+    expect(within(nueva).getByText("Sin contraseña")).toBeInTheDocument();
+    expect(within(list).getAllByText("Sin contraseña")).toHaveLength(1); // los demás ya la tienen
+
+    await user.click(within(nueva).getByRole("button", { name: "Editar a Dra. Bordas Rodríguez" }));
+    const dialog = await screen.findByRole("dialog", { name: "Editar a Dra. Bordas Rodríguez" });
+    const rol = within(dialog).getByLabelText("Rol");
+    expect(rol).toBeDisabled();
+    expect(within(rol).getAllByRole("option").map((o) => o.textContent)).toEqual(["Doctor"]);
+    expect(within(dialog).getByLabelText("Doctor")).toHaveValue("1003 · Dra. Bordas Rodríguez · Ortopedia y Traumatología");
+    expect(within(dialog).getByLabelText("Correo")).toBeDisabled();
+    expect(within(dialog).getByText(/genera su enlace en Doctores/)).toBeInTheDocument();
+    // renombrar la cuenta: solo viaja el nombre (no el rol ni el doctor)
+    await user.clear(within(dialog).getByLabelText("Nombre"));
+    await user.type(within(dialog).getByLabelText("Nombre"), "Dra. Bordas R.");
+    await user.click(within(dialog).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mock.db.users.find((u) => u.id === "u90")!.name).toBe("Dra. Bordas R."));
+    expect(mock.db.users.find((u) => u.id === "u90")).toMatchObject({ role: "doctor", doctorId: "d3", password: null });
+  });
+
+  it("filtra por rol: «Todos» y un botón por rol, con su cuenta; el filtro viaja en la dirección y se puede quitar", async () => {
+    const { user, violations: v } = await mountApp({ as: "admin", hash: "#/usuarios" });
+    violations = v;
+    const group = await screen.findByRole("group", { name: "Filtrar por rol" });
+
+    // sin filtro: los que tienen acceso (la baja está oculta); los botones llevan cuántos hay de cada rol
+    expect(roleCounts()).toEqual(["Todos3", "Administradores1", "Personal1", "Doctores1"]);
+    expect(within(group).getByRole("button", { name: /^Todos/ })).toHaveAttribute("aria-pressed", "true");
+    expect(names()).toHaveLength(3);
+
+    await user.click(within(group).getByRole("button", { name: /^Personal/ }));
+    expect(names()).toEqual([account("staff").name]);
+    expect(window.location.hash).toBe("#/usuarios?rol=staff");
+    expect(within(group).getByRole("button", { name: /^Personal/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(group).getByRole("button", { name: /^Todos/ })).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(within(group).getByRole("button", { name: /^Doctores/ }));
+    expect(names()).toEqual([account("doctor").name]);
+    expect(window.location.hash).toBe("#/usuarios?rol=doctor");
+
+    await user.click(within(group).getByRole("button", { name: /^Administradores/ }));
+    expect(names()).toEqual([account("admin").name]);
+    expect(within(screen.getByRole("list", { name: "Usuarios" })).getByText("(tú)")).toBeInTheDocument();
+
+    await user.click(within(group).getByRole("button", { name: /^Todos/ }));
+    expect(names()).toHaveLength(3);
+    expect(window.location.hash).toBe("#/usuarios");
+  });
+
+  it("los usuarios sin acceso (dados de baja) no salen por defecto; el check los muestra, con su cuenta, y viaja en la dirección", async () => {
+    const { user, violations: v } = await mountApp({ as: "admin", hash: "#/usuarios" });
+    violations = v;
+    await screen.findByRole("list", { name: "Usuarios" });
+    expect(showInactive()).not.toBeChecked();
+    expect(screen.getByText("Mostrar usuarios sin acceso (1)")).toBeInTheDocument();
+    expect(names()).toEqual([account("admin").name, account("staff").name, account("doctor").name]);
+
+    await user.click(showInactive());
+    expect(showInactive()).toBeChecked();
+    expect(window.location.hash).toBe("#/usuarios?bajas=1");
+    expect(names()).toEqual([account("admin").name, account("staff").name, account("doctor").name, "Ex Recepción"]);
+    expect(within(screen.getByRole("list", { name: "Usuarios" })).getByText("Sin acceso")).toBeInTheDocument();
+    // los botones de rol cuentan lo que se ve: con las bajas, «Personal» pasa de 1 a 2
+    expect(roleCounts()).toEqual(["Todos4", "Administradores1", "Personal2", "Doctores1"]);
+
+    await user.click(showInactive());
+    expect(window.location.hash).toBe("#/usuarios");
+    expect(names()).toHaveLength(3);
+  });
+
+  it("el rol y las bajas se combinan; vienen de la dirección y un rol que no existe equivale a «Todos»", async () => {
+    const first = await mountApp({ as: "admin", hash: "#/usuarios?rol=staff&bajas=1" });
+    violations = first.violations;
+    await screen.findByRole("list", { name: "Usuarios" });
+    expect(showInactive()).toBeChecked();
+    expect(within(screen.getByRole("group", { name: "Filtrar por rol" })).getByRole("button", { name: /^Personal/ })).toHaveAttribute("aria-pressed", "true");
+    expect(names()).toEqual([account("staff").name, "Ex Recepción"]);
+
+    // el número del check es el de bajas DEL ROL elegido
+    await first.user.click(within(screen.getByRole("group", { name: "Filtrar por rol" })).getByRole("button", { name: /^Doctores/ }));
+    expect(names()).toEqual([account("doctor").name]);
+    expect(screen.getByText("Mostrar usuarios sin acceso (0)")).toBeInTheDocument();
+    first.unmount();
+
+    const second = await mountApp({ as: "admin", hash: "#/usuarios?rol=no-existe&bajas=2" });
+    violations = [...violations, ...second.violations];
+    await screen.findByRole("list", { name: "Usuarios" });
+    expect(within(screen.getByRole("group", { name: "Filtrar por rol" })).getByRole("button", { name: /^Todos/ })).toHaveAttribute("aria-pressed", "true");
+    expect(showInactive()).not.toBeChecked();                                                 // solo «bajas=1» las muestra
+    expect(names()).toHaveLength(3);
+  });
+
+  it("el filtro por rol viene de la dirección y los datos nuevos lo respetan", async () => {
+    const first = await mountApp({ as: "admin", hash: "#/usuarios?rol=doctor" });
+    violations = first.violations;
+    const group = await screen.findByRole("group", { name: "Filtrar por rol" });
+    expect(within(group).getByRole("button", { name: /^Doctores/ })).toHaveAttribute("aria-pressed", "true");
+    expect(names()).toHaveLength(1);
+
+    // con el filtro puesto, un usuario nuevo de otro rol se crea pero no se ve hasta quitar el filtro; la cuenta sí sube
+    await first.user.click(screen.getByRole("button", { name: "Nuevo usuario" }));
+    const dialog = await screen.findByRole("dialog", { name: "Nuevo usuario" });
+    await first.user.type(within(dialog).getByLabelText("Nombre"), "Otra Recepción");
+    await first.user.type(within(dialog).getByLabelText("Correo"), "otra@clinica.test");
+    await first.user.type(within(dialog).getByLabelText("Contraseña"), "una-clave-larga-1");
+    await first.user.click(within(dialog).getByRole("button", { name: "Crear usuario" }));
+    await screen.findByText("Usuario Otra Recepción creado.");
+    await waitFor(() => expect(within(group).getByRole("button", { name: /^Personal/ })).toHaveTextContent("Personal2"));
+    expect(names()).toHaveLength(1);
+    expect(screen.queryByText("Otra Recepción")).not.toBeInTheDocument();
+  });
+
+  it("un rol sin usuarios lo dice (y no deja una lista vacía); con la baja de ese rol, avisa que el check la muestra", async () => {
+    const first = await mountApp({
+      as: "admin",
+      hash: "#/usuarios?rol=doctor",
+      prepare: (mock) => {
+        mock.db.users = mock.db.users.filter((u) => u.role !== "doctor");
+      },
+    });
+    violations = first.violations;
+    expect(await screen.findByText("No hay usuarios con acceso con el rol «Doctor».")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Filtrar por rol" })).getByRole("button", { name: /^Doctores/ })).toHaveTextContent("Doctores0");
+    expect(names()).toHaveLength(0);
+    await first.user.click(screen.getByRole("button", { name: "Quitar filtro de rol" }));
+    await waitFor(() => expect(names()).toEqual([account("admin").name, account("staff").name]));    // sin el doctor (se quitó de la base) y sin la baja
+    expect(window.location.hash).toBe("#/usuarios");
+    expect(screen.queryByRole("button", { name: "Quitar filtro de rol" })).not.toBeInTheDocument();
+    first.unmount();
+
+    // el único doctor está de baja: el aviso lo dice y el check lo trae
+    const second = await mountApp({
+      as: "admin",
+      hash: "#/usuarios?rol=doctor",
+      prepare: (mock) => {
+        mock.db.users.find((u) => u.role === "doctor")!.active = false;
+      },
+    });
+    violations = [...violations, ...second.violations];
+    expect(await screen.findByText("No hay usuarios con acceso con el rol «Doctor». Marca «Mostrar usuarios sin acceso» para verlos.")).toBeInTheDocument();
+    await second.user.click(showInactive());
+    await waitFor(() => expect(names()).toEqual([account("doctor").name]));
+    expect(screen.queryByText(/No hay usuarios/)).not.toBeInTheDocument();
+  });
+
+  it("da de baja a otra persona: sale de la lista (hasta marcar el check) y la cuenta sube", async () => {
     const { user, mock, violations: v } = await mountApp({ as: "admin", hash: "#/usuarios" });
     violations = v;
     await user.click(await screen.findByRole("button", { name: `Editar a ${account("staff").name}` }));
@@ -1107,6 +1461,10 @@ describe("usuarios (administrador)", () => {
     await user.click(within(dialog).getByRole("button", { name: "Guardar" }));
     await screen.findByText("Usuario guardado.");
     expect(mock.db.users.find((u) => u.email === account("staff").email)!.active).toBe(false);
+    await waitFor(() => expect(names()).toEqual([account("admin").name, account("doctor").name]));
+    expect(screen.getByText("Mostrar usuarios sin acceso (2)")).toBeInTheDocument();
+    await user.click(showInactive());
+    expect(names()).toHaveLength(4);
   });
 });
 
