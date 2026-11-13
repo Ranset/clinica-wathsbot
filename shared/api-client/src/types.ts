@@ -38,8 +38,8 @@ export type SessionInfo = S["SessionInfo"];
 export type LoginDoctor = S["LoginDoctor"];
 /** El enlace que el personal le manda al doctor para que establezca su contraseña (`url` completa y cuándo vence). */
 export type PasswordLink = S["PasswordLink"];
-/** Los horarios libres a los que se puede mover una cita, por día (hora de pared de la clínica, `HH:MM`). */
-export type MoveSlots = S["MoveSlots"];
+/** Los horarios libres (de una cita que se mueve o de una nueva), por día (hora de pared de la clínica, `HH:MM`). */
+export type FreeSlots = S["FreeSlots"];
 /** De quién es un enlace (código y nombre del doctor) y hasta cuándo vale. */
 export type PasswordLinkInfo = S["PasswordLinkInfo"];
 export type AttentionItem = S["AttentionItem"];

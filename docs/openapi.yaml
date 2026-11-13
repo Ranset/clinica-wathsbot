@@ -724,6 +724,37 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/RuleError" }
+  /api/availability:
+    get:
+      operationId: listAvailability
+      tags: [agenda]
+      summary: Los horarios libres para una cita (o bloqueo) NUEVA (el calendario emergente de «Nueva cita»).
+      description: |
+        Lo mismo que `listMoveSlots` pero para algo que aun no existe: los horarios de inicio en que `createAppointment` aceptaria una cita
+        de esa duracion con ese doctor (y ese consultorio, si se pide; sin consultorio, en cualquiera). Mismas reglas de agenda (horario de
+        la clinica y del doctor, ausencias y eventos personales —sin decir cuales—, antelacion minima, horizonte de 60 dias, doctor libre y
+        al menos un consultorio libre en todos los huecos). `allowShortNotice=true` omite la antelacion minima (cita de mostrador). Con
+        `kind=block` (un bloqueo de consultorio) `roomId` es obligatorio, no lleva doctor y se ofrecen los inicios de 7:00 a 20:00 en que ese
+        consultorio este libre. Solo salen los dias con algun horario libre; las horas son hora de pared de la clinica (`HH:MM`, 24 h). Mas
+        de 42 dias de una vez = 422 `rango_invalido`.
+      x-roles: [admin, staff]
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date }, description: "Primer dia (incluido)." }
+        - { name: to, in: query, required: true, schema: { type: string, format: date }, description: "Ultimo dia (excluido); hasta 42 dias despues de `from`." }
+        - { name: kind, in: query, schema: { type: string, enum: [session, block], default: session } }
+        - { name: doctorId, in: query, schema: { type: string }, description: "Obligatorio en una cita; no se manda en un bloqueo." }
+        - { name: roomId, in: query, schema: { type: string }, description: "Obligatorio en un bloqueo; en una cita, solo huecos libres en este consultorio." }
+        - { name: durationMinutes, in: query, schema: { type: integer, minimum: 30, maximum: 1440, default: 30 }, description: "Multiplo de 30." }
+        - { name: allowShortNotice, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: Los horarios libres (puede venir sin dias).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FreeSlots" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RuleError" }
   /api/appointments/{appointmentId}/move-slots:
     parameters:
       - { $ref: "#/components/parameters/AppointmentId" }
@@ -751,7 +782,7 @@ paths:
           description: Los horarios libres (puede venir sin dias).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/MoveSlots" }
+              schema: { $ref: "#/components/schemas/FreeSlots" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2276,7 +2307,7 @@ components:
         doctorCode: { type: string, pattern: "^[0-9]{4}$", examples: ["1001"] }
         doctorName: { type: string, examples: ["Dr. Cervantes Pelaez"] }
         expiresAtUtc: { type: string, format: date-time }
-    MoveSlots:
+    FreeSlots:
       type: object
       required: [slotMinutes, durationMinutes, days]
       properties:
@@ -2284,8 +2315,8 @@ components:
         durationMinutes: { type: integer, description: "Cuanto dura la cita que se mueve (cada horario ocupa esto)." }
         days:
           type: array
-          items: { $ref: "#/components/schemas/MoveSlotsDay" }
-    MoveSlotsDay:
+          items: { $ref: "#/components/schemas/FreeSlotsDay" }
+    FreeSlotsDay:
       type: object
       required: [date, slots]
       properties:

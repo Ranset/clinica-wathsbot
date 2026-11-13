@@ -9,8 +9,8 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from ..agenda import UNSET, Actor
 from ..agenda.errors import NO_ENCONTRADO, AgendaError
-from .inputs import (bad, body, bookings_response, day, instant, opt_bool, opt_int, opt_str, query_id, query_range,
-                     query_status)
+from .inputs import (bad, body, bookings_response, day, instant, opt_bool, opt_int, opt_str, query_id, query_int,
+                     query_range, query_status)
 from .common import valid_phone
 from .security import require
 from .serializers import (absence_json, booking_json, busy_json, doctor_json, request_json, room_json)
@@ -63,6 +63,24 @@ def get_appointment(appointment_id):
     if a is None:
         raise AgendaError(NO_ENCONTRADO)
     return jsonify(booking_json(a, g.principal.role))
+
+
+@bp.get("/api/availability")
+@require(*STAFF)
+def availability():
+    """Los horarios libres para una cita (o bloqueo) NUEVA, la que se llena en el formulario «Nueva cita» (el calendario emergente de la fecha).
+    `doctorId` (obligatorio en una cita), `roomId` (obligatorio en un bloqueo; en una cita limita a ese consultorio), `durationMinutes` (30 si falta),
+    `kind=session|block`, `allowShortNotice=true` (omite la antelacion minima) y `[from, to)` en fechas (hasta 42 dias)."""
+    short = request.args.get("allowShortNotice", "false").lower()
+    if short not in ("true", "false"):
+        raise bad("allowShortNotice: debe ser true o false")
+    kind = request.args.get("kind", "session")
+    if kind not in ("session", "block"):
+        raise bad("kind: session | block")
+    out = _x("agenda").free_starts_for_new(day(request.args.get("from"), "from"), day(request.args.get("to"), "to"), kind=kind,
+                                           doctor_id=query_id("doctorId"), room_id=query_id("roomId"),
+                                           minutes=query_int("durationMinutes", 1, 1440), allow_short_notice=short == "true")
+    return jsonify(out)
 
 
 @bp.get("/api/appointments/<appointment_id>/move-slots")

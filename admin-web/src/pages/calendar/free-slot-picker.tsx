@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { Button, addDaysISO, addMonths, cn, hhmm, hhmmLabel, longDayLabel, monthWeeks, rangeLabel, startOfMonth, todayInTz, wallClock, weekdayShortNames } from "@clinica/calendar";
-import { isAbortError, type Booking } from "@clinica/api-client";
-import { useApi } from "../../api-context";
+import { Button, addDaysISO, addMonths, cn, hhmmLabel, longDayLabel, monthWeeks, rangeLabel, startOfMonth, todayInTz, weekdayShortNames } from "@clinica/calendar";
+import { isAbortError, type FreeSlots } from "@clinica/api-client";
 import { messageFor } from "../../lib/errors";
 import { TZ } from "../../lib/fmt";
 import { Notice, Spinner } from "../../ui/controls";
@@ -12,34 +11,36 @@ import { Modal } from "../../ui/modal";
 const HORIZON_DAYS = 60;
 
 type Props = {
-  /** La cita (o bloqueo) que se mueve: de ella salen sus horarios libres. */
-  booking: Booking;
-  /** El consultorio elegido en el formulario ("" = el que sea / el actual del bloqueo). */
-  roomId: string;
-  roomLabel: string;
-  /** «Cita de mostrador»: sin la antelación mínima. */
-  allowShortNotice: boolean;
+  /** Qué se está eligiendo: «Dr. X · Cualquier consultorio libre · dura 30 min». */
+  description: string;
+  /**
+   * Lo que se le pregunta al servidor (doctor, consultorio, duración, «cita de mostrador»…): si cambia, se vuelve a consultar. `load` NO
+   * cuenta (se crea de nuevo en cada render): lo que cambia lo que devuelve tiene que estar aquí.
+   */
+  queryKey: string;
+  /** Pide los horarios libres de `[from, to)` (fechas `AAAA-MM-DD`, hasta 42 días). */
+  load: (range: { from: string; to: string }, signal: AbortSignal) => Promise<FreeSlots>;
   /** Lo que dice hoy el formulario. */
   value: { day: string; time: string };
+  /** El horario de la cita que se está moviendo, que se marca «Horario actual». */
+  current?: { day: string; time: string };
   onPick: (day: string, time: string) => void;
   onClose: () => void;
 };
 
 /**
- * El calendario emergente de «Mover a otro horario»: un mes con los días que tienen horarios libres resaltados y, al elegir un día,
- * sus horarios libres. Los horarios los calcula el servidor con las MISMAS reglas con que valida el movimiento (horario de la clínica y del
- * doctor, ausencias, antelación, doctor y consultorio libres), así que lo que se ve libre se puede elegir. Tocar un horario lo pasa al
- * formulario y se cierra.
+ * El calendario emergente de la fecha («Mover a otro horario» y «Nueva cita»): un mes con los días que tienen horarios libres resaltados y,
+ * al elegir un día, sus horarios libres. Los horarios los calcula el servidor con las MISMAS reglas con que valida el alta o el movimiento
+ * (horario de la clínica y del doctor, ausencias, antelación, doctor y consultorio libres), así que lo que se ve libre se puede elegir.
+ * Tocar un horario lo pasa al formulario y se cierra.
  */
-export function MoveSlotPicker({ booking, roomId, roomLabel, allowShortNotice, value, onPick, onClose }: Props) {
-  const api = useApi();
+export function FreeSlotPicker({ description, queryKey, load, value, current, onPick, onClose }: Props) {
   const today = useMemo(() => todayInTz(new Date(), TZ), []);
   const lastDay = addDaysISO(today, HORIZON_DAYS);
-  const current = useMemo(() => wallClock(booking.scheduledAtUtc, TZ), [booking.scheduledAtUtc]);
-  const currentTime = hhmm(current.minutes);
-  const isBlock = booking.kind === "block";
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
-  const initial = value.day >= today && value.day <= lastDay ? value.day : current.day >= today && current.day <= lastDay ? current.day : today;
+  const initial = value.day >= today && value.day <= lastDay ? value.day : current && current.day >= today && current.day <= lastDay ? current.day : today;
   const [month, setMonth] = useState(startOfMonth(initial));
   const [free, setFree] = useState<Record<string, string[]> | null>(null);
   const [day, setDay] = useState<string | null>(null);
@@ -47,7 +48,7 @@ export function MoveSlotPicker({ booking, roomId, roomLabel, allowShortNotice, v
   const [attempt, setAttempt] = useState(0);
   const weeks = useMemo(() => monthWeeks(month), [month]);
   const grid = useRef<HTMLDivElement>(null);
-  const refocus = useRef(false); // se cambio de mes con el teclado: al llegar los horarios, el foco vuelve a los días
+  const refocus = useRef(false); // se cambió de mes con el teclado: al llegar los horarios, el foco vuelve a los días
 
   // Los horarios libres de TODO lo que se ve (el mes y los días de las semanas de los bordes): una sola petición.
   useEffect(() => {
@@ -56,14 +57,14 @@ export function MoveSlotPicker({ booking, roomId, roomLabel, allowShortNotice, v
     setError(null);
     const from = weeks[0]![0]!;
     const to = addDaysISO(weeks[weeks.length - 1]![6]!, 1);
-    api.appointments.moveSlots(booking.id, { from, to, roomId: roomId || undefined, allowShortNotice }, { signal: ctrl.signal }).then(
+    loadRef.current({ from, to }, ctrl.signal).then(
       (r) => setFree(Object.fromEntries(r.days.map((d) => [d.date, d.slots]))),
       (e) => {
         if (!isAbortError(e)) setError(messageFor(e));
       }
     );
     return () => ctrl.abort();
-  }, [api, booking.id, weeks, roomId, allowShortNotice, attempt]);
+  }, [weeks, queryKey, attempt]);
 
   const inMonth = (d: string) => d.slice(0, 7) === month.slice(0, 7);
   const freeDays = useMemo(() => (free ? Object.keys(free).filter((d) => inMonth(d)).sort() : []), [free, month]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -103,19 +104,22 @@ export function MoveSlotPicker({ booking, roomId, roomLabel, allowShortNotice, v
     const from = (e.target as HTMLElement).closest<HTMLElement>("[data-day]")?.dataset.day;
     if (!step || !from) return;
     e.preventDefault();
-    const grid = e.currentTarget;
+    const el = e.currentTarget;
     // al siguiente día CON horarios en esa dirección, sin salirse de lo que se ve
     for (let d = addDaysISO(from, step); d >= weeks[0]![0]! && d <= weeks[weeks.length - 1]![6]!; d = addDaysISO(d, step)) {
-      const el = grid.querySelector<HTMLButtonElement>(`[data-day="${d}"]:not([disabled])`);
-      if (el) {
-        el.focus();
+      const target = el.querySelector<HTMLButtonElement>(`[data-day="${d}"]:not([disabled])`);
+      if (target) {
+        target.focus();
         return;
       }
     }
   };
 
   return (
-    <Modal title="Elegir fecha y hora" description={`${isBlock ? roomLabel : [booking.doctor?.name, roomLabel].filter(Boolean).join(" · ")} · dura ${booking.durationMinutes} min`} onClose={onClose}
+    <Modal
+      title="Elegir fecha y hora"
+      description={description}
+      onClose={onClose}
       footer={
         <Button variant="outline" onClick={onClose}>
           Cerrar
@@ -201,7 +205,7 @@ export function MoveSlotPicker({ booking, roomId, roomLabel, allowShortNotice, v
             <h3 className="text-sm font-bold first-letter:uppercase">Horarios libres · {longDayLabel(day)}</h3>
             <ul className="grid grid-cols-3 gap-2">
               {times.map((t) => {
-                const isCurrent = day === current.day && t === currentTime;
+                const isCurrent = !!current && day === current.day && t === current.time;
                 const picked = day === value.day && t === value.time;
                 return (
                   <li key={t}>

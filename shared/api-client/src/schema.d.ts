@@ -456,6 +456,32 @@ export interface paths {
         patch: operations["updateAppointment"];
         trace?: never;
     };
+    "/api/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Los horarios libres para una cita (o bloqueo) NUEVA (el calendario emergente de «Nueva cita»).
+         * @description Lo mismo que `listMoveSlots` pero para algo que aun no existe: los horarios de inicio en que `createAppointment` aceptaria una cita
+         *     de esa duracion con ese doctor (y ese consultorio, si se pide; sin consultorio, en cualquiera). Mismas reglas de agenda (horario de
+         *     la clinica y del doctor, ausencias y eventos personales —sin decir cuales—, antelacion minima, horizonte de 60 dias, doctor libre y
+         *     al menos un consultorio libre en todos los huecos). `allowShortNotice=true` omite la antelacion minima (cita de mostrador). Con
+         *     `kind=block` (un bloqueo de consultorio) `roomId` es obligatorio, no lleva doctor y se ofrecen los inicios de 7:00 a 20:00 en que ese
+         *     consultorio este libre. Solo salen los dias con algun horario libre; las horas son hora de pared de la clinica (`HH:MM`, 24 h). Mas
+         *     de 42 dias de una vez = 422 `rango_invalido`.
+         */
+        get: operations["listAvailability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/appointments/{appointmentId}/move-slots": {
         parameters: {
             query?: never;
@@ -1517,14 +1543,14 @@ export interface components {
             /** Format: date-time */
             expiresAtUtc: string;
         };
-        MoveSlots: {
+        FreeSlots: {
             /** @description Cada cuantos minutos empieza un horario (30). */
             slotMinutes: number;
             /** @description Cuanto dura la cita que se mueve (cada horario ocupa esto). */
             durationMinutes: number;
-            days: components["schemas"]["MoveSlotsDay"][];
+            days: components["schemas"]["FreeSlotsDay"][];
         };
-        MoveSlotsDay: {
+        FreeSlotsDay: {
             /** Format: date */
             date: string;
             /** @description Horas de inicio libres, `HH:MM` de la clinica, de menor a mayor. */
@@ -2460,6 +2486,42 @@ export interface operations {
             422: components["responses"]["RuleError"];
         };
     };
+    listAvailability: {
+        parameters: {
+            query: {
+                /** @description Primer dia (incluido). */
+                from: string;
+                /** @description Ultimo dia (excluido); hasta 42 dias despues de `from`. */
+                to: string;
+                kind?: "session" | "block";
+                /** @description Obligatorio en una cita; no se manda en un bloqueo. */
+                doctorId?: string;
+                /** @description Obligatorio en un bloqueo; en una cita, solo huecos libres en este consultorio. */
+                roomId?: string;
+                /** @description Multiplo de 30. */
+                durationMinutes?: number;
+                allowShortNotice?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Los horarios libres (puede venir sin dias). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FreeSlots"];
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["RuleError"];
+        };
+    };
     listMoveSlots: {
         parameters: {
             query: {
@@ -2485,7 +2547,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MoveSlots"];
+                    "application/json": components["schemas"]["FreeSlots"];
                 };
             };
             401: components["responses"]["Unauthenticated"];

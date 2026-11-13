@@ -122,6 +122,42 @@ export function buildRoutes(db: DB): MockRoute[] {
     return startSession(user);
   }
 
+  /** El rango (`from`, `to`), el consultorio pedido y «cita de mostrador» de una consulta de horarios libres, ya validados. */
+  function parseSlotsQuery(c: C) {
+    const from = c.query.get("from");
+    const to = c.query.get("to");
+    if (!isIsoDate(from) || !isIsoDate(to)) throw invalid(`Pide el rango con "from" y "to" (AAAA-MM-DD).`);
+    const days = daysBetween(from, to);
+    if (days <= 0 || days > MAX_MOVE_SLOT_DAYS) throw rule("rango_invalido", `El rango debe ser de 1 a ${MAX_MOVE_SLOT_DAYS} días.`);
+    const shortRaw = c.query.get("allowShortNotice") ?? "false";
+    if (shortRaw !== "true" && shortRaw !== "false") throw invalid(`"allowShortNotice" debe ser true o false.`);
+    const roomIn = c.query.get("roomId") || undefined;
+    if (roomIn && !db.rooms.some((r) => r.id === roomIn)) throw invalid("El consultorio no existe.");
+    return { from, days, allowShortNotice: shortRaw === "true", roomIn };
+  }
+
+  /** Cada inicio de 7:00 a 19:30 se prueba con `placeInSchedule` (las reglas de verdad, sin tocar nada): los que pasan son los libres. */
+  function freeSlots(c: C, q: ReturnType<typeof parseSlotsQuery>, p: { kind: "session" | "block"; doctorId: string | null; durationMinutes: number; roomId?: string; excludeId?: string }) {
+    const out: { date: string; slots: string[] }[] = [];
+    for (let i = 0; i < q.days; i++) {
+      const day = addDaysISO(q.from, i);
+      const slots: string[] = [];
+      for (let min = 7 * 60; min < 20 * 60; min += 30) {
+        const hhmm = `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+        const start = zonedWallClockToUtc(day, hhmm, TZ);
+        if (!start) continue;
+        try {
+          placeInSchedule(db, c.now, { ...p, startUtc: start.toISOString(), allowShortNotice: q.allowShortNotice });
+          slots.push(hhmm);
+        } catch (e) {
+          if (!(e instanceof HttpError)) throw e; // una regla incumplida: ese inicio no esta libre
+        }
+      }
+      if (slots.length) out.push({ date: day, slots });
+    }
+    return { slotMinutes: 30, durationMinutes: p.durationMinutes, days: out };
+  }
+
   /** Abre la sesión de `user` (cookie y token CSRF nuevos). */
   function startSession(user: StoredUser): Result {
     const sid = `${nextId(db, "sess")}-${Math.random().toString(36).slice(2, 10)}`;
@@ -472,38 +508,33 @@ export function buildRoutes(db: DB): MockRoute[] {
     route<StoredUser>("listMoveSlots", STAFF, (c) => {
       const cur = db.bookings.find((x) => x.id === c.params.appointmentId);
       if (!cur) throw notFound("La cita no existe.");
-      const from = c.query.get("from");
-      const to = c.query.get("to");
-      if (!isIsoDate(from) || !isIsoDate(to)) throw invalid(`Pide el rango con "from" y "to" (AAAA-MM-DD).`);
-      const days = daysBetween(from, to);
-      if (days <= 0 || days > MAX_MOVE_SLOT_DAYS) throw rule("rango_invalido", `El rango debe ser de 1 a ${MAX_MOVE_SLOT_DAYS} días.`);
-      const shortRaw = c.query.get("allowShortNotice") ?? "false";
-      if (shortRaw !== "true" && shortRaw !== "false") throw invalid(`"allowShortNotice" debe ser true o false.`);
-      const roomIn = c.query.get("roomId") || undefined;
-      if (roomIn && !db.rooms.some((r) => r.id === roomIn)) throw invalid("El consultorio no existe.");
+      const q = parseSlotsQuery(c);
       if (cur.status !== "agendada") throw stateConflict("Solo se puede mover una cita agendada.");
-      const roomId = roomIn ?? (cur.kind === "block" ? cur.room?.id : undefined); // un bloqueo se queda en su consultorio
-      const out: { date: string; slots: string[] }[] = [];
-      for (let i = 0; i < days; i++) {
-        const day = addDaysISO(from, i);
-        const slots: string[] = [];
-        for (let min = 7 * 60; min < 20 * 60; min += 30) {
-          const hhmm = `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-          const start = zonedWallClockToUtc(day, hhmm, TZ);
-          if (!start) continue;
-          try {
-            placeInSchedule(db, c.now, {
-              kind: cur.kind, startUtc: start.toISOString(), durationMinutes: cur.durationMinutes, doctorId: cur.doctor?.id ?? null,
-              roomId, excludeId: cur.id, allowShortNotice: shortRaw === "true",
-            });
-            slots.push(hhmm);
-          } catch (e) {
-            if (!(e instanceof HttpError)) throw e; // una regla incumplida: ese inicio no esta libre
-          }
-        }
-        if (slots.length) out.push({ date: day, slots });
+      return ok(freeSlots(c, q, {
+        kind: cur.kind, doctorId: cur.doctor?.id ?? null, durationMinutes: cur.durationMinutes,
+        roomId: q.roomIn ?? (cur.kind === "block" ? cur.room?.id : undefined), // un bloqueo se queda en su consultorio
+        excludeId: cur.id,
+      }));
+    }),
+
+    // Lo mismo para una cita (o bloqueo) NUEVA, la que se llena en «Nueva cita»: lo que `createAppointment` aceptaria.
+    route<StoredUser>("listAvailability", STAFF, (c) => {
+      const q = parseSlotsQuery(c);
+      const kindRaw = c.query.get("kind") ?? "session";
+      if (kindRaw !== "session" && kindRaw !== "block") throw invalid(`"kind" debe ser session o block.`);
+      const durRaw = c.query.get("durationMinutes");
+      const durationMinutes = durRaw === null || durRaw === "" ? 30 : Number(durRaw);
+      if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes % 30 !== 0 || durationMinutes > 1440) {
+        throw invalid("La duración debe ser múltiplo de 30 minutos (hasta 24 h).");
       }
-      return ok({ slotMinutes: 30, durationMinutes: cur.durationMinutes, days: out });
+      const doctorId = c.query.get("doctorId") || null;
+      if (kindRaw === "block") {
+        if (doctorId) throw invalid("Un bloqueo de consultorio no lleva doctor.");
+        if (!q.roomIn) throw invalid("Un bloqueo de consultorio exige consultorio.");
+      } else if (!doctorId || !db.doctors.some((d) => d.id === doctorId)) {
+        throw invalid("El doctor no existe o no se indicó.");
+      }
+      return ok(freeSlots(c, q, { kind: kindRaw, doctorId, durationMinutes, roomId: q.roomIn }));
     }),
 
     route<StoredUser>("listRooms", ALL, () => ok({ items: structuredClone(db.rooms) })),

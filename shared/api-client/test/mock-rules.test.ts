@@ -1118,6 +1118,86 @@ describe("horarios libres para mover una cita", () => {
   });
 });
 
+describe("horarios libres para una cita nueva", () => {
+  const ALL = Array.from({ length: 18 }, (_, i) => `${String(9 + Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`); // 09:00 .. 17:30
+  type Q = { doctorId?: string; roomId?: string; durationMinutes?: number; kind?: "session" | "block"; allowShortNotice?: boolean };
+  const listed = async (from: string, to: string, q: Q = {}) =>
+    Object.fromEntries((await api.appointments.availability({ from, to, ...q })).days.map((d) => [d.date, d.slots]));
+  /** ¿La acepta `create`? Si la crea la cancela al instante (libera el hueco para la siguiente prueba). */
+  const creates = async (day: string, hhmm: string, q: Q) => {
+    try {
+      const b = await api.appointments.create(
+        q.kind === "block"
+          ? { kind: "block", roomId: q.roomId, scheduledAtUtc: at(day, hhmm), durationMinutes: q.durationMinutes }
+          : { patientName: "Zoe Prueba", doctorId: q.doctorId, scheduledAtUtc: at(day, hhmm), durationMinutes: q.durationMinutes, roomId: q.roomId, allowShortNotice: q.allowShortNotice }
+      );
+      await api.appointments.update(b.id, { status: "cancelada" });
+      return true;
+    } catch (e) {
+      if (e instanceof ApiError) return false;
+      throw e;
+    }
+  };
+
+  it("lista por día los horarios del doctor; una cita que ya tiene ese horario NO cuenta como libre (es nueva); hoy faltan 60 minutos", async () => {
+    await book({ scheduledAtUtc: at("2026-11-12", "10:00") });
+    const d = await listed("2026-11-10", "2026-11-16", { doctorId: D.cervantes });
+    expect(d["2026-11-10"]).toEqual(ALL.filter((t) => t >= "11:00")); // ahora son las 10:00
+    expect(d["2026-11-12"]).toEqual(ALL.filter((t) => t !== "10:00"));
+    expect(d["2026-11-15"]).toBeUndefined();
+    const r = await api.appointments.availability({ from: "2026-11-12", to: "2026-11-13", doctorId: D.cervantes, durationMinutes: 60 });
+    expect(r.durationMinutes).toBe(60);
+    expect(r.days[0]!.slots).not.toContain("09:30");
+    expect(r.days[0]!.slots).toContain("10:30");
+  });
+
+  it("lo que se lista es exactamente lo que crear acepta (cita de 30 y de 60 min, un consultorio, de mostrador y bloqueo)", async () => {
+    await book({ scheduledAtUtc: at("2026-11-12", "10:00") });
+    await book({ patientName: "Beto Ruiz", scheduledAtUtc: at("2026-11-13", "12:00") });
+    await book({ patientName: "Carla Mena", doctorId: D.perez, scheduledAtUtc: at("2026-11-12", "12:00") });
+    await book({ patientName: "Diego Pardo", doctorId: D.bordas, scheduledAtUtc: at("2026-11-12", "12:00") }); // los dos consultorios llenos
+    await api.doctors.absences.create(D.cervantes, { startUtc: at("2026-11-13", "15:00"), endUtc: at("2026-11-13", "17:00") });
+    const days = ["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15"];
+    const times = Array.from({ length: 26 }, (_, i) => `${String(7 + Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);
+    const mismatches = async (q: Q, only = days) => {
+      const l = await listed(days[0]!, "2026-11-17", q);
+      const wrong: string[] = [];
+      for (const day of only) for (const t of times) if ((await creates(day, t, q)) !== (l[day] ?? []).includes(t)) wrong.push(`${day} ${t}`);
+      return wrong;
+    };
+    expect(await mismatches({ doctorId: D.cervantes })).toEqual([]);
+    expect(await mismatches({ doctorId: D.cervantes, durationMinutes: 60 })).toEqual([]);
+    expect(await mismatches({ doctorId: D.cervantes, roomId: "r2" }, days.slice(0, 4))).toEqual([]);
+    expect(await mismatches({ doctorId: D.cervantes, allowShortNotice: true }, ["2026-11-10"])).toEqual([]);
+    await book({ patientName: "Elena Soto", doctorId: D.torrealba, scheduledAtUtc: at("2026-11-12", "15:00") }); // ocupa el consultorio 1
+    const blockQ: Q = { kind: "block", roomId: "r1", durationMinutes: 60 };
+    const lb = await listed("2026-11-11", "2026-11-13", blockQ);
+    expect(lb["2026-11-12"]).not.toContain("15:00");
+    expect(lb["2026-11-12"]![0]).toBe("07:00");
+    expect(await mismatches(blockQ, ["2026-11-11", "2026-11-12"])).toEqual([]);
+  });
+
+  it("errores: sin doctor, doctor o consultorio que no existen, duración inválida, bloqueo sin consultorio o con doctor, rango", async () => {
+    const q = (extra: Record<string, unknown>) => lax.appointments.availability({ from: "2026-11-10", to: "2026-11-12", ...extra } as never);
+    expect(await code(q({}))).toBe("422 validacion");
+    expect(await code(q({ doctorId: "d99" }))).toBe("422 validacion");
+    expect(await code(q({ doctorId: D.cervantes, roomId: "r99" }))).toBe("422 validacion");
+    expect(await code(q({ doctorId: D.cervantes, durationMinutes: 45 }))).toBe("422 validacion");
+    expect(await code(q({ kind: "block" }))).toBe("422 validacion");
+    expect(await code(q({ kind: "block", roomId: "r1", doctorId: D.cervantes }))).toBe("422 validacion");
+    expect(await code(lax.appointments.availability({ from: "2026-11-10", to: "2026-11-10", doctorId: D.cervantes }))).toBe("422 rango_invalido");
+    expect(await code(lax.appointments.availability({ from: "2026-11-10", to: "2026-12-23", doctorId: D.cervantes }))).toBe("422 rango_invalido");
+  });
+
+  it("el doctor no puede consultarlo", async () => {
+    await api.auth.logout();
+    const acc = DEMO_ACCOUNTS.find((a) => a.role === "doctor")!;
+    await api.auth.loginDoctor(acc.doctorCode!, acc.password);
+    lax.csrfToken = api.csrfToken;
+    expect(await code(lax.appointments.availability({ from: "2026-11-10", to: "2026-11-12", doctorId: "d1" }))).toBe("403 sin_permiso");
+  });
+});
+
 describe("controles de desarrollo", () => {
   it("el bot simulado agenda una cita source 'ai' en un hueco que cumple las reglas, y cambia el ETag", async () => {
     const range = { from: at("2026-11-09", "00:00"), to: at("2026-12-09", "00:00") };

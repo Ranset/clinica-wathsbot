@@ -1,6 +1,9 @@
 import { dayHeading, timeLabel, timeRangeLabel, wallClock } from "@clinica/calendar";
 import type { Role } from "@clinica/api-client";
 
+/** «30 min», «1 h», «1 h 30 min». */
+export const durationLabel = (m: number) => (m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`);
+
 export const TZ = "America/Cancun";
 
 /** "11:00 AM" (hora de Cancún, formato de 12 h). */

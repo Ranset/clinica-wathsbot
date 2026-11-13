@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { doctorColor } from "@clinica/calendar";
 import type { MockApi } from "@clinica/api-client/mock";
 import { features } from "../src/features";
+import { durationLabel } from "../src/lib/fmt";
 import { NOW, account, bookingButton, freezeClock, localDay, mountApp, pickBooking } from "./helpers";
 
 beforeEach(freezeClock);
@@ -421,6 +422,121 @@ describe("calendario", () => {
     expect(await screen.findByText("Horario bloqueado.")).toBeInTheDocument();
     expect(mock.db.bookings.find((b) => b.notes === "Limpieza profunda")).toMatchObject({ kind: "block", room: { id: "r1" }, doctor: null });
   });
+
+  describe("calendario emergente desde el icono del campo Fecha", () => {
+    const ICON = "Ver horarios libres en el calendario";
+    const picker = async () => within(await screen.findByRole("dialog", { name: "Elegir fecha y hora" }));
+    const closed = () => expect(screen.queryByRole("dialog", { name: "Elegir fecha y hora" })).toBeNull();
+
+    it("abre los horarios libres del doctor elegido (sin doctor, pide elegirlo); al elegir uno se llena la fecha y la hora y se agenda", async () => {
+      const { user, mock, violations: v } = await mountApp();
+      violations = v;
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Nueva cita" }));
+      const dialog = await screen.findByRole("dialog", { name: "Nueva cita" });
+      const icon = within(dialog).getByRole("button", { name: ICON });
+      expect(within(dialog).getByLabelText("Fecha")).toHaveAttribute("type", "date"); // el campo se sigue pudiendo teclear
+
+      await user.click(icon); // todavía no hay doctor: no hay de quién mostrar horarios
+      expect(await within(dialog).findByText("Elige primero un doctor para ver sus horarios libres.")).toBeInTheDocument();
+      closed();
+
+      await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d1");
+      await user.click(icon);
+      const cal = await picker();
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("Dr. Cervantes Peláez · Cualquier consultorio libre · dura 30 min");
+      await user.click(await cal.findByRole("button", { name: /^jueves, 12 de noviembre/ }));
+      const times = await cal.findByRole("region", { name: "Horarios libres" });
+      expect(within(times).queryByRole("button", { name: /^9:00\sAM/ })).toBeNull(); // la cita de las 9:00 de ese doctor
+      expect(within(times).queryByRole("button", { name: /^4:00\sPM/ })).toBeNull(); // y la de las 4:00 PM
+      expect(within(times).queryByText("Horario actual")).toBeNull(); // es una cita nueva: no hay «horario actual»
+      await user.click(within(times).getByRole("button", { name: /^9:30\sAM/ }));
+      closed();
+      expect(within(dialog).getByLabelText("Fecha")).toHaveValue("2026-11-12");
+      expect(within(dialog).getByLabelText("Hora")).toHaveValue("09:30");
+
+      await user.type(within(dialog).getByLabelText("Paciente"), "Nora Prueba Gómez");
+      await user.click(within(dialog).getByRole("button", { name: "Agendar cita" }));
+      expect(await screen.findByText("Cita agendada.")).toBeInTheDocument();
+      expect(mock.db.bookings.find((b) => b.patient?.name === "Nora Prueba Gómez")).toMatchObject({ scheduledAtUtc: "2026-11-12T14:30:00.000Z", doctor: { id: "d1" } });
+    });
+
+    it("lo que se ofrece depende de la duración, del consultorio y de «Cita de mostrador»", async () => {
+      const { user, violations: v } = await mountApp();
+      violations = v;
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Nueva cita" }));
+      const dialog = await screen.findByRole("dialog", { name: "Nueva cita" });
+      await user.selectOptions(within(dialog).getByLabelText("Doctor"), "d1");
+      fireEvent.change(within(dialog).getByLabelText("Fecha"), { target: { value: "2026-11-12" } });
+      const icon = within(dialog).getByRole("button", { name: ICON });
+
+      await user.click(icon);
+      let cal = await picker();
+      let times = await cal.findByRole("region", { name: "Horarios libres" });
+      expect(within(times).getByRole("button", { name: /^3:30\sPM/ })).toBeInTheDocument(); // 30 min: cabe antes de la cita de las 4:00 PM
+      await user.keyboard("{Escape}");
+
+      await user.selectOptions(within(dialog).getByLabelText("Duración"), "60");
+      await user.click(icon);
+      cal = await picker();
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("dura 1 h");
+      times = await cal.findByRole("region", { name: "Horarios libres" });
+      expect(within(times).queryByRole("button", { name: /^3:30\sPM/ })).toBeNull(); // 60 min a las 3:30 pisaría la de las 4:00
+      expect(within(times).getByRole("button", { name: /^3:00\sPM/ })).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+
+      await user.selectOptions(within(dialog).getByLabelText("Consultorio"), "r2");
+      await user.click(icon);
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("Dr. Cervantes Peláez · Consultorio 2 · dura 1 h");
+      await user.keyboard("{Escape}");
+
+      // hoy faltan menos de 60 min para los primeros horarios: con «Cita de mostrador» ya cuentan
+      const today = async (c: ReturnType<typeof within>) => Number(/(\d+) horarios libres/.exec((await c.findByRole("button", { name: /^martes, 10 de noviembre/ })).getAttribute("aria-label")!)![1]);
+      await user.selectOptions(within(dialog).getByLabelText("Duración"), "30");
+      await user.selectOptions(within(dialog).getByLabelText("Consultorio"), "");
+      await user.click(icon);
+      const without = await today(await picker());
+      await user.keyboard("{Escape}");
+      await user.click(within(dialog).getByRole("checkbox", { name: /Cita de mostrador/ }));
+      await user.click(icon);
+      expect(await today(await picker())).toBeGreaterThan(without);
+    });
+
+    it("«Bloquear horario»: ofrece los horarios en que el consultorio elegido está libre", async () => {
+      const { user, violations: v } = await mountApp();
+      violations = v;
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Bloquear horario" }));
+      const dialog = await screen.findByRole("dialog", { name: "Bloquear horario" });
+      await user.selectOptions(within(dialog).getByLabelText("Consultorio"), "r1");
+      await user.click(within(dialog).getByRole("button", { name: ICON }));
+      const cal = await picker();
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent("Consultorio 1 · dura 30 min");
+      await user.click(await cal.findByRole("button", { name: /^viernes, 13 de noviembre/ }));
+      const times = await cal.findByRole("region", { name: "Horarios libres" });
+      await user.click(within(times).getByRole("button", { name: /^7:00\sAM/ })); // un bloqueo puede ir antes de abrir la clínica
+      closed();
+      expect(within(dialog).getByLabelText("Fecha")).toHaveValue("2026-11-13");
+      expect(within(dialog).getByLabelText("Hora")).toHaveValue("07:00");
+    });
+
+    it("el campo de fecha se puede seguir tecleando, y en el formulario de mover el mismo icono abre el calendario con «Horario actual»", async () => {
+      const m = await mountApp({ hash: `#/calendario?dia=2026-11-12` });
+      violations = m.violations;
+      const booking = pickBooking(m.mock, "2026-11-12", { doctorId: "d1", nth: 0 });
+      await m.user.click(await bookingButton(booking));
+      const dialog = await screen.findByRole("dialog", { name: booking.patient!.name });
+      await m.user.click(within(dialog).getByRole("button", { name: "Mover a otro horario" }));
+      const form = within(within(dialog).getByRole("form", { name: "Mover" }));
+      fireEvent.change(form.getByLabelText("Nueva fecha"), { target: { value: "2026-11-13" } });
+      expect(form.getByLabelText("Nueva fecha")).toHaveValue("2026-11-13");
+      fireEvent.change(form.getByLabelText("Nueva fecha"), { target: { value: "2026-11-12" } });
+      await m.user.click(form.getByRole("button", { name: ICON }));
+      const cal = await picker();
+      expect(within(await cal.findByRole("region", { name: "Horarios libres" })).getByRole("button", { name: /^9:00\sAM/ })).toHaveTextContent("Horario actual");
+    });
+  });
 });
 
 describe("ausencias de los doctores en la rejilla", () => {
@@ -792,7 +908,7 @@ describe("detalle de una cita", () => {
       await m.user.click(within(dialog).getByRole("button", { name: "Mover el bloqueo" }));
       const form = within(within(dialog).getByRole("form", { name: "Mover" }));
       const picker = await openPicker(m, form);
-      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent(`${bloqueo.room!.name} · dura ${bloqueo.durationMinutes} min`);
+      expect(screen.getByRole("dialog", { name: "Elegir fecha y hora" })).toHaveTextContent(`${bloqueo.room!.name} · dura ${durationLabel(bloqueo.durationMinutes)}`);
       const times = await picker.findByRole("region", { name: "Horarios libres" });
       expect(within(times).getByRole("button", { name: /^7:00\sAM/ })).toBeInTheDocument();
       expect(within(times).getByRole("button", { name: /^7:30\sPM/ })).toBeInTheDocument();

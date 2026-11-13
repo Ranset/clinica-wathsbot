@@ -16,8 +16,8 @@ import type {
   BusyTime,
   Doctor,
   DoctorInput,
+  FreeSlots,
   LoginDoctor,
-  MoveSlots,
   PasswordLink,
   PasswordLinkInfo,
   PersonalEvent,
@@ -271,9 +271,22 @@ export function createApiClient(options: ApiClientOptions = {}) {
        * consultorio; `allowShortNotice` omite la antelación mínima (cita de mostrador). Solo salen los días con algún horario libre.
        */
       moveSlots: (id: string, range: { from: string; to: string; roomId?: string; allowShortNotice?: boolean }, o?: RequestOptions) =>
-        json<MoveSlots>("listMoveSlots", {
+        json<FreeSlots>("listMoveSlots", {
           path: { appointmentId: id },
           query: { from: range.from, to: range.to, roomId: range.roomId, allowShortNotice: range.allowShortNotice ? true : undefined },
+          ...o,
+        }),
+      /**
+       * Los horarios LIBRES para una cita (o bloqueo) NUEVA, la que se llena en «Nueva cita»: los mismos que aceptaría `create` con ese doctor,
+       * esa duración (30 si falta) y ese consultorio (cualquiera si falta), día por día en `[from, to)` (hasta 42 días). En un bloqueo
+       * (`kind: "block"`) el consultorio es obligatorio y no lleva doctor.
+       */
+      availability: (
+        q: { from: string; to: string; kind?: "session" | "block"; doctorId?: string; roomId?: string; durationMinutes?: number; allowShortNotice?: boolean },
+        o?: RequestOptions
+      ) =>
+        json<FreeSlots>("listAvailability", {
+          query: { from: q.from, to: q.to, kind: q.kind, doctorId: q.doctorId, roomId: q.roomId, durationMinutes: q.durationMinutes, allowShortNotice: q.allowShortNotice ? true : undefined },
           ...o,
         }),
     },

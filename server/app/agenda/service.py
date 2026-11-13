@@ -296,78 +296,116 @@ class Agenda(Unit):
 
     def move_slots(self, appointment_id, from_day: date, to_day: date, *, room_id=None, allow_short_notice=False) -> dict:
         """Los horarios LIBRES a los que se puede mover esa cita agendada, dia por dia en `[from_day, to_day)`: exactamente los que
-        `update_booking` aceptaria (mismas reglas que `_move`: horario de la clinica y del doctor, ausencias y eventos personales,
-        antelacion, horizonte, doctor y consultorio libres), pero sin reservar nada. Su PROPIO horario cuenta como libre para ella.
+        `update_booking` aceptaria (mismas reglas que `_move`), pero sin reservar nada. Su PROPIO horario cuenta como libre para ella.
         Con `room_id` solo cuentan los huecos libres en ESE consultorio; sin el, en cualquiera (un bloqueo se queda en el suyo).
-        Un bloqueo no sigue las reglas de pacientes: se ofrecen los inicios de 7:00 a 20:00 donde su consultorio este libre.
         -> `{"slotMinutes", "durationMinutes", "days": [{"date": "AAAA-MM-DD", "slots": ["HH:MM", ...]}]}` (solo dias con algun
-        horario libre; hora de pared de la clinica)."""
-        r = self.rules
-        if to_day <= from_day or (to_day - from_day).days > MAX_MOVE_SLOT_DAYS:
-            raise AgendaError(RANGO_INVALIDO, f"el rango debe ser de 1 a {MAX_MOVE_SLOT_DAYS} dias")
+        horario libre; hora de pared de la clinica). Ver `_free_starts`."""
+        self._check_day_range(from_day, to_day)
         with self._read() as repo:
             a = repo.appointment(appointment_id)
             if a is None:
                 raise AgendaError(NO_ENCONTRADO)
             if a.status != "agendada":
                 raise AgendaError(TRANSICION_INVALIDA, f"una cita {a.status} no se puede mover")
-            now = self.now()
-            minutes = a.duration_minutes
             if room_id is None and a.kind == "block":
                 room_id = a.room_id
-            if room_id is not None:
-                room = repo.room(room_id)
-                if room is None:
-                    raise AgendaError(VALIDACION, "consultorio inexistente o inactivo")
-                candidates = [room]
+            candidates = self._candidate_rooms(repo, room_id)
+            return self._free_starts(repo, kind=a.kind, doctor=a.doctor, candidates=candidates, minutes=a.duration_minutes,
+                                     from_day=from_day, to_day=to_day, allow_short_notice=allow_short_notice, ignore_id=a.id)
+
+    def free_starts_for_new(self, from_day: date, to_day: date, *, kind="session", doctor_id=None, room_id=None, minutes=None,
+                            allow_short_notice=False) -> dict:
+        """Lo mismo para una cita (o bloqueo) NUEVA, la que se esta llenando en el formulario: los horarios en que `create_booking` la
+        aceptaria con ese doctor, esa duracion y ese consultorio (sin consultorio, en cualquiera). Un bloqueo exige consultorio y no lleva doctor."""
+        self._check_day_range(from_day, to_day)
+        minutes = self.rules.slot_minutes if minutes is None else minutes
+        self._check_duration(minutes)
+        if kind not in ("session", "block"):
+            raise AgendaError(VALIDACION, f"kind desconocido: {kind!r}")
+        with self._read() as repo:
+            if kind == "block":
+                if doctor_id is not None:
+                    raise AgendaError(VALIDACION, "un bloqueo de consultorio no lleva doctor")
+                if room_id is None:
+                    raise AgendaError(VALIDACION, "un bloqueo de consultorio exige roomId")
+                doctor = None
             else:
-                candidates = repo.rooms()
-            lo = datetime.combine(from_day, time(0), r.tz)
-            hi = datetime.combine(to_day, time(0), r.tz) + timedelta(minutes=minutes)       # + lo que ocupa el ultimo inicio
-            lo_u, hi_u = to_db(lo), to_db(hi)
-            busy = repo.busy(lo_u, hi_u, ignore_appointment_id=a.id)
-            floor = now if allow_short_notice else now + timedelta(minutes=r.min_notice_minutes)
-            latest = now + timedelta(days=r.horizon_days)
+                doctor = repo.doctor(doctor_id) if doctor_id is not None else None
+                if doctor is None:
+                    raise AgendaError(VALIDACION, "doctor inexistente o no indicado")
+            candidates = self._candidate_rooms(repo, room_id)
+            return self._free_starts(repo, kind=kind, doctor=doctor, candidates=candidates, minutes=minutes, from_day=from_day,
+                                     to_day=to_day, allow_short_notice=allow_short_notice, ignore_id=None)
 
-            def rooms_free(slots_u):
-                return any(not any(busy.room_taken(rm.id, x) for x in slots_u) for rm in candidates)
+    @staticmethod
+    def _check_day_range(from_day: date, to_day: date) -> None:
+        if to_day <= from_day or (to_day - from_day).days > MAX_MOVE_SLOT_DAYS:
+            raise AgendaError(RANGO_INVALIDO, f"el rango debe ser de 1 a {MAX_MOVE_SLOT_DAYS} dias")
 
-            days = []
-            if a.kind == "session":
-                doc = a.doctor
-                clinic = repo.clinic_schedule()
-                sched = repo.doctor_schedule(doc, clinic)
-                away = (repo.absences(doc.id, lo_u, hi_u) + repo.personal_events(doc.id, lo_u, hi_u)) if doc.active else []
-                for i in range((to_day - from_day).days):
-                    day = from_day + timedelta(days=i)
-                    found = []
-                    for s in (clinic.all_slots(day) if doc.active else []):
-                        if s < floor or s > latest:
-                            continue
-                        slots = self._slots(s, minutes)
-                        if not all(clinic.has_slot(x) and sched.has_slot(x) for x in slots):
-                            continue
-                        slots_u = [to_db(x) for x in slots]
-                        if any(overlaps(slots_u[0], slots_u[-1] + r.slot, x, y) for x, y in away):
-                            continue
-                        if any(busy.doctor_taken(doc.id, x) for x in slots_u) or not rooms_free(slots_u):
-                            continue
+    @staticmethod
+    def _candidate_rooms(repo: Repo, room_id) -> list[Room]:
+        """El consultorio pedido (que debe existir y estar activo) o todos los activos."""
+        if room_id is None:
+            return repo.rooms()
+        room = repo.room(room_id)
+        if room is None:
+            raise AgendaError(VALIDACION, "consultorio inexistente o inactivo")
+        return [room]
+
+    def _free_starts(self, repo: Repo, *, kind: str, doctor: Doctor | None, candidates: list[Room], minutes: int, from_day: date,
+                     to_day: date, allow_short_notice: bool, ignore_id: int | None) -> dict:
+        """Los inicios libres de una cita de `minutes` en `[from_day, to_day)`, con las MISMAS reglas que `_check_bookable`/`_check_block` y
+        `_free_rooms` (que decide al reservar o mover): horario de la clinica y del doctor, doctor activo, ausencias y eventos personales,
+        antelacion (`allow_short_notice` la omite), horizonte, doctor libre y al menos un consultorio libre en TODOS sus huecos. `ignore_id`
+        deja fuera los huecos de esa cita (la que se mueve). Un bloqueo no sigue las reglas de pacientes: se ofrecen los inicios de
+        `BLOCK_FIRST_HOUR` a `BLOCK_LAST_HOUR` cuyo consultorio este libre y que no hayan terminado ya."""
+        r = self.rules
+        now = self.now()
+        lo = datetime.combine(from_day, time(0), r.tz)
+        hi = datetime.combine(to_day, time(0), r.tz) + timedelta(minutes=minutes)       # + lo que ocupa el ultimo inicio
+        lo_u, hi_u = to_db(lo), to_db(hi)
+        busy = repo.busy(lo_u, hi_u, ignore_appointment_id=ignore_id)
+        floor = now if allow_short_notice else now + timedelta(minutes=r.min_notice_minutes)
+        latest = now + timedelta(days=r.horizon_days)
+
+        def rooms_free(slots_u):
+            return any(not any(busy.room_taken(rm.id, x) for x in slots_u) for rm in candidates)
+
+        days = []
+        if kind == "session":
+            clinic = repo.clinic_schedule()
+            sched = repo.doctor_schedule(doctor, clinic)
+            away = (repo.absences(doctor.id, lo_u, hi_u) + repo.personal_events(doctor.id, lo_u, hi_u)) if doctor.active else []
+            for i in range((to_day - from_day).days):
+                day = from_day + timedelta(days=i)
+                found = []
+                for s in (clinic.all_slots(day) if doctor.active else []):
+                    if s < floor or s > latest:
+                        continue
+                    slots = self._slots(s, minutes)
+                    if not all(clinic.has_slot(x) and sched.has_slot(x) for x in slots):
+                        continue
+                    slots_u = [to_db(x) for x in slots]
+                    if any(overlaps(slots_u[0], slots_u[-1] + r.slot, x, y) for x, y in away):
+                        continue
+                    if any(busy.doctor_taken(doctor.id, x) for x in slots_u) or not rooms_free(slots_u):
+                        continue
+                    found.append(s.strftime("%H:%M"))
+                if found:
+                    days.append({"date": day.isoformat(), "slots": found})
+        else:
+            for i in range((to_day - from_day).days):
+                day = from_day + timedelta(days=i)
+                found = []
+                for k in range(BLOCK_FIRST_HOUR * 60 // r.slot_minutes, BLOCK_LAST_HOUR * 60 // r.slot_minutes):
+                    s = datetime.combine(day, time(0), r.tz) + r.slot * k
+                    if s + timedelta(minutes=minutes) <= now:
+                        continue                                                              # ya termino: no se pone en el pasado
+                    if rooms_free([to_db(x) for x in self._slots(s, minutes)]):
                         found.append(s.strftime("%H:%M"))
-                    if found:
-                        days.append({"date": day.isoformat(), "slots": found})
-            else:
-                for i in range((to_day - from_day).days):
-                    day = from_day + timedelta(days=i)
-                    found = []
-                    for k in range(BLOCK_FIRST_HOUR * 60 // r.slot_minutes, BLOCK_LAST_HOUR * 60 // r.slot_minutes):
-                        s = datetime.combine(day, time(0), r.tz) + r.slot * k
-                        if s + timedelta(minutes=minutes) <= now:
-                            continue                                                                  # ya termino: no se mueve al pasado
-                        if rooms_free([to_db(x) for x in self._slots(s, minutes)]):
-                            found.append(s.strftime("%H:%M"))
-                    if found:
-                        days.append({"date": day.isoformat(), "slots": found})
-            return {"slotMinutes": r.slot_minutes, "durationMinutes": minutes, "days": days}
+                if found:
+                    days.append({"date": day.isoformat(), "slots": found})
+        return {"slotMinutes": r.slot_minutes, "durationMinutes": minutes, "days": days}
 
     def get_booking(self, appointment_id) -> Appointment | None:
         with self._read() as repo:

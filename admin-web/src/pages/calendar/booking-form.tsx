@@ -3,11 +3,13 @@ import { Button, hhmmLabel, isIsoDate, workingBands } from "@clinica/calendar";
 import { isApiError, type Booking, type Doctor, type Room } from "@clinica/api-client";
 import { useApi } from "../../api-context";
 import { isConflict, messageFor } from "../../lib/errors";
-import { fmtDay } from "../../lib/fmt";
+import { durationLabel, fmtDay } from "../../lib/fmt";
 import { summarizeHours } from "../../lib/hours";
 import { timeOptions, utcOf } from "../../lib/range";
 import { BusyButton, Checkbox, Field, FormError, Notice, Select, TextArea, TextInput } from "../../ui/controls";
+import { DateField } from "../../ui/date-field";
 import { Modal } from "../../ui/modal";
+import { FreeSlotPicker } from "./free-slot-picker";
 
 export type SlotDraft = {
   mode: "cita" | "bloqueo";
@@ -19,7 +21,6 @@ export type SlotDraft = {
 
 const SESSION_DURATIONS = [30, 60, 90, 120];
 const BLOCK_DURATIONS = [30, 60, 90, 120, 180, 240, 360, 480];
-const durationLabel = (m: number) => (m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`);
 const TIMES = timeOptions("07:00", "20:00");
 
 /** Alta de una cita o de un bloqueo de consultorio ("Nueva cita" y el clic en un hueco vacío). */
@@ -54,6 +55,7 @@ export function BookingFormDialog({
   const [duration, setDuration] = useState(30);
   const [notes, setNotes] = useState("");
   const [shortNotice, setShortNotice] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<{ name?: string; phone?: string; doctor?: string; day?: string }>({});
@@ -87,6 +89,16 @@ export function BookingFormDialog({
     if (doctorOutOfHours && doctor) out.push(`${doctor.name} no atiende ${fmtDay(day)} a esa hora (${summarizeHours(doctor.weeklyHours)}).`);
     return out;
   }, [startUtc, block, now, shortNotice, doctor, doctorOutOfHours, day]);
+
+  // El icono del campo de fecha abre el calendario con los horarios libres de ESTE doctor (o consultorio, en un bloqueo) y esta duración.
+  const openCalendar = () => {
+    if (!block && !doctorId) {
+      setFieldErrors((f) => ({ ...f, doctor: "Elige primero un doctor para ver sus horarios libres." }));
+      return;
+    }
+    setPicking(true);
+  };
+  const roomName = rooms.find((r) => r.id === roomId)?.name;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -186,9 +198,7 @@ export function BookingFormDialog({
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Fecha" error={fieldErrors.day} className="col-span-2 sm:col-span-1">
-            <TextInput type="date" value={day} onChange={(e) => setDay(e.target.value)} />
-          </Field>
+          <DateField label="Fecha" error={fieldErrors.day} className="col-span-2 sm:col-span-1" value={day} onChange={setDay} onOpenCalendar={openCalendar} />
           <Field label="Hora" className="col-span-1">
             <Select value={time} onChange={(e) => setTime(e.target.value)}>
               {TIMES.map((t) => (
@@ -229,6 +239,27 @@ export function BookingFormDialog({
         ))}
         <FormError>{error}</FormError>
       </form>
+
+      {picking && (
+        <FreeSlotPicker
+          description={`${(block ? [roomName] : [doctor?.name, roomName ?? "Cualquier consultorio libre"]).filter(Boolean).join(" · ")} · dura ${durationLabel(duration)}`}
+          queryKey={`${block ? "b" : "s"}|${doctorId}|${roomId}|${duration}|${shortNotice}`}
+          load={({ from, to }, signal) =>
+            api.appointments.availability(
+              { from, to, kind: block ? "block" : "session", doctorId: block ? undefined : doctorId, roomId: roomId || undefined, durationMinutes: duration, allowShortNotice: shortNotice },
+              { signal }
+            )
+          }
+          value={{ day, time }}
+          onPick={(d, t) => {
+            setDay(d);
+            setTime(t);
+            setFieldErrors((f) => ({ ...f, day: undefined }));
+            setPicking(false);
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </Modal>
   );
 }

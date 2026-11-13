@@ -37,7 +37,7 @@ def test_cada_operacion_del_contrato_exige_sesion_y_su_rol(app, users, login):
     anonimo = app.test_client()
     fallos = []
     ops = sorted(operations(), key=lambda o: o[2] == "logout")      # `logout` al final: cierra las sesiones que se estan usando
-    assert len(ops) == 48          # 69 operaciones del contrato - 13 del bot/webhook - 8 publicas (health, login, lista y login del doctor, enlace: revisar y usar, branding y su logo)
+    assert len(ops) == 49          # 70 operaciones del contrato - 13 del bot/webhook - 8 publicas (health, login, lista y login del doctor, enlace: revisar y usar, branding y su logo)
     for method, path, op_id, roles in ops:
         r = call(anonimo, method, path)
         if r.status_code != 401:

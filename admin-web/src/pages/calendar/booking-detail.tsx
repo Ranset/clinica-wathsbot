@@ -5,11 +5,12 @@ import type { Booking, BookingPatch, BookingStatus, Room } from "@clinica/api-cl
 import { useApi } from "../../api-context";
 import { features } from "../../features";
 import { isConflict, messageFor } from "../../lib/errors";
-import { TZ, fmtPhone, fmtSpan } from "../../lib/fmt";
+import { TZ, durationLabel, fmtPhone, fmtSpan } from "../../lib/fmt";
 import { timeOptions, utcOf } from "../../lib/range";
 import { BusyButton, Checkbox, Field, FormError, Pill, Select, TextArea, TextInput, dangerButton } from "../../ui/controls";
 import { Modal } from "../../ui/modal";
-import { MoveSlotPicker } from "./move-slot-picker";
+import { DateField } from "../../ui/date-field";
+import { FreeSlotPicker } from "./free-slot-picker";
 
 const TIMES = timeOptions("07:00", "20:00");
 
@@ -221,9 +222,7 @@ export function BookingDetail({
           <form onSubmit={submitMove} aria-label="Mover" className="flex flex-col gap-3 rounded-lg border bg-subtle p-3">
             <p className="text-sm font-semibold">{isBlock ? "Mover el bloqueo" : "Mover a otro horario"}</p>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Nueva fecha" className="col-span-2 sm:col-span-1">
-                <TextInput type="date" value={moveDay} onChange={(e) => setMoveDay(e.target.value)} />
-              </Field>
+              <DateField label="Nueva fecha" className="col-span-2 sm:col-span-1" value={moveDay} onChange={setMoveDay} onOpenCalendar={() => setPicking(true)} />
               <Field label="Nueva hora" className="col-span-1">
                 <Select value={moveTime} onChange={(e) => setMoveTime(e.target.value)}>
                   {TIMES.map((t) => (
@@ -264,11 +263,11 @@ export function BookingDetail({
         )}
 
         {mode === "move" && picking && (
-          <MoveSlotPicker
-            booking={b}
-            roomId={moveRoom}
-            roomLabel={moveRoom ? (rooms.find((r) => r.id === moveRoom)?.name ?? "Consultorio") : isBlock ? (b.room?.name ?? "Consultorio") : "Cualquier consultorio libre"}
-            allowShortNotice={shortNotice}
+          <FreeSlotPicker
+            description={`${[isBlock ? null : b.doctor?.name, moveRoom ? (rooms.find((r) => r.id === moveRoom)?.name ?? "Consultorio") : isBlock ? (b.room?.name ?? "Consultorio") : "Cualquier consultorio libre"].filter(Boolean).join(" · ")} · dura ${durationLabel(b.durationMinutes)}`}
+            queryKey={`${moveRoom}|${shortNotice}`}
+            load={({ from, to }, signal) => api.appointments.moveSlots(b.id, { from, to, roomId: moveRoom || undefined, allowShortNotice: shortNotice }, { signal })}
+            current={{ day: wall.day, time: hhmm(wall.minutes) }}
             value={{ day: moveDay, time: moveTime }}
             onPick={(day, time) => {
               setMoveDay(day);

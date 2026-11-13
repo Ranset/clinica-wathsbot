@@ -17,6 +17,7 @@ await api.auth.usePasswordLink(token, password);    // PÚBLICO: guarda la contr
 const r = await api.appointments.list({ from, to }, { etag });   // { notModified: true, etag } si el servidor dio 304
 await api.appointments.update(id, { status: "realizada" });
 await api.appointments.moveSlots(id, { from, to, roomId });   // los horarios LIBRES a los que se puede mover esa cita, por día (`[from, to)`, hasta 42 días)
+await api.appointments.availability({ from, to, doctorId, durationMinutes, roomId });  // lo mismo para una cita (o `kind: "block"`) NUEVA
 api.onUnauthenticated(() => /* la sesión venció */);
 ```
 

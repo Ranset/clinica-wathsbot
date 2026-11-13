@@ -49,7 +49,7 @@ def slots(env, appointment, start, end, sess=None, **q):
                                 query_string={"from": start.isoformat(), "to": end.isoformat(), **q})
     assert r.status_code == 200, r.get_json()
     j = r.get_json()
-    assert_schema("MoveSlots", j)
+    assert_schema("FreeSlots", j)
     return {d["date"]: d["slots"] for d in j["days"]}, j
 
 
@@ -249,3 +249,100 @@ def test_el_doctor_no_puede_consultarlo_y_la_respuesta_no_trae_datos_de_paciente
     assert r.status_code == 403
     text = env.staff.get(f"/api/appointments/{a.id}/move-slots", query_string={"from": "2026-11-10", "to": "2026-11-12"}).get_data(as_text=True)
     assert "Secreto" not in text and "5219981110001" not in text
+
+
+# ====================================================================== cita NUEVA: GET /api/availability
+def avail(env, start, end, **q):
+    r = env.staff.get("/api/availability", query_string={"from": start.isoformat(), "to": end.isoformat(), **q})
+    assert r.status_code == 200, r.get_json()
+    j = r.get_json()
+    assert_schema("FreeSlots", j)
+    return {d["date"]: d["slots"] for d in j["days"]}, j
+
+
+def creates(env, day, hhmm, **body):
+    """¿`POST /api/appointments` la acepta? Si la crea, la cancela de inmediato (libera el hueco para la siguiente prueba)."""
+    payload = {"kind": "session", "patientName": "Zoe Prueba", "scheduledAtUtc": utc(at(env, day, hhmm)), **body}
+    r = env.staff.post("/api/appointments", payload)
+    if r.status_code != 201:
+        return False
+    assert env.staff.patch(f"/api/appointments/{r.get_json()['id']}", {"status": "cancelada"}).status_code == 200
+    return True
+
+
+def test_cita_nueva_lista_los_horarios_del_doctor_y_ninguno_es_propio(env):
+    book(env, 1, TUE, "10:00")                                         # ya hay una cita de ese doctor: para la NUEVA no cuenta como libre
+    d, j = avail(env, MON, MON + timedelta(days=8), doctorId="1")
+    assert j["slotMinutes"] == 30 and j["durationMinutes"] == 30
+    assert d[MON.isoformat()] == [s for s in ALL_DAY if s >= "11:00"]  # hoy: faltan 60 min de antelacion
+    assert d[TUE.isoformat()] == [s for s in ALL_DAY if s != "10:00"]
+    assert d[SAT.isoformat()][-1] == "12:30" and SUN.isoformat() not in d
+    d60, j60 = avail(env, TUE, WED, doctorId="1", durationMinutes="60")
+    assert j60["durationMinutes"] == 60
+    t60 = d60[TUE.isoformat()]
+    assert "09:30" not in t60 and "10:00" not in t60                  # 09:30-10:30 y 10:00-11:00 pisan la cita de las 10:00
+    assert "09:00" in t60 and "10:30" in t60 and "11:00" in t60       # 09:00-10:00 y 10:30-11:30 caben
+    assert "17:00" in d60[TUE.isoformat()] and "17:30" not in d60[TUE.isoformat()]
+
+
+def test_cita_nueva_lo_que_se_lista_es_exactamente_lo_que_post_acepta(env):
+    _prepare_mixed_agenda(env)
+    days = [MON + timedelta(days=i) for i in range(8)]
+    bad = []
+    for minutes, extra in ((30, {}), (60, {}), (30, {"roomId": "2"}), (30, {"allowShortNotice": True})):
+        q = {"doctorId": "1", "durationMinutes": str(minutes), **({"roomId": "2"} if "roomId" in extra else {}), **({"allowShortNotice": "true"} if "allowShortNotice" in extra else {})}
+        listed, _ = avail(env, days[0], days[-1] + timedelta(days=1), **q)
+        for day in days if minutes == 30 and not extra else days[:5]:
+            for h in range(8, 19):
+                for m in (0, 30):
+                    hhmm = f"{h:02d}:{m:02d}"
+                    ok = creates(env, day, hhmm, doctorId="1", durationMinutes=minutes, **extra)
+                    if ok != (hhmm in listed.get(day.isoformat(), [])):
+                        bad.append((minutes, tuple(extra), day.isoformat(), hhmm))
+    assert bad == []
+
+
+def test_bloqueo_nuevo_ofrece_de_7_a_20_donde_su_consultorio_este_libre_y_coincide_con_post(env):
+    book(env, 1, TUE, "15:00")                                         # ocupa el consultorio 1
+    listed, j = avail(env, MON, THU, kind="block", roomId="1", durationMinutes="60")
+    assert j["durationMinutes"] == 60
+    t = listed[TUE.isoformat()]
+    assert t[0] == "07:00" and t[-1] == "19:30" and "14:00" in t and "14:30" not in t and "15:00" not in t and "15:30" in t
+    assert listed[MON.isoformat()][0] == "09:30"                       # hoy: el que ya termino no; 09:30-10:30 sigue en curso
+    r2, _ = avail(env, TUE, WED, kind="block", roomId="2", durationMinutes="60")
+    assert "14:30" in r2[TUE.isoformat()]                              # el consultorio 2 si esta libre
+    bad = []
+    for day in (MON, TUE):
+        for h in range(7, 20):
+            for m in (0, 30):
+                hhmm = f"{h:02d}:{m:02d}"
+                body = {"kind": "block", "roomId": "1", "durationMinutes": 60}
+                r = env.staff.post("/api/appointments", {"scheduledAtUtc": utc(at(env, day, hhmm)), **body})
+                ok = r.status_code == 201
+                if ok:
+                    assert env.staff.patch(f"/api/appointments/{r.get_json()['id']}", {"status": "cancelada"}).status_code == 200
+                if ok != (hhmm in listed.get(day.isoformat(), [])):
+                    bad.append((day.isoformat(), hhmm))
+    assert bad == []
+
+
+def test_cita_nueva_con_doctor_de_baja_o_con_ausencia(env):
+    assert env.admin.post("/api/doctors/2/absences", {"startUtc": utc(at(env, TUE, "09:00")), "endUtc": utc(at(env, TUE, "12:00"))}).status_code == 201
+    d, _ = avail(env, TUE, WED, doctorId="2")
+    assert d[TUE.isoformat()][0] == "12:00"
+    assert env.admin.patch("/api/doctors/2", {"active": False}).status_code == 200
+    assert avail(env, TUE, SAT, doctorId="2")[0] == {}
+
+
+def test_cita_nueva_errores_y_permisos(env):
+    q = lambda **kw: env.staff.get("/api/availability", query_string={"from": "2026-11-10", "to": "2026-11-12", **kw})
+    for bad in ({}, {"doctorId": "999"}, {"doctorId": "x"}, {"doctorId": "1", "roomId": "99"}, {"doctorId": "1", "durationMinutes": "45"},
+                {"doctorId": "1", "durationMinutes": "0"}, {"doctorId": "1", "durationMinutes": "9999"}, {"doctorId": "1", "kind": "otra"},
+                {"doctorId": "1", "allowShortNotice": "quizas"}, {"kind": "block"}, {"kind": "block", "roomId": "1", "doctorId": "1"},
+                {"kind": "block", "roomId": "99"}):
+        r = q(**bad)
+        assert r.status_code == 422 and r.get_json()["error"] in ("validacion", "rango_invalido"), bad
+    assert env.staff.get("/api/availability", query_string={"from": "2026-11-10", "to": "2026-11-10", "doctorId": "1"}).get_json()["error"] == "rango_invalido"
+    assert env.staff.get("/api/availability", query_string={"from": "2026-11-10", "to": "2026-12-23", "doctorId": "1"}).status_code == 422   # 43 dias
+    assert env.staff.get("/api/availability", query_string={"from": "2026-11-10", "to": "2026-12-22", "doctorId": "1"}).status_code == 200
+    assert env.doctor.client.get("/api/availability", query_string={"from": "2026-11-10", "to": "2026-11-12", "doctorId": "1"}).status_code == 403
