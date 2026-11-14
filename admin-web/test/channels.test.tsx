@@ -18,40 +18,110 @@ const NUM = "529990000001";
 const IG = "17841400000000000";
 const CONTACT = "9981234567";
 const sw = (name: string) => screen.findByRole("switch", { name });
+/** El bot es UN elemento en el encabezado: este es su botón (el nombre accesible empieza con «Canales del bot»). */
+const botButton = () => screen.findByRole("button", { name: /^Canales del bot/ });
+/** Lo abre y devuelve el panel con los tres interruptores. */
+async function openBot(user: Awaited<ReturnType<typeof mountApp>>["user"]) {
+  await user.click(await botButton());
+  return screen.findByRole("group", { name: "Bot por canal" });
+}
 
-describe("los tres interruptores del bot", () => {
-  it("hay uno por canal, con nombre claro; Messenger e Instagram nacen apagados y WhatsApp conserva su estado", async () => {
-    const { violations: v } = await mountApp();
+describe("el bot: un solo elemento que resume los canales y despliega un interruptor por cada uno", () => {
+  it("cerrado dice por qué canales contesta; al darle clic se despliegan WhatsApp, Messenger e Instagram", async () => {
+    const { user, violations: v } = await mountApp({ prepare: (m) => (m.db.bot.channels.instagram = true) });
     violations = v;
-    const group = await screen.findByRole("group", { name: "Bot por canal" });
-    expect(within(group).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["Bot de WhatsApp", "Bot de Messenger", "Bot de Instagram"]);
-    await waitFor(() => expect(within(group).getByRole("switch", { name: "Bot de WhatsApp" })).toHaveAttribute("aria-checked", "true"));
-    expect(within(group).getByRole("switch", { name: "Bot de Messenger" })).toHaveAttribute("aria-checked", "false");
-    expect(within(group).getByRole("switch", { name: "Bot de Instagram" })).toHaveAttribute("aria-checked", "false");
-    expect(within(group).getByRole("switch", { name: "Bot de Messenger" })).toHaveTextContent("Bot apagado");
+    const button = await botButton();
+    await waitFor(() => expect(button).toHaveAttribute("aria-label", "Canales del bot: activos: WhatsApp, Instagram"));
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument(); // cerrado: ningún interruptor suelto en el encabezado
+    expect(screen.getAllByRole("button", { name: /^Canales del bot/ })).toHaveLength(1);
+
+    const panel = await openBot(user);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getAllByRole("switch").map((s) => s.getAttribute("aria-label"))).toEqual(["Bot de WhatsApp", "Bot de Messenger", "Bot de Instagram"]);
+    expect(within(panel).getByRole("switch", { name: "Bot de WhatsApp" })).toHaveAttribute("aria-checked", "true");
+    expect(within(panel).getByRole("switch", { name: "Bot de Messenger" })).toHaveAttribute("aria-checked", "false");
+    expect(within(panel).getByRole("switch", { name: "Bot de Instagram" })).toHaveAttribute("aria-checked", "true");
+    expect(within(panel).getByRole("switch", { name: "Bot de Messenger" })).toHaveTextContent("Bot apagado");
   });
 
-  it("encender Messenger no toca WhatsApp ni Instagram, y deja dicho quién lo cambió", async () => {
+  it("el resumen sigue a los canales: todos, ninguno, algunos y el estado mientras carga", async () => {
+    const { user, mock, violations: v } = await mountApp({ prepare: (m) => (m.db.bot.channels.whatsapp = false) });
+    violations = v;
+    const button = await botButton();
+    await waitFor(() => expect(button).toHaveAttribute("aria-label", "Canales del bot: todos apagados"));
+    expect(button).toHaveAttribute("title", "Bot: todos apagados");
+    await openBot(user);
+    await user.click(await sw("Bot de Messenger"));
+    await waitFor(() => expect(button).toHaveAttribute("aria-label", "Canales del bot: activos: Messenger"));
+    await user.click(await sw("Bot de WhatsApp"));
+    await user.click(await sw("Bot de Instagram"));
+    await waitFor(() => expect(button).toHaveAttribute("aria-label", "Canales del bot: todos activos"));
+    expect(mock.db.bot.channels).toEqual({ whatsapp: true, facebook: true, instagram: true });
+  });
+
+  it("se cierra con Esc (y el foco vuelve al botón), con un clic fuera y al volver a darle clic al botón", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    const button = await botButton();
+    await openBot(user);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Bot por canal" })).not.toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button).toHaveFocus();
+
+    await openBot(user);
+    await user.click(document.body); // clic fuera
+    expect(screen.queryByRole("group", { name: "Bot por canal" })).not.toBeInTheDocument();
+
+    await openBot(user);
+    await user.click(button); // el mismo botón lo cierra
+    expect(screen.queryByRole("group", { name: "Bot por canal" })).not.toBeInTheDocument();
+  });
+
+  it("Messenger e Instagram nacen apagados y WhatsApp conserva su estado", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    const panel = await openBot(user);
+    await waitFor(() => expect(within(panel).getByRole("switch", { name: "Bot de WhatsApp" })).toHaveAttribute("aria-checked", "true"));
+    expect(within(panel).getByRole("switch", { name: "Bot de Messenger" })).toHaveAttribute("aria-checked", "false");
+    expect(within(panel).getByRole("switch", { name: "Bot de Instagram" })).toHaveAttribute("aria-checked", "false");
+    expect(await botButton()).toHaveAttribute("aria-label", "Canales del bot: activos: WhatsApp");
+  });
+
+  it("cada fila dice quién cambió el canal y cuándo (visible, no solo al pasar el puntero)", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    await openBot(user);
+    const fb = await sw("Bot de Messenger");
+    expect(fb).toHaveTextContent("Interruptor del bot de Messenger"); // nadie lo ha cambiado
+    await user.click(fb); // encender no pide confirmación
+    await waitFor(() => expect(fb).toHaveAttribute("aria-checked", "true"));
+    expect(fb).toHaveTextContent("Lo cambió Recepción Clínica");
+    expect(fb).toHaveAttribute("title", expect.stringContaining("Lo cambió Recepción Clínica"));
+    expect(await screen.findByText(/contesta los mensajes de Messenger/)).toBeInTheDocument();
+  });
+
+  it("encender Messenger no toca WhatsApp ni Instagram", async () => {
     const { user, mock, violations: v } = await mountApp();
     violations = v;
+    await openBot(user);
     const wa = await sw("Bot de WhatsApp");
     const fb = await sw("Bot de Messenger");
     const ig = await sw("Bot de Instagram");
     await waitFor(() => expect(wa).toHaveAttribute("aria-checked", "true"));
-
-    await user.click(fb); // encender no pide confirmación
+    await user.click(fb);
     await waitFor(() => expect(fb).toHaveAttribute("aria-checked", "true"));
     expect(mock.db.bot.channels).toEqual({ whatsapp: true, facebook: true, instagram: false });
     expect(wa).toHaveAttribute("aria-checked", "true");
     expect(ig).toHaveAttribute("aria-checked", "false");
-    expect(fb).toHaveAttribute("title", expect.stringContaining("Lo cambió Recepción Clínica"));
-    expect(ig).toHaveAttribute("title", expect.not.stringContaining("Lo cambió"));
-    expect(await screen.findByText(/contesta los mensajes de Messenger/)).toBeInTheDocument();
+    expect(ig).not.toHaveTextContent("Lo cambió");
   });
 
-  it("apagar uno pide confirmación (con el nombre del canal) y NO afecta a los demás; cancelar no cambia nada", async () => {
+  it("apagar uno pide confirmación (con el nombre del canal) y NO afecta a los demás; cancelar no cambia nada; el panel sigue abierto", async () => {
     const { user, mock, violations: v } = await mountApp({ prepare: (m) => (m.db.bot.channels.instagram = true) });
     violations = v;
+    await openBot(user);
     const wa = await sw("Bot de WhatsApp");
     const fb = await sw("Bot de Messenger");
     const ig = await sw("Bot de Instagram");
@@ -63,6 +133,7 @@ describe("los tres interruptores del bot", () => {
     expect(mock.db.bot.channels.instagram).toBe(true); // todavía no
     await user.click(within(confirm).getByRole("button", { name: "Cancelar" }));
     expect(mock.db.bot.channels.instagram).toBe(true);
+    expect(screen.getByRole("group", { name: "Bot por canal" })).toBeInTheDocument(); // cancelar no cierra el panel
 
     await user.click(ig);
     await user.click(within(await screen.findByRole("dialog", { name: "¿Apagar el bot?" })).getByRole("button", { name: "Sí, apagar el bot" }));
@@ -72,11 +143,13 @@ describe("los tres interruptores del bot", () => {
     expect(fb).toHaveAttribute("aria-checked", "false");
     expect(mock.db.bot.channelUpdates!.instagram.updatedBy).toBe("Recepción Clínica");
     expect(mock.db.bot.active).toBe(true); // `active` sigue siendo el de WhatsApp
+    expect(screen.getByRole("group", { name: "Bot por canal" })).toBeInTheDocument();
   });
 
   it("apagar WhatsApp deja a Messenger como estaba", async () => {
     const { user, mock, violations: v } = await mountApp({ prepare: (m) => (m.db.bot.channels.facebook = true) });
     violations = v;
+    await openBot(user);
     const wa = await sw("Bot de WhatsApp");
     const fb = await sw("Bot de Messenger");
     await waitFor(() => expect(fb).toHaveAttribute("aria-checked", "true"));
@@ -85,11 +158,13 @@ describe("los tres interruptores del bot", () => {
     await waitFor(() => expect(wa).toHaveAttribute("aria-checked", "false"));
     expect(fb).toHaveAttribute("aria-checked", "true");
     expect(mock.db.bot).toMatchObject({ active: false, channels: { whatsapp: false, facebook: true, instagram: false } });
+    expect(await botButton()).toHaveAttribute("aria-label", "Canales del bot: activos: Messenger");
   });
 
-  it("refleja lo que otra persona cambió en un canal (consulta periódica), sin tocar los demás", async () => {
-    const { mock, violations: v } = await mountApp();
+  it("refleja lo que otra persona cambió en un canal (consulta periódica), también con el panel abierto", async () => {
+    const { user, mock, violations: v } = await mountApp();
     violations = v;
+    await openBot(user);
     const wa = await sw("Bot de WhatsApp");
     const fb = await sw("Bot de Messenger");
     await waitFor(() => expect(wa).toHaveAttribute("aria-checked", "true"));
@@ -97,21 +172,24 @@ describe("los tres interruptores del bot", () => {
     mock.db.bot.channelUpdates!.facebook = { updatedAt: "2026-11-10T15:00:00.000Z", updatedBy: "Otra Persona" };
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(fb).toHaveAttribute("aria-checked", "true"));
-    expect(fb).toHaveAttribute("title", expect.stringContaining("Lo cambió Otra Persona"));
+    expect(fb).toHaveTextContent("Lo cambió Otra Persona");
     expect(wa).toHaveAttribute("aria-checked", "true");
+    expect(await botButton()).toHaveAttribute("aria-label", "Canales del bot: activos: WhatsApp, Messenger");
   });
 
   it("con un servidor de la versión anterior (solo `active`) WhatsApp se ve bien y los otros canales quedan apagados, nunca activos", async () => {
-    await mountApp({
+    const { user } = await mountApp({
       prepare: (m) => {
         m.db.bot = { active: true, updatedAt: "2026-11-10T14:00:00.000Z", updatedBy: "Admin" } as never; // sin `channels`: fuera del contrato a proposito
       },
     });
+    await openBot(user);
     const wa = await sw("Bot de WhatsApp");
     await waitFor(() => expect(wa).toHaveAttribute("aria-checked", "true"));
     expect(await sw("Bot de Messenger")).toHaveAttribute("aria-checked", "false");
     expect(await sw("Bot de Instagram")).toHaveAttribute("aria-checked", "false");
     expect(wa).toHaveAttribute("title", expect.stringContaining("Lo cambió Admin"));
+    expect(await botButton()).toHaveAttribute("aria-label", "Canales del bot: activos: WhatsApp");
     violations = []; // la respuesta del "servidor viejo" no cumple el contrato nuevo, y eso es justo lo que se prueba
   });
 });

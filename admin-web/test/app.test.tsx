@@ -1004,6 +1004,7 @@ describe("boton del bot", () => {
   it("muestra el estado, pide confirmacion para apagarlo y se vuelve a encender de una", async () => {
     const { user, mock, violations: v } = await mountApp();
     violations = v;
+    await user.click(await screen.findByRole("button", { name: /^Canales del bot/ })); // el bot es UN elemento: al darle clic se despliegan los canales
     const toggle = await screen.findByRole("switch", { name: "Bot de WhatsApp" });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(toggle).toHaveTextContent("Bot activo");
@@ -1027,8 +1028,9 @@ describe("boton del bot", () => {
   });
 
   it("si otra persona lo apaga, aqui se ve (consulta periodica)", async () => {
-    const { mock, violations: v } = await mountApp();
+    const { user, mock, violations: v } = await mountApp();
     violations = v;
+    await user.click(await screen.findByRole("button", { name: /^Canales del bot/ }));
     const toggle = await screen.findByRole("switch", { name: "Bot de WhatsApp" });
     await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     mock.db.bot = { ...mock.db.bot, active: false, channels: { ...mock.db.bot.channels, whatsapp: false }, updatedAt: NOW.toISOString(), updatedBy: "Otra Persona" };
