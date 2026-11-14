@@ -50,6 +50,11 @@ export type BotSettings = S["BotSettings"];
 export type Channel = S["Channel"];
 /** El interruptor del bot de cada canal (siempre trae los tres). */
 export type BotChannels = S["BotChannels"];
+/** `manual` (lo manda el interruptor del canal) o `schedule` (se enciende y apaga solo dentro de su horario). */
+export type BotMode = S["BotMode"];
+/** Cuando contesta el bot en un canal en modo `schedule`: dias en que EMPIEZA, de `start` a `end` (hora de la clinica; si `end` < `start` termina al dia siguiente). */
+export type BotSchedule = S["BotSchedule"];
+export type DayKey = S["DayKey"];
 
 /** Respuesta de `PUT /api/doctors/{id}/weekly-hours` (y de aprobar una solicitud, por dentro). */
 export type WeeklyHoursResult = {

@@ -12,6 +12,8 @@ import type {
   BookingPatch,
   BookingStatus,
   BotChannels,
+  BotMode,
+  BotSchedule,
   BotSettings,
   Channel,
   Branding,
@@ -357,6 +359,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Enciende / apaga UN canal (`whatsapp`, `facebook` o `instagram`) sin tocar los otros. */
       setChannel: (channel: Channel, active: boolean, o?: RequestOptions) =>
         json<BotSettings>("setBotSettings", { body: { channel, active }, ...o }),
+      /**
+       * Cambia de UN canal lo que venga: el interruptor manual (`active`), el modo (`manual` | `schedule`) y/o el horario. Pasar a
+       * `schedule` exige un horario valido (el que viene o el ya guardado).
+       */
+      configure: (channel: Channel, change: { active?: boolean; mode?: BotMode; schedule?: BotSchedule }, o?: RequestOptions) =>
+        json<BotSettings>("setBotSettings", { body: { channel, ...change }, ...o }),
+      setMode: (channel: Channel, mode: BotMode, o?: RequestOptions) => json<BotSettings>("setBotSettings", { body: { channel, mode }, ...o }),
+      setSchedule: (channel: Channel, schedule: BotSchedule, o?: RequestOptions) =>
+        json<BotSettings>("setBotSettings", { body: { channel, schedule }, ...o }),
       /** Cambia varios canales a la vez; solo los que vienen. */
       setChannels: (channels: Partial<BotChannels>, o?: RequestOptions) => json<BotSettings>("setBotSettings", { body: { channels }, ...o }),
     },

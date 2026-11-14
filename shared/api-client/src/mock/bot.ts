@@ -1,4 +1,5 @@
-import type { AttentionItem, Booking, Channel } from "../types";
+import { wallClock } from "@clinica/calendar/src/lib/calendar";
+import type { AttentionItem, Booking, BotMode, BotSchedule, BotSettings, Channel, DayKey } from "../types";
 import { HttpError, badRequest, invalid } from "./http";
 import { TZ, nextFreeSlot } from "./rules";
 import { nextId, type DB } from "./state";
@@ -109,4 +110,89 @@ export function botHandoff(db: DB, now: Date, src: Obj): AttentionItem {
   };
   db.attention.push(item);
   return structuredClone(item);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Modo y horario por canal (las mismas reglas que `server/app/settings.py`)
+// ---------------------------------------------------------------------------------------------------------------------------------
+export const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const satisfies readonly DayKey[];
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const TZ_CLINIC = "America/Cancun";
+export const BOT_MODES = ["manual", "schedule"] as const satisfies readonly BotMode[];
+
+/** Un horario valido (dias sin repetir, `HH:MM` distintas) o `null`. Devuelve los dias en orden de semana. */
+export function parseSchedule(value: unknown): BotSchedule | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).some((k) => !["days", "start", "end"].includes(k))) return null;
+  const { days, start, end } = v;
+  if (!Array.isArray(days) || days.length === 0 || days.length > 7 || new Set(days).size !== days.length) return null;
+  if (!days.every((d) => typeof d === "string" && (DAY_KEYS as readonly string[]).includes(d))) return null;
+  if (typeof start !== "string" || typeof end !== "string" || !HHMM.test(start) || !HHMM.test(end) || start === end) return null;
+  return { days: [...(days as DayKey[])].sort((a, b) => DAY_KEYS.indexOf(a) - DAY_KEYS.indexOf(b)), start, end };
+}
+
+const mins = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+
+/** El bot contesta AHORA segun este horario (hora de la clinica). Sin horario: apagado. */
+export function scheduleActive(schedule: BotSchedule | null | undefined, now: Date): boolean {
+  if (!schedule) return false;
+  const { day, minutes } = wallClock(now, TZ_CLINIC);
+  const wd = (new Date(`${day}T12:00:00Z`).getUTCDay() + 6) % 7; // 0 = lunes
+  const today = schedule.days.includes(DAY_KEYS[wd]!);
+  const yesterday = schedule.days.includes(DAY_KEYS[(wd + 6) % 7]!);
+  const s = mins(schedule.start);
+  const e = mins(schedule.end);
+  if (s < e) return today && minutes >= s && minutes < e;
+  return (today && minutes >= s) || (yesterday && minutes < e); // cruza la medianoche
+}
+
+/**
+ * Lo que contesta el servidor: `channels` es el estado EFECTIVO (el interruptor en modo `manual`, el horario en `schedule`), `manual` los
+ * interruptores guardados (`db.bot.channels`), y `modes` / `schedules` como se llega a el. `active` sigue siendo el de WhatsApp.
+ */
+export function botView(db: DB, now: Date): BotSettings {
+  const stored = db.bot;
+  const manual = { whatsapp: !!stored.channels?.whatsapp, facebook: !!stored.channels?.facebook, instagram: !!stored.channels?.instagram };
+  const modes = { whatsapp: "manual", facebook: "manual", instagram: "manual", ...stored.modes } as Record<Channel, BotMode>;
+  const schedules = { whatsapp: null, facebook: null, instagram: null, ...stored.schedules } as Record<Channel, BotSchedule | null>;
+  const channels = { ...manual };
+  for (const c of CHANNELS) if (modes[c] === "schedule") channels[c] = scheduleActive(schedules[c], now);
+  // un servidor "de la version anterior" (sin `channels`): se conserva tal cual, para probar esa compatibilidad
+  const view = structuredClone(stored);
+  if (!stored.channels) return view;
+  return { ...view, active: channels.whatsapp, channels, manual, modes, schedules, evaluatedAt: now.toISOString() };
+}
+
+/** Cambia de UN canal lo que venga (`active`, `mode`, `schedule`); todo o nada, con 400 si algo no sirve (como el servidor). */
+export function applyBotChannel(
+  db: DB,
+  channel: Channel,
+  change: { active?: unknown; mode?: unknown; schedule?: unknown },
+  now: Date,
+  by: string
+): void {
+  const has = (k: keyof typeof change) => k in change;
+  if (!has("active") && !has("mode") && !has("schedule")) throw badRequest(`con "channel" falta "active", "mode" o "schedule"`);
+  if (has("active") && typeof change.active !== "boolean") throw badRequest(`"active" debe ser verdadero o falso`);
+  if (has("mode") && !(BOT_MODES as readonly unknown[]).includes(change.mode)) throw badRequest(`"mode" debe ser ${BOT_MODES.join(" | ")}`);
+  const sch = has("schedule") ? parseSchedule(change.schedule) : null;
+  if (has("schedule") && !sch) throw badRequest(`"schedule" necesita days (mon..sun, sin repetir), start y end (HH:MM, distintos)`);
+  const bot = db.bot;
+  bot.modes = { whatsapp: "manual", facebook: "manual", instagram: "manual", ...bot.modes };
+  bot.schedules = { whatsapp: null, facebook: null, instagram: null, ...bot.schedules };
+  if (change.mode === "schedule" && !sch && !parseSchedule(bot.schedules[channel])) throw badRequest("para usar el horario primero define los dias y las horas");
+  const stamp = { updatedAt: now.toISOString(), updatedBy: by };
+  bot.channelUpdates ??= { whatsapp: { updatedAt: null, updatedBy: null }, facebook: { updatedAt: null, updatedBy: null }, instagram: { updatedAt: null, updatedBy: null } };
+  if (typeof change.active === "boolean") {
+    bot.channels[channel] = change.active;
+    if (channel === "whatsapp") bot.active = change.active;
+  }
+  if (sch) bot.schedules[channel] = sch;
+  if (change.mode) bot.modes[channel] = change.mode as BotMode;
+  bot.channelUpdates[channel] = stamp;
+  if (channel === "whatsapp") {
+    bot.updatedAt = stamp.updatedAt;
+    bot.updatedBy = stamp.updatedBy;
+  }
 }

@@ -1240,6 +1240,89 @@ describe("canales de mensajeria (WhatsApp, Messenger e Instagram)", () => {
     expect((await api.bot.get()).channels).toEqual({ whatsapp: true, facebook: false, instagram: false });
   });
 
+  describe("modo manual o por horario de cada canal", () => {
+    const NIGHT = { days: ["mon", "tue", "wed", "thu", "fri"] as const, start: "19:00", end: "08:00" };
+    const OFFICE = { days: ["mon", "tue", "wed", "thu", "fri"] as const, start: "09:00", end: "18:00" };
+    const put = async (body: unknown) => {
+      const r = await mock.fetch("/api/settings/bot", { method: "PUT", headers: { "Content-Type": "application/json", "X-CSRF-Token": api.csrfToken! }, body: JSON.stringify(body) });
+      return `${r.status} ${((await r.json()) as { error?: string }).error ?? "ok"}`;
+    };
+    // la fecha de la prueba es martes 10 de noviembre de 2026; Cancun es UTC-5
+    const at = (day: string, hhmm: string) => new Date(zonedWallClockToUtc(day, hhmm, "America/Cancun")!);
+
+    it("todo nace manual y sin horario; el estado efectivo es el interruptor", async () => {
+      const st = await api.bot.get();
+      expect(st.modes).toEqual({ whatsapp: "manual", facebook: "manual", instagram: "manual" });
+      expect(st.schedules).toEqual({ whatsapp: null, facebook: null, instagram: null });
+      expect(st.channels).toEqual(st.manual);
+    });
+
+    it("en modo horario el canal se enciende y apaga solo con la hora de Cancun; el interruptor manual se conserva", async () => {
+      await api.bot.setChannel("instagram", true);
+      let st = await api.bot.configure("instagram", { mode: "schedule", schedule: NIGHT as never });
+      expect(st).toMatchObject({ modes: { instagram: "schedule" }, manual: { instagram: true }, schedules: { instagram: NIGHT } });
+      expect(st.channels.instagram).toBe(false); // martes 10:00: fuera del horario de noche
+      const cases: [string, string, boolean][] = [
+        ["2026-11-10", "18:59", false], ["2026-11-10", "19:00", true], ["2026-11-11", "07:59", true], ["2026-11-11", "08:00", false],
+        ["2026-11-14", "01:00", true], // la noche del viernes llega al sabado de madrugada
+        ["2026-11-14", "20:00", false], ["2026-11-15", "02:00", false], ["2026-11-16", "02:00", false],
+      ];
+      for (const [day, hhmm, expected] of cases) {
+        clock = at(day, hhmm);
+        expect((await api.bot.get()).channels.instagram, `${day} ${hhmm}`).toBe(expected);
+      }
+      clock = NOW;
+      st = await api.bot.setMode("instagram", "manual"); // vuelve a mandar el interruptor (conservado) y el horario queda guardado
+      expect(st.channels.instagram).toBe(true);
+      expect(st.schedules?.instagram).toEqual(NIGHT);
+      st = await api.bot.setMode("instagram", "schedule"); // se vuelve a usar sin redefinirlo
+      expect(st.modes?.instagram).toBe("schedule");
+    });
+
+    it("el estado efectivo de WhatsApp es `active`, aunque este en modo horario; los otros canales no cambian", async () => {
+      await api.bot.setChannel("facebook", true);
+      const st = await api.bot.configure("whatsapp", { mode: "schedule", schedule: OFFICE as never });
+      expect(st.channels).toEqual({ whatsapp: true, facebook: true, instagram: false }); // martes 10:00: en horario de oficina
+      expect(st.active).toBe(true);
+      clock = at("2026-11-10", "19:30");
+      const later = await api.bot.get();
+      expect(later.channels.whatsapp).toBe(false);
+      expect(later.active).toBe(false);
+      expect(later.channels.facebook).toBe(true);
+      expect(mock.bot.status().channels.whatsapp).toBe(false); // lo que lee el bot
+    });
+
+    it("pasar a horario exige un horario valido; lo invalido es 400 y no cambia nada", async () => {
+      for (const body of [
+        { channel: "facebook", mode: "schedule" }, // sin horario guardado
+        { channel: "facebook", mode: "automatico" },
+        { channel: "facebook", schedule: { days: [], start: "19:00", end: "08:00" } },
+        { channel: "facebook", schedule: { days: ["lunes"], start: "19:00", end: "08:00" } },
+        { channel: "facebook", schedule: { days: ["mon", "mon"], start: "19:00", end: "08:00" } },
+        { channel: "facebook", schedule: { days: ["mon"], start: "09:00", end: "09:00" } },
+        { channel: "facebook", schedule: { days: ["mon"], start: "25:00", end: "09:00" } },
+        { channel: "facebook", schedule: null },
+        { channel: "facebook", active: true, mode: "schedule" }, // todo o nada
+        { channel: "facebook", foo: 1, mode: "manual" },
+        { channels: { facebook: true }, mode: "manual" },
+        { channel: "facebook" },
+      ]) {
+        expect(await put(body), JSON.stringify(body)).toBe("400 validacion");
+      }
+      const st = await api.bot.get();
+      expect(st.modes?.facebook).toBe("manual");
+      expect(st.manual?.facebook).toBe(false);
+      expect(st.schedules?.facebook).toBeNull();
+    });
+
+    it("sin sesion o como doctor no se puede cambiar el modo ni el horario", async () => {
+      await api.auth.logout();
+      expect(await code(lax.bot.setMode("facebook", "manual"))).toBe("401 no_autenticado");
+      await login("doctor");
+      expect(await code(lax.bot.setMode("facebook", "manual"))).toBe("403 sin_permiso");
+    });
+  });
+
   it("el mismo numero en dos canales son dos personas: cada identidad ve y cancela solo lo suyo", () => {
     const wa = mock.bot.book({ telefono: NUM }, { patientName: "Ana Lopez", doctorId: D.cervantes })!;
     const fb = mock.bot.book({ canal: "facebook", contacto_id: NUM }, { patientName: "Ana Lopez", doctorId: D.perez, contactPhone: CONTACT })!;

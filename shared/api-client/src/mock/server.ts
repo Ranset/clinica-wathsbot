@@ -5,7 +5,7 @@ import { buildRoutes } from "./handlers";
 import { HttpError, forbidden, invalid, matchRoute, unauthorized, type Result, type Route } from "./http";
 import { TZ, nextFreeSlot } from "./rules";
 import { createSeededDb } from "./seed";
-import { botBook, botCancel, botHandoff, botMine, botWho } from "./bot";
+import { botBook, botCancel, botHandoff, botMine, botView, botWho } from "./bot";
 import { doctorRef, nextId, type DB, type StoredUser } from "./state";
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -210,7 +210,7 @@ export function createMockApi(options: MockApiOptions = {}) {
      */
     bot: {
       /** Lo que contestaria `GET /api/bot/status`. */
-      status: () => structuredClone(db.bot),
+      status: () => botView(db, clock()),
       mine: (who: Record<string, unknown>): Booking[] => botMine(db, clock(), botWho(who)),
       book: (who: Record<string, unknown>, input: { patientName: string; doctorId: string; contactPhone?: unknown }): Booking | null =>
         botBook(db, clock(), botWho(who), input),

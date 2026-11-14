@@ -30,8 +30,10 @@ export interface paths {
         };
         /**
          * Interruptores del bot, uno por canal. El bot los consulta antes de contestar cada evento.
-         * @description `channels` trae SIEMPRE los tres canales con su booleano; un canal sin dato es `false` (el bot falla
-         *     cerrado). `active` se conserva para clientes viejos y es SIEMPRE igual a `channels.whatsapp`.
+         * @description `channels` trae SIEMPRE los tres canales con su booleano y es lo que el bot obedece: el estado EFECTIVO de
+         *     cada canal ahora mismo (en modo `manual`, su interruptor; en modo `schedule`, si la hora de la clinica cae dentro
+         *     de su horario). Un canal sin dato es `false` (el bot falla cerrado). `active` se conserva para clientes viejos y es
+         *     SIEMPRE igual a `channels.whatsapp`. `modes`, `manual` y `schedules` dicen como se llega a ese estado.
          */
         get: operations["botStatus"];
         put?: never;
@@ -803,6 +805,13 @@ export interface paths {
          *     (varios; solo cambian los que vienen). Cada canal que cambia deja una entrada `bot.set_active` en la bitacora, con el canal.
          *     Un canal desconocido o un valor no booleano en las formas nuevas (`channel` / `channels`) es 400; en la forma vieja
          *     (`{"active": ...}`) sigue siendo 422, como siempre.
+         *
+         *     **Modo y horario por canal:** cada canal puede estar en modo `manual` (lo manda su interruptor) o `schedule` (el bot se
+         *     enciende y apaga solo, dentro de un horario: ciertos dias, de una hora a otra, hora de la clinica; si el fin es menor que el
+         *     inicio termina al dia siguiente). `{"channel": "facebook", "mode": "schedule", "schedule": {...}}` los cambia (cualquier
+         *     combinacion de `active`, `mode` y `schedule`, al menos una). Pasar a `schedule` exige un horario valido (en la misma peticion o
+         *     ya guardado). El interruptor manual se conserva al pasar a `schedule` y vuelve a mandar al regresar a `manual`. Cada cambio deja
+         *     su entrada en la bitacora (`bot.set_active`, `bot.set_mode`, `bot.set_schedule`) con el canal.
          */
         put: operations["setBotSettings"];
         post?: never;
@@ -1290,13 +1299,52 @@ export interface components {
             /** @description Nombre del usuario que lo cambio. */
             updatedBy: string | null;
         };
+        /**
+         * @description `manual`: lo manda el interruptor del canal. `schedule`: el bot se enciende y apaga solo segun el horario del canal.
+         * @enum {string}
+         */
+        BotMode: "manual" | "schedule";
+        /** @enum {string} */
+        DayKey: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+        /**
+         * @description Cuando el bot contesta en un canal en modo `schedule`: los `days` en que EMPIEZA el horario, de `start` a `end` (hora de pared de la
+         *     clinica, `HH:MM`). Si `end` es menor que `start` el horario termina al dia siguiente (p. ej. de 19:00 a 08:00: cuenta como parte
+         *     del dia en que empezo). `start` y `end` no pueden ser iguales.
+         */
+        BotSchedule: {
+            days: components["schemas"]["DayKey"][];
+            start: string;
+            end: string;
+        };
+        BotModes: {
+            whatsapp: components["schemas"]["BotMode"];
+            facebook: components["schemas"]["BotMode"];
+            instagram: components["schemas"]["BotMode"];
+        };
+        BotSchedules: {
+            whatsapp: components["schemas"]["BotSchedule"] | null;
+            facebook: components["schemas"]["BotSchedule"] | null;
+            instagram: components["schemas"]["BotSchedule"] | null;
+        };
         BotSettings: {
             /**
              * @deprecated
              * @description Compatibilidad con clientes viejos. SIEMPRE igual a `channels.whatsapp`.
              */
             active: boolean;
+            /** @description El estado EFECTIVO de cada canal ahora mismo (lo que obedece el bot): el interruptor en modo `manual`, el horario en modo `schedule`. */
             channels: components["schemas"]["BotChannels"];
+            /** @description El modo de cada canal. Ausente = todos `manual`. */
+            modes?: components["schemas"]["BotModes"];
+            /** @description El interruptor MANUAL de cada canal (el que manda en modo `manual`; se conserva mientras el canal esta en `schedule`). */
+            manual?: components["schemas"]["BotChannels"];
+            /** @description El horario guardado de cada canal (`null` si nunca se configuro). */
+            schedules?: components["schemas"]["BotSchedules"];
+            /**
+             * Format: date-time
+             * @description El instante con el que se evaluaron los horarios.
+             */
+            evaluatedAt?: string;
             /**
              * Format: date-time
              * @description Del interruptor de WhatsApp (el de `active`).
@@ -1312,12 +1360,14 @@ export interface components {
             };
         };
         /**
-         * @description Una de tres formas: `{channel, active}` (un canal), `{active}` (la forma vieja: solo WhatsApp) o `{channels}` (varios;
-         *     solo los que vienen). No se pueden mezclar `channel` y `channels`.
+         * @description Una de tres formas: `{channel, ...}` (un canal: el interruptor `active`, su `mode` y/o su `schedule`, al menos uno), `{active}` (la
+         *     forma vieja: solo WhatsApp) o `{channels}` (varios interruptores; solo los que vienen). No se pueden mezclar `channel` y `channels`.
          */
         BotSettingsUpdate: {
             channel: components["schemas"]["Channel"];
-            active: boolean;
+            active?: boolean;
+            mode?: components["schemas"]["BotMode"];
+            schedule?: components["schemas"]["BotSchedule"];
         } | {
             active: boolean;
         } | {

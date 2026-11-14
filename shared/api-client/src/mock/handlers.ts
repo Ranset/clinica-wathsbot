@@ -3,7 +3,7 @@ import { daysBetween, isIsoDate, wallClock } from "@clinica/calendar/src/lib/cal
 import { checkLogo } from "../image";
 import { isHexColor, isReadableOnWhite } from "@clinica/calendar/src/lib/doctor-color";
 import type { Absence, AttentionItem, Booking, Branding, BookingStatus, Channel, PersonalEvent, Role, ScheduleChangeRequest, WeeklyHours } from "../types";
-import { CHANNELS, isChannel } from "./bot";
+import { CHANNELS, applyBotChannel, botView, isChannel } from "./bot";
 import {
   HttpError,
   asObject,
@@ -699,16 +699,16 @@ export function buildRoutes(db: DB): MockRoute[] {
       return ok(decide(c, "rejected", note).req);
     }),
 
-    route<StoredUser>("getBotSettings", STAFF, () => ok(structuredClone(db.bot))),
+    route<StoredUser>("getBotSettings", STAFF, (c) => ok(botView(db, c.now))),
 
     route<StoredUser>("setBotSettings", STAFF, (c) => {
       const b = asObject(c.body);
-      // Tres formas, como el servidor: `{channel, active}` (un canal), `{channels}` (varios; solo los que vienen) y `{active}` (la forma
-      // vieja: SOLO WhatsApp). Lo invalido de las formas nuevas es 400; en la vieja sigue siendo 422.
+      // Tres formas, como el servidor: `{channel, active?, mode?, schedule?}` (un canal), `{channels}` (varios; solo los que vienen) y
+      // `{active}` (la forma vieja: SOLO WhatsApp). Lo invalido de las formas nuevas es 400; en la vieja sigue siendo 422.
       let changes: Partial<Record<Channel, boolean>>;
       if ("channels" in b) {
         const ch = b.channels;
-        if ("channel" in b || "active" in b) throw badRequest(`use "channels" solo, o "channel" con "active"`);
+        if (Object.keys(b).some((k) => k !== "channels")) throw badRequest(`use "channels" solo, o "channel" con "active", "mode" o "schedule"`);
         if (typeof ch !== "object" || ch === null || Array.isArray(ch) || Object.keys(ch).length === 0) {
           throw badRequest(`"channels" debe ser un objeto con al menos un canal: ${CHANNELS.join(", ")}`);
         }
@@ -720,14 +720,15 @@ export function buildRoutes(db: DB): MockRoute[] {
         }
       } else if ("channel" in b) {
         if (!isChannel(b.channel)) throw badRequest(`canal desconocido; debe ser uno de: ${CHANNELS.join(", ")}`);
-        if (typeof b.active !== "boolean") throw badRequest(`"active" debe ser verdadero o falso`);
-        changes = { [b.channel]: b.active };
+        if (Object.keys(b).some((k) => !["channel", "active", "mode", "schedule"].includes(k))) throw badRequest("campos desconocidos en la peticion");
+        applyBotChannel(db, b.channel, b, c.now, c.user.name);
+        return ok(botView(db, c.now));
       } else {
         if (typeof b.active !== "boolean") throw invalid(`"active" debe ser verdadero o falso.`);
         changes = { whatsapp: b.active };
       }
       applyBotChanges(db, changes, c.now, c.user.name);
-      return ok(structuredClone(db.bot));
+      return ok(botView(db, c.now));
     }),
 
     route<StoredUser>("listAttention", STAFF, (c) => {
