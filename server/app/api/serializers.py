@@ -7,7 +7,7 @@ solo para el personal).
 from __future__ import annotations
 
 from ..auth import UserView
-from ..db import iso_utc
+from ..db import iso_utc, to_db
 from ..directory import DoctorView, RequestView
 from ..models import Appointment, AttentionCase, DoctorAbsence, PersonalEvent, Room
 from ..settings import BotSettings
@@ -87,11 +87,18 @@ def attention_json(c: AttentionCase) -> dict:
             "reason": c.reason, "detail": c.detail}
 
 
-def bot_settings_json(st: BotSettings) -> dict:
-    """Los tres interruptores. `active` (y `updatedAt` / `updatedBy`) son los de WhatsApp, para los clientes que solo lo conocen."""
+def bot_settings_json(st: BotSettings, now=None) -> dict:
+    """Los tres canales. `channels` es el estado EFECTIVO (lo que obedece el bot); `modes`, `manual` y `schedules` dicen como se llega a el.
+    `active` (y `updatedAt` / `updatedBy`) son los de WhatsApp, para los clientes que solo lo conocen. `now`: con que instante se evaluaron
+    los horarios."""
     out = {"active": st.active, "channels": dict(st.channels)}
     if st.updated_at:
         out.update(updatedAt=iso_utc(st.updated_at), updatedBy=st.updated_by)
     out["channelUpdates"] = {c: {"updatedAt": iso_utc(u.updated_at) if u.updated_at else None, "updatedBy": u.updated_by}
                              for c, u in st.updates.items()}
+    out["modes"] = dict(st.modes)
+    out["manual"] = dict(st.manual)
+    out["schedules"] = {c: (sch.to_json() if sch else None) for c, sch in st.schedules.items()}
+    if now is not None:
+        out["evaluatedAt"] = iso_utc(to_db(now).replace(microsecond=0))
     return out

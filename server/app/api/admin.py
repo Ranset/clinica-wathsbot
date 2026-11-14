@@ -7,7 +7,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from ..agenda import Actor
 from ..db import iso_utc
 from ..models import CHANNELS
-from ..settings import get_bot_settings, set_bot_channels
+from ..settings import MODES, get_bot_settings, parse_schedule, set_bot_channel, set_bot_channels
 from .common import ApiError
 from .inputs import bad, body, opt_bool, query_int
 from .security import require
@@ -65,20 +65,22 @@ def delete_doctor(doctor_id):
 @bp.get("/api/settings/bot")
 @require(*STAFF)
 def get_bot():
+    now = _x("agenda").now()
     with _x("db").session_factory() as s:
-        return jsonify(bot_settings_json(get_bot_settings(s)))
+        return jsonify(bot_settings_json(get_bot_settings(s, now=now), now))
 
 
-def _bot_changes(b: dict) -> dict[str, bool]:
-    """Los canales que pide cambiar el cuerpo. Tres formas: `{"channel": c, "active": x}` (un canal), `{"channels": {c: x, ...}}` (varios;
-    solo los que vienen) y `{"active": x}` (la forma vieja, sin canal: SOLO WhatsApp). Un canal desconocido o un valor que no sea
-    booleano en las formas nuevas es 400; en la forma vieja sigue siendo 422, como siempre."""
+def _bot_changes(b: dict) -> dict:
+    """Lo que pide cambiar el cuerpo. Tres formas: `{"channel": c, ...}` (UN canal: su interruptor `active`, su `mode` y/o su `schedule`),
+    `{"channels": {c: x, ...}}` (varios interruptores; solo los que vienen) y `{"active": x}` (la forma vieja, sin canal: SOLO WhatsApp).
+    Devuelve `{"channels": {c: bool}}` o `{"channel": c, "active"?, "mode"?, "schedule"?}`. Un canal desconocido o un valor invalido en las
+    formas nuevas es 400; en la forma vieja sigue siendo 422, como siempre."""
     def invalid(msg):
         return ApiError("validacion", 400, msg)
 
     if "channels" in b:
-        if "channel" in b or "active" in b:
-            raise invalid('use "channels" solo, o "channel" con "active"')
+        if set(b) - {"channels"}:
+            raise invalid('use "channels" solo, o "channel" con "active", "mode" o "schedule"')
         ch = b["channels"]
         if not isinstance(ch, dict) or not ch:
             raise invalid('"channels" debe ser un objeto con al menos un canal: ' + ", ".join(CHANNELS))
@@ -87,26 +89,43 @@ def _bot_changes(b: dict) -> dict[str, bool]:
                 raise invalid(f"canal desconocido; debe ser uno de: {', '.join(CHANNELS)}")
             if not isinstance(value, bool):
                 raise invalid(f'el valor de "{canal}" debe ser verdadero o falso')
-        return dict(ch)
+        return {"channels": dict(ch)}
     if "channel" in b:
-        canal, value = b["channel"], b.get("active")
+        canal = b["channel"]
         if not isinstance(canal, str) or canal not in CHANNELS:
             raise invalid(f"canal desconocido; debe ser uno de: {', '.join(CHANNELS)}")
-        if not isinstance(value, bool):
+        if not ({"active", "mode", "schedule"} & set(b)):
+            raise invalid('con "channel" falta "active", "mode" o "schedule"')
+        if set(b) - {"channel", "active", "mode", "schedule"}:
+            raise invalid("campos desconocidos en la peticion")
+        if "active" in b and not isinstance(b["active"], bool):
             raise invalid('"active" debe ser verdadero o falso')
-        return {canal: value}
+        if "mode" in b and b["mode"] not in MODES:
+            raise invalid('"mode" debe ser ' + " | ".join(MODES))
+        if "schedule" in b and parse_schedule(b["schedule"]) is None:
+            raise invalid('"schedule" necesita days (mon..sun, sin repetir), start y end (HH:MM, distintos)')
+        return {"channel": canal, **{k: b[k] for k in ("active", "mode", "schedule") if k in b}}
     active = b.get("active")                     # forma vieja: sin canal = WhatsApp
     if not isinstance(active, bool):
         raise bad('"active" debe ser verdadero o falso')
-    return {"whatsapp": active}
+    return {"channels": {"whatsapp": active}}
 
 
 @bp.put("/api/settings/bot")
 @require(*STAFF)
 def set_bot():
-    changes = _bot_changes(body())
+    plan = _bot_changes(body())
+    now = _x("agenda").now()
     with _x("db").session_factory() as s, s.begin():
-        return jsonify(bot_settings_json(set_bot_channels(s, changes, _actor())))
+        if "channels" in plan:
+            st = set_bot_channels(s, plan["channels"], _actor(), now=now)
+        else:
+            try:
+                st = set_bot_channel(s, plan["channel"], active=plan.get("active"), mode=plan.get("mode"), schedule=plan.get("schedule"),
+                                     actor=_actor(), now=now)
+            except ValueError as e:                  # p. ej. pasar a `schedule` sin horario: nada cambio
+                raise ApiError("validacion", 400, str(e)) from None
+        return jsonify(bot_settings_json(st, now))
 
 
 # --------------------------------------------------------------------------- casos de atencion

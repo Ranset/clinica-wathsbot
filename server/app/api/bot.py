@@ -102,9 +102,10 @@ def _strict_int(v):
 @bot_required
 def status():
     """Interruptor del bot. El bot lo consulta antes de contestar cada evento. (F4 anade el acceso con sesion de personal.)"""
+    now = _agenda().now()
     with current_app.extensions["db"].session_factory() as s:
-        st = get_bot_settings(s)
-    return jsonify(bot_settings_json(st))
+        st = get_bot_settings(s, now=now)  # el estado EFECTIVO: el interruptor, o el horario si el canal esta en modo `schedule`
+    return jsonify(bot_settings_json(st, now))
 
 
 @bp.get("/config")

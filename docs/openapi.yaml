@@ -95,8 +95,10 @@ paths:
       tags: [bot]
       summary: Interruptores del bot, uno por canal. El bot los consulta antes de contestar cada evento.
       description: |
-        `channels` trae SIEMPRE los tres canales con su booleano; un canal sin dato es `false` (el bot falla
-        cerrado). `active` se conserva para clientes viejos y es SIEMPRE igual a `channels.whatsapp`.
+        `channels` trae SIEMPRE los tres canales con su booleano y es lo que el bot obedece: el estado EFECTIVO de
+        cada canal ahora mismo (en modo `manual`, su interruptor; en modo `schedule`, si la hora de la clinica cae dentro
+        de su horario). Un canal sin dato es `false` (el bot falla cerrado). `active` se conserva para clientes viejos y es
+        SIEMPRE igual a `channels.whatsapp`. `modes`, `manual` y `schedules` dicen como se llega a ese estado.
       x-roles: [bot, admin, staff]
       security: [{ botToken: [] }, { session: [] }]
       responses:
@@ -1238,6 +1240,13 @@ paths:
         (varios; solo cambian los que vienen). Cada canal que cambia deja una entrada `bot.set_active` en la bitacora, con el canal.
         Un canal desconocido o un valor no booleano en las formas nuevas (`channel` / `channels`) es 400; en la forma vieja
         (`{"active": ...}`) sigue siendo 422, como siempre.
+
+        **Modo y horario por canal:** cada canal puede estar en modo `manual` (lo manda su interruptor) o `schedule` (el bot se
+        enciende y apaga solo, dentro de un horario: ciertos dias, de una hora a otra, hora de la clinica; si el fin es menor que el
+        inicio termina al dia siguiente). `{"channel": "facebook", "mode": "schedule", "schedule": {...}}` los cambia (cualquier
+        combinacion de `active`, `mode` y `schedule`, al menos una). Pasar a `schedule` exige un horario valido (en la misma peticion o
+        ya guardado). El interruptor manual se conserva al pasar a `schedule` y vuelve a mandar al regresar a `manual`. Cada cambio deja
+        su entrada en la bitacora (`bot.set_active`, `bot.set_mode`, `bot.set_schedule`) con el canal.
       x-roles: [admin, staff]
       security: [{ session: [], csrf: [] }]
       requestBody:
@@ -2054,6 +2063,46 @@ components:
       properties:
         updatedAt: { type: [string, "null"], format: date-time }
         updatedBy: { type: [string, "null"], description: "Nombre del usuario que lo cambio." }
+    BotMode:
+      type: string
+      enum: [manual, schedule]
+      description: "`manual`: lo manda el interruptor del canal. `schedule`: el bot se enciende y apaga solo segun el horario del canal."
+    DayKey:
+      type: string
+      enum: [mon, tue, wed, thu, fri, sat, sun]
+    BotSchedule:
+      type: object
+      description: |
+        Cuando el bot contesta en un canal en modo `schedule`: los `days` en que EMPIEZA el horario, de `start` a `end` (hora de pared de la
+        clinica, `HH:MM`). Si `end` es menor que `start` el horario termina al dia siguiente (p. ej. de 19:00 a 08:00: cuenta como parte
+        del dia en que empezo). `start` y `end` no pueden ser iguales.
+      required: [days, start, end]
+      additionalProperties: false
+      properties:
+        days:
+          type: array
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/DayKey" }
+        start: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+        end: { type: string, pattern: '^([01]\d|2[0-3]):[0-5]\d$' }
+    BotModes:
+      type: object
+      required: [whatsapp, facebook, instagram]
+      additionalProperties: false
+      properties:
+        whatsapp: { $ref: "#/components/schemas/BotMode" }
+        facebook: { $ref: "#/components/schemas/BotMode" }
+        instagram: { $ref: "#/components/schemas/BotMode" }
+    BotSchedules:
+      type: object
+      required: [whatsapp, facebook, instagram]
+      additionalProperties: false
+      properties:
+        whatsapp: { oneOf: [{ $ref: "#/components/schemas/BotSchedule" }, { type: "null" }] }
+        facebook: { oneOf: [{ $ref: "#/components/schemas/BotSchedule" }, { type: "null" }] }
+        instagram: { oneOf: [{ $ref: "#/components/schemas/BotSchedule" }, { type: "null" }] }
     BotSettings:
       type: object
       required: [active, channels]
@@ -2062,7 +2111,19 @@ components:
           type: boolean
           deprecated: true
           description: Compatibilidad con clientes viejos. SIEMPRE igual a `channels.whatsapp`.
-        channels: { $ref: "#/components/schemas/BotChannels" }
+        channels:
+          $ref: "#/components/schemas/BotChannels"
+          description: "El estado EFECTIVO de cada canal ahora mismo (lo que obedece el bot): el interruptor en modo `manual`, el horario en modo `schedule`."
+        modes:
+          $ref: "#/components/schemas/BotModes"
+          description: "El modo de cada canal. Ausente = todos `manual`."
+        manual:
+          $ref: "#/components/schemas/BotChannels"
+          description: "El interruptor MANUAL de cada canal (el que manda en modo `manual`; se conserva mientras el canal esta en `schedule`)."
+        schedules:
+          $ref: "#/components/schemas/BotSchedules"
+          description: "El horario guardado de cada canal (`null` si nunca se configuro)."
+        evaluatedAt: { type: string, format: date-time, description: "El instante con el que se evaluaron los horarios." }
         updatedAt: { type: string, format: date-time, description: "Del interruptor de WhatsApp (el de `active`)." }
         updatedBy: { type: [string, "null"], description: "Nombre del usuario que cambio el interruptor de WhatsApp." }
         channelUpdates:
@@ -2076,15 +2137,18 @@ components:
             instagram: { $ref: "#/components/schemas/BotChannelUpdate" }
     BotSettingsUpdate:
       description: |
-        Una de tres formas: `{channel, active}` (un canal), `{active}` (la forma vieja: solo WhatsApp) o `{channels}` (varios;
-        solo los que vienen). No se pueden mezclar `channel` y `channels`.
+        Una de tres formas: `{channel, ...}` (un canal: el interruptor `active`, su `mode` y/o su `schedule`, al menos uno), `{active}` (la
+        forma vieja: solo WhatsApp) o `{channels}` (varios interruptores; solo los que vienen). No se pueden mezclar `channel` y `channels`.
       oneOf:
         - type: object
-          required: [channel, active]
+          required: [channel]
+          minProperties: 2
           additionalProperties: false
           properties:
             channel: { $ref: "#/components/schemas/Channel" }
             active: { type: boolean }
+            mode: { $ref: "#/components/schemas/BotMode" }
+            schedule: { $ref: "#/components/schemas/BotSchedule" }
         - type: object
           required: [active]
           additionalProperties: false

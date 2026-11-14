@@ -270,7 +270,8 @@ def test_active_siempre_es_igual_a_whatsapp(client, login):
         j = staff.put("/api/settings/bot", body).get_json()
         assert j["active"] is j["channels"]["whatsapp"]
         assert status(client)["active"] is status(client)["channels"]["whatsapp"] is j["active"]
-        assert staff.get("/api/settings/bot").get_json() == j
+        again = staff.get("/api/settings/bot").get_json()
+        assert {k: v for k, v in again.items() if k != "evaluatedAt"} == {k: v for k, v in j.items() if k != "evaluatedAt"}   # (la hora de evaluacion cambia)
 
 
 @pytest.mark.parametrize("body", [
