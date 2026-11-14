@@ -84,7 +84,10 @@ computadora no lo alcanza el bot de Hostinger.
    antes de agendar). Cada canal tiene su PROPIO interruptor en la web (tres botones: WhatsApp, Messenger, Instagram) y Messenger e Instagram
    nacen APAGADOS: despliega la API con la migracion 0009, enciende primero Messenger, prueba, y despues Instagram. Mientras la API no
    traiga `channels` el bot los trata como apagados y no contesta.
-7. **Marcha atrás en un minuto.** Apaga el botón **Bot** (deja de contestar), o pon `WATHSBOT_BACKEND=google` (o quita la variable) y
+7. **Horario automatico (opcional).** Cada canal puede manejarse a mano (su interruptor) o por horario: en la web, dentro del panel del bot,
+   el reloj de cada canal abre «Horario del bot» (dias, hora de inicio y de fin; si el fin es menor que el inicio, termina al dia siguiente).
+   El bot no necesita nada nuevo: ya consulta el estado antes de cada mensaje y la API le contesta el estado vigente a esa hora.
+8. **Marcha atrás en un minuto.** Apaga el botón **Bot** (deja de contestar), o pon `WATHSBOT_BACKEND=google` (o quita la variable) y
    reinicia: vuelve el bot de antes con Google Calendar (etiqueta `pre-api` del repositorio).
 
 ## Ensayo con un túnel de Cloudflare hacia tu computadora
