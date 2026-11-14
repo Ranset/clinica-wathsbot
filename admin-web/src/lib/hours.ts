@@ -9,7 +9,7 @@ export const DAY_NAME: Record<WeekdayKey, string> = {
   sat: "Sábado",
   sun: "Domingo",
 };
-const DAY_SHORT: Record<WeekdayKey, string> = {
+export const DAY_SHORT: Record<WeekdayKey, string> = {
   mon: "Lun",
   tue: "Mar",
   wed: "Mié",

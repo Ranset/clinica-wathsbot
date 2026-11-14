@@ -194,6 +194,143 @@ describe("el bot: un solo elemento que resume los canales y despliega un interru
   });
 });
 
+describe("cada canal: manual o por horario", () => {
+  type User = Awaited<ReturnType<typeof mountApp>>["user"];
+  /** Abre la ventana de «Horario» de un canal. */
+  async function openSchedule(user: User, name: string) {
+    await openBot(user);
+    await user.click(await screen.findByRole("button", { name: `Horario de ${name}` }));
+    return screen.findByRole("dialog", { name: "Horario del bot" });
+  }
+  const pickDays = async (user: User, dlg: HTMLElement, names: string[]) => {
+    for (const n of names) await user.click(within(dlg).getByRole("button", { name: n }));
+  };
+
+  it("cada canal tiene su botón «Horario»; la ventana empieza en Manual y, al elegir «Por horario», pide días y horas", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    await openBot(user);
+    expect(screen.getAllByRole("button", { name: /^Horario de / }).map((b) => b.getAttribute("aria-label"))).toEqual(["Horario de WhatsApp", "Horario de Messenger", "Horario de Instagram"]);
+    await user.click(screen.getByRole("button", { name: "Horario de Messenger" }));
+    const dlg = await screen.findByRole("dialog", { name: "Horario del bot" });
+    expect(dlg).toHaveTextContent("Messenger");
+    expect(within(dlg).getByRole("radio", { name: /Manual/ })).toBeChecked();
+    expect(within(dlg).queryByRole("group", { name: "Días" })).not.toBeInTheDocument();
+
+    await user.click(within(dlg).getByRole("radio", { name: /Por horario/ }));
+    expect(within(dlg).getByRole("group", { name: "Días" })).toBeInTheDocument();
+    expect(within(dlg).getAllByRole("button", { pressed: true })).toHaveLength(7); // por omisión: todos los días, de 6:00 PM a 9:00 AM
+    expect(within(dlg).getByLabelText("Desde")).toHaveValue("18:00");
+    expect(within(dlg).getByLabelText("Hasta")).toHaveValue("09:00");
+    expect(within(dlg).getByRole("status")).toHaveTextContent("Todos los días · 6:00 PM a 9:00 AM (al día siguiente)");
+  });
+
+  it("guarda el horario: el canal pasa a «por horario», el interruptor se deshabilita y dice cuándo contesta", async () => {
+    const { user, mock, violations: v } = await mountApp();
+    violations = v;
+    const dlg = await openSchedule(user, "Messenger");
+    await user.click(within(dlg).getByRole("radio", { name: /Por horario/ }));
+    await pickDays(user, dlg, ["Sábado", "Domingo"]); // de lunes a viernes
+    await user.selectOptions(within(dlg).getByLabelText("Desde"), "19:00");
+    await user.selectOptions(within(dlg).getByLabelText("Hasta"), "08:00");
+    expect(within(dlg).getByRole("status")).toHaveTextContent("Lun–Vie · 7:00 PM a 8:00 AM (al día siguiente)");
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Horario del bot" })).not.toBeInTheDocument());
+
+    expect(mock.db.bot.modes?.facebook).toBe("schedule");
+    expect(mock.db.bot.schedules?.facebook).toEqual({ days: ["mon", "tue", "wed", "thu", "fri"], start: "19:00", end: "08:00" });
+    expect(mock.db.bot.modes?.whatsapp).toBe("manual"); // los otros canales no cambian
+    const fb = await sw("Bot de Messenger");
+    expect(fb).toBeDisabled(); // el horario manda: el interruptor no se usa
+    expect(fb).toHaveTextContent("Bot apagado · por horario"); // martes 10:00: fuera de 7:00 PM a 8:00 AM
+    expect(fb).toHaveTextContent("Lun–Vie · 7:00 PM a 8:00 AM (al día siguiente)");
+    expect(fb).toHaveAttribute("title", expect.stringContaining("cambia a Manual"));
+    expect(await screen.findByText(/se encenderá y apagará solo/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Horario de Messenger" })).toHaveClass("bg-brand-tint"); // se nota que usa horario
+  });
+
+  it("dentro del horario el canal está activo y el botón de arriba lo dice; el interruptor manual se conserva", async () => {
+    const { user, mock, violations: v } = await mountApp({ prepare: (m) => (m.db.bot.channels.facebook = true) });
+    violations = v;
+    const dlg = await openSchedule(user, "Messenger");
+    await user.click(within(dlg).getByRole("radio", { name: /Por horario/ }));
+    await pickDays(user, dlg, ["Sábado", "Domingo"]);
+    await user.selectOptions(within(dlg).getByLabelText("Desde"), "09:00");
+    await user.selectOptions(within(dlg).getByLabelText("Hasta"), "18:00");
+    expect(within(dlg).getByRole("status")).not.toHaveTextContent("al día siguiente");
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Horario del bot" })).not.toBeInTheDocument());
+    const fb = await sw("Bot de Messenger");
+    await waitFor(() => expect(fb).toHaveAttribute("aria-checked", "true")); // martes 10:00: dentro de 9:00 AM a 6:00 PM
+    expect(fb).toHaveTextContent("Bot activo · por horario");
+    expect(await botButton()).toHaveAttribute("aria-label", "Canales del bot: activos: WhatsApp, Messenger");
+    expect(mock.db.bot.channels.facebook).toBe(true); // el manual sigue guardado
+  });
+
+  it("volver a «Manual» devuelve el mando al interruptor y deja el horario guardado", async () => {
+    const { user, mock, violations: v } = await mountApp({
+      prepare: (m) => {
+        m.db.bot.modes = { whatsapp: "manual", facebook: "schedule", instagram: "manual" };
+        m.db.bot.schedules = { whatsapp: null, facebook: { days: ["mon", "tue"], start: "19:00", end: "08:00" }, instagram: null };
+      },
+    });
+    violations = v;
+    const dlg = await openSchedule(user, "Messenger");
+    expect(within(dlg).getByRole("radio", { name: /Por horario/ })).toBeChecked(); // abre con lo que ya tiene
+    expect(within(dlg).getByLabelText("Desde")).toHaveValue("19:00");
+    expect(within(dlg).getAllByRole("button", { pressed: true }).map((b) => b.getAttribute("aria-label"))).toEqual(["Lunes", "Martes"]);
+    await user.click(within(dlg).getByRole("radio", { name: /Manual/ }));
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mock.db.bot.modes?.facebook).toBe("manual"));
+    expect(mock.db.bot.schedules?.facebook).toEqual({ days: ["mon", "tue"], start: "19:00", end: "08:00" });
+    const fb = await sw("Bot de Messenger");
+    await waitFor(() => expect(fb).toBeEnabled());
+    expect(fb).toHaveTextContent("Bot apagado");
+    expect(fb).not.toHaveTextContent("por horario");
+  });
+
+  it("no deja guardar sin días o con la misma hora; no cambia nada", async () => {
+    const { user, mock, violations: v } = await mountApp();
+    violations = v;
+    const dlg = await openSchedule(user, "Instagram");
+    await user.click(within(dlg).getByRole("radio", { name: /Por horario/ }));
+    await pickDays(user, dlg, ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]);
+    expect(within(dlg).getByRole("status")).toHaveTextContent("Elige los días y dos horas distintas.");
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    expect(await within(dlg).findByRole("alert")).toHaveTextContent("Elige al menos un día.");
+    await user.click(within(dlg).getByRole("button", { name: "Lunes" }));
+    await user.selectOptions(within(dlg).getByLabelText("Hasta"), "18:00");
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    expect(await within(dlg).findByRole("alert")).toHaveTextContent("no pueden ser la misma hora");
+    expect(mock.db.bot.modes?.instagram ?? "manual").toBe("manual");
+    expect(mock.db.bot.schedules?.instagram ?? null).toBeNull();
+  });
+
+  it("si el servidor falla, la ventana sigue abierta con el aviso y no cambia nada; al reintentar se guarda", async () => {
+    const { user, mock, violations: v } = await mountApp();
+    violations = v;
+    const dlg = await openSchedule(user, "Messenger");
+    await user.click(within(dlg).getByRole("radio", { name: /Por horario/ }));
+    mock.controls.failNext(1);
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    expect(await within(dlg).findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Horario del bot" })).toBeInTheDocument();
+    expect(mock.db.bot.modes?.facebook ?? "manual").toBe("manual");
+    await user.click(within(dlg).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => expect(mock.db.bot.modes?.facebook).toBe("schedule"));
+    violations = []; // la pagina de error 503 que se provoco no es una violacion del contrato
+  });
+
+  it("la ventana de horario no cierra el panel de los canales al abrirse ni al cancelar", async () => {
+    const { user, violations: v } = await mountApp();
+    violations = v;
+    const dlg = await openSchedule(user, "WhatsApp");
+    await user.click(within(dlg).getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("dialog", { name: "Horario del bot" })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Bot por canal" })).toBeInTheDocument();
+  });
+});
+
 describe("Atención: canal de cada caso", () => {
   const withCases = (mock: Parameters<NonNullable<Parameters<typeof mountApp>[0]>["prepare"] & object>[0]) => {
     mock.bot.handoff({ conversationId: "conv-fb-9", reason: "pidio_persona", canal: "facebook", contacto_id: NUM, detail: "Quiere hablar del costo" });

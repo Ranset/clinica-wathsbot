@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Bot, BotOff, ChevronDown, Facebook, Instagram, MessageCircle } from "lucide-react";
+import { Bot, BotOff, ChevronDown, Clock, Facebook, Instagram, MessageCircle } from "lucide-react";
 import { Button, channelLabel, cn } from "@clinica/calendar";
-import { isAbortError, type BotSettings, type Channel } from "@clinica/api-client";
+import { isAbortError, type BotMode, type BotSchedule, type BotSettings, type Channel } from "@clinica/api-client";
 import { useApi } from "../api-context";
 import { useAuth } from "../auth";
 import { fmtDateTime } from "../lib/fmt";
@@ -10,6 +10,7 @@ import { usePolling } from "../lib/use-polling";
 import { useToast } from "../toast";
 import { BusyButton, dangerButton } from "../ui/controls";
 import { Modal } from "../ui/modal";
+import { ScheduleDialog, scheduleLabel, type ScheduleChange } from "./bot-schedule";
 
 /** Los canales del bot, en el orden en que se muestran. */
 const CHANNELS = [
@@ -25,6 +26,14 @@ const CHANNELS = [
 function stateOf(s: BotSettings | null, c: Channel): boolean | null {
   if (!s) return null;
   return s.channels?.[c] ?? (c === "whatsapp" ? s.active : false);
+}
+
+/** El modo del canal y su horario guardado. Un servidor de la versión anterior no manda `modes`: todo es manual. */
+function modeOf(s: BotSettings | null, c: Channel): BotMode {
+  return s?.modes?.[c] ?? "manual";
+}
+function scheduleOf(s: BotSettings | null, c: Channel): BotSchedule | null {
+  return s?.schedules?.[c] ?? null;
 }
 
 function changedBy(s: BotSettings | null, c: Channel): { by: string | null; at: string | null } {
@@ -46,6 +55,8 @@ export function BotToggle() {
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState<Channel | null>(null);
   const [confirming, setConfirming] = useState<Channel | null>(null);
+  const [scheduling, setScheduling] = useState<Channel | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -68,8 +79,9 @@ export function BotToggle() {
 
   // El panel se cierra con un clic fuera, con Esc (y el foco vuelve al botón) o al salir de él con el teclado. Mientras se pide la
   // confirmación de apagar, no se toca: esa ventana tiene su propio Esc y sus clics no son "fuera".
+  const dialog = confirming !== null || scheduling !== null;
   useEffect(() => {
-    if (!open || confirming) return;
+    if (!open || dialog) return;
     const onDown = (e: MouseEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -82,7 +94,7 @@ export function BotToggle() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, confirming]);
+  }, [open, dialog]);
 
   const apply = async (channel: Channel, active: boolean) => {
     setBusy(channel);
@@ -99,7 +111,24 @@ export function BotToggle() {
     }
   };
 
-  const states = CHANNELS.map((c) => ({ ...c, name: channelLabel(c.id), active: stateOf(settings, c.id) }));
+  /** Guarda el modo y el horario de un canal desde la ventana de «Horario». */
+  const saveSchedule = async (channel: Channel, change: ScheduleChange) => {
+    setBusy(channel);
+    setScheduleError(null);
+    try {
+      setSettings(await api.bot.configure(channel, change));
+      setFailed(false);
+      setScheduling(null);
+      const name = channelLabel(channel);
+      toast.show(change.mode === "schedule" ? `El bot de ${name} se encenderá y apagará solo con el horario.` : `El bot de ${name} vuelve a manejarse con su interruptor.`);
+    } catch (e) {
+      setScheduleError(messageFor(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const states = CHANNELS.map((c) => ({ ...c, name: channelLabel(c.id), active: stateOf(settings, c.id), mode: modeOf(settings, c.id), schedule: scheduleOf(settings, c.id) }));
   const on = states.filter((c) => c.active === true);
   const loading = settings === null;
   // Lo que dice el botón de un vistazo: los canales activos (o «todos»), o que está apagado.
@@ -112,8 +141,8 @@ export function BotToggle() {
         ref={box}
         className="relative"
         onBlur={(e) => {
-          // Tab hacia fuera del panel lo cierra (no si el foco pasa a la ventana de confirmación)
-          if (open && !confirming && !e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget) setOpen(false);
+          // Tab hacia fuera del panel lo cierra (no si el foco pasa a una ventana: confirmación u horario)
+          if (open && !dialog && !e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget) setOpen(false);
         }}
       >
         <button
@@ -147,25 +176,26 @@ export function BotToggle() {
 
         {open && (
           <div id={panelId} role="group" aria-label="Bot por canal" className="fixed inset-x-3 top-14 z-50 rounded-lg border bg-background p-1.5 shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-11 sm:w-[22rem]">
-            <p className="px-2.5 pb-1 pt-1.5 text-xs text-text-3">El bot contesta solo por los canales encendidos. Cada uno se cambia por separado.</p>
+            <p className="px-2.5 pb-1 pt-1.5 text-xs text-text-3">El bot contesta solo por los canales encendidos. Cada uno se maneja a mano o por horario, por separado.</p>
             <ul className="flex flex-col gap-1">
-              {states.map(({ id, icon: ChannelIcon, name, active }) => {
+              {states.map(({ id, icon: ChannelIcon, name, active, mode, schedule }) => {
                 const { by, at } = changedBy(settings, id);
                 const state = active === null ? (failed ? "sin estado" : "…") : active ? "activo" : "apagado";
+                const timed = mode === "schedule";
                 const who = by && at ? `Lo cambió ${by} el ${fmtDateTime(at)}` : `Interruptor del bot de ${name}`;
                 return (
-                  <li key={id}>
+                  <li key={id} className="flex items-stretch gap-1">
                     <button
                       type="button"
                       role="switch"
                       aria-checked={active ?? false}
                       aria-label={`Bot de ${name}`}
-                      title={`${name}: ${state}. ${who}`}
+                      title={timed ? `${name}: ${state}. Por horario${schedule ? `: ${scheduleLabel(schedule)}` : ""}. Para usar el interruptor, cambia a Manual en «Horario».` : `${name}: ${state}. ${who}`}
                       data-channel={id}
-                      disabled={active === null || busy === id || !permissions.toggleBot}
+                      disabled={active === null || busy === id || !permissions.toggleBot || timed}
                       onClick={() => (active ? setConfirming(id) : void apply(id, true))}
                       className={cn(
-                        "flex w-full items-center gap-3 rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft disabled:cursor-not-allowed disabled:opacity-60",
+                        "flex min-w-0 flex-1 items-center gap-3 rounded-md border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft disabled:cursor-not-allowed disabled:opacity-60",
                         active === true && "border-success-soft bg-success-tint text-success-text hover:brightness-95",
                         active === false && "border-border bg-background text-foreground hover:bg-accent",
                         active === null && "border-border bg-secondary text-text-3"
@@ -174,13 +204,34 @@ export function BotToggle() {
                       <ChannelIcon className="h-4 w-4 shrink-0" aria-hidden />
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-semibold">{name}</span>
-                        <span className="block text-xs font-medium">{active === null ? (failed ? "Bot sin estado" : "Bot…") : active ? "Bot activo" : "Bot apagado"}</span>
-                        <span className="block truncate text-[11px] font-normal opacity-80">{who}</span>
+                        <span className="block text-xs font-medium">
+                          {active === null ? (failed ? "Bot sin estado" : "Bot…") : active ? "Bot activo" : "Bot apagado"}
+                          {timed && active !== null && " · por horario"}
+                        </span>
+                        <span className="block truncate text-[11px] font-normal opacity-80">{timed ? (schedule ? scheduleLabel(schedule) : "Sin horario definido") : who}</span>
                       </span>
                       <span aria-hidden className={cn("relative h-4 w-7 shrink-0 rounded-full transition-colors", active ? "bg-success" : "bg-text-4")}>
                         <span className={cn("absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all", active ? "left-3.5" : "left-0.5")} />
                       </span>
                     </button>
+                    {permissions.toggleBot && (
+                      <button
+                        type="button"
+                        aria-label={`Horario de ${name}`}
+                        title={`Horario del bot de ${name}`}
+                        disabled={active === null}
+                        onClick={() => {
+                          setScheduleError(null);
+                          setScheduling(id);
+                        }}
+                        className={cn(
+                          "flex w-10 shrink-0 items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-soft disabled:cursor-not-allowed disabled:opacity-60",
+                          timed ? "border-brand bg-brand-tint text-brand-text hover:brightness-95" : "bg-background text-text-3 hover:bg-accent hover:text-foreground"
+                        )}
+                      >
+                        <Clock className="h-4 w-4" aria-hidden />
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -188,6 +239,18 @@ export function BotToggle() {
           </div>
         )}
       </div>
+
+      {scheduling && (
+        <ScheduleDialog
+          channel={scheduling}
+          mode={modeOf(settings, scheduling)}
+          schedule={scheduleOf(settings, scheduling)}
+          busy={busy === scheduling}
+          error={scheduleError}
+          onSave={(change) => void saveSchedule(scheduling, change)}
+          onClose={() => setScheduling(null)}
+        />
+      )}
 
       {confirming && (
         <Modal
